@@ -1,30 +1,27 @@
-# Python 缓存
+# Python
 __pycache__/
 *.pyc
 *.pyo
-*.pyd
-
-# 虚拟环境
+*.egg-info/
 .venv/
-venv/
 env/
+venv/
 
-# 数据集（图片太多太大，Git 管不了）
-dataset/
-assets/model/resource/image/
+# 模型和数据集（大文件）
+assets/model/*.onnx
+dataset/images/
+dataset/labels/
 
-# 训练输出和日志
-debug/
+# 日志
 logs/
-runs/
-*.pt
-*.pth
-*.onnx
-*.weights
-
-# IDE 配置
-.vscode/
-
-# 其他临时文件
 *.log
+debug.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# 系统
+Thumbs.db
 .DS_Store
