@@ -1,0 +1,7 @@
+maafw>=5.11.1
+vgamepad>=0.1.0
+onnxruntime>=1.27.0
+opencv-python>=5.0.0.93
+numpy>=2.4.6
+ultralytics>=8.4.92
+ttkbootstrap>=1.10.1

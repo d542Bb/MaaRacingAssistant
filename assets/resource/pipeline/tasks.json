@@ -1,0 +1,43 @@
+{
+    "极速狂飙入口": {
+        "recognition": "OCR",
+        "expected": "开始挑战",
+        "action": "Click",
+        "next": ["回合1准备"],
+        "post_delay": 2000
+    },
+    "回合1准备": {
+        "recognition": "OCR",
+        "expected": "寻找对手",
+        "action": "Click",
+        "next": ["回合1比赛"],
+        "post_delay": 3000
+    },
+    "回合1比赛": {
+        "action": "Custom",
+        "custom_action": "RacingLoop",
+        "next": ["回合1结束"],
+        "post_delay": 1000
+    },
+    "回合1结束": {
+        "recognition": "OCR",
+        "expected": "继续",
+        "action": "Click",
+        "next": ["回合2准备"],
+        "post_delay": 2000
+    },
+    "回合2准备": {
+        "recognition": "OCR",
+        "expected": "放弃本轮",
+        "action": "Click",
+        "next": ["确认放弃"],
+        "post_delay": 1000
+    },
+    "确认放弃": {
+        "recognition": "OCR",
+        "expected": "继续放弃",
+        "action": "Click",
+        "next": ["极速狂飙入口"],
+        "post_delay": 3000
+    }
+}

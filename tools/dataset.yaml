@@ -1,0 +1,7 @@
+path: ../dataset
+train: images/train
+val: images/val
+
+names:
+  0: coin
+  1: car

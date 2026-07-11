@@ -1,0 +1,30 @@
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 数据集（图片太多太大，Git 管不了）
+dataset/
+assets/model/resource/image/
+
+# 训练输出和日志
+debug/
+logs/
+runs/
+*.pt
+*.pth
+*.onnx
+*.weights
+
+# IDE 配置
+.vscode/
+
+# 其他临时文件
+*.log
+.DS_Store
