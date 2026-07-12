@@ -1,4 +1,4 @@
-# MaaRM-Alpha — Claude 项目配置
+# MaaRacingAssistant — Claude 项目配置
 
 ## 语言要求
 
@@ -43,8 +43,8 @@
 ## 文件结构
 
 ```
-d:\maazs_racing/
-├── main.py              # 主入口：YOLO 推理 + RacingLoop + MaaRMController
+d:\maaracing_assistant/
+├── main.py              # 主入口：YOLO 推理 + RacingLoop + MaaRacingAssistantController
 ├── gui.py               # 图形界面（ttkbootstrap + UAC 提权）
 ├── CLAUDE.md            # 本文件
 ├── HANDOVER.md          # 完整交接文档

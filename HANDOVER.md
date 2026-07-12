@@ -1,4 +1,4 @@
-# MaaRM-Alpha 开发交接文档
+# MaaRacingAssistant 开发交接文档
 
 ## 项目目标
 自动完成《巅峰极速》"极速狂飙"活动：

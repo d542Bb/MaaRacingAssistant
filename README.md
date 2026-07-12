@@ -1,4 +1,4 @@
-# MAAZS_RACING
+# MaaRacingAssistant
 
 基于 MAA Framework + YOLOv8 的《巅峰极速》自动化项目。
 
@@ -41,7 +41,7 @@ plain
 在 VSCode 终端（`Ctrl + ``）里执行：
 
 ```bash
-cd MAAZS_RACING
+cd maaracing_assistant
 
 # 查看状态（应该看到 HANDOVER.md、README.md、.gitignore 是未追踪的）
 git status

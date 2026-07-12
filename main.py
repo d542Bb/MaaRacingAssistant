@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MaaRM-Alpha
+MaaRacingAssistant
 巅峰极速 · 极速狂飙 自动刷分
 MAA Framework + YOLOv8 ONNX + vgamepad
 """
@@ -333,7 +333,7 @@ class RacingLoop(CustomAction):
 
 
 # ==================== 主控制类 ====================
-class MaaRMController:
+class MaaRacingAssistantController:
     def __init__(self):
         self.proj = Path(__file__).parent
         self.model_path = self.proj / "assets" / "model" / "yolov8n_coins_cars.onnx"

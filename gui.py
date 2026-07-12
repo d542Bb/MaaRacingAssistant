@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
-from main import MaaRMController, logger
+from main import MaaRacingAssistantController, logger
 
 
 def is_admin() -> bool:
@@ -45,14 +45,14 @@ def run_as_admin():
     )
     sys.exit(0)
 
-class MaaRMGUI:
+class MRAGUI:
     def __init__(self, root: ttk.Window):
         self.root = root
-        self.root.title("MaaRM-Alpha")
+        self.root.title("MRA")
         self.root.geometry("600x500")
         self.root.resizable(False, False)
 
-        self.controller = MaaRMController()
+        self.controller = MaaRacingAssistantController()
         self.running = False
         self.worker_thread = None
 
@@ -61,7 +61,7 @@ class MaaRMGUI:
 
     def _build_ui(self):
         # 标题
-        title = ttk.Label(self.root, text="MaaRM-Alpha", font=("Microsoft YaHei", 20, "bold"))
+        title = ttk.Label(self.root, text="MaaRacingAssistant", font=("Microsoft YaHei", 20, "bold"))
         title.pack(pady=(20, 5))
 
         desc = ttk.Label(
@@ -191,7 +191,7 @@ def main():
         return
 
     root = ttk.Window(themename="litera")
-    app = MaaRMGUI(root)
+    app = MRAGUI(root)
     
     # 在 mainloop 之前设置图标
     icon_path = Path(__file__).parent / "assets" / "icon.ico"
