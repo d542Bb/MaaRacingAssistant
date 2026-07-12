@@ -18,6 +18,7 @@ tools/*.pt
 logs/
 *.log
 debug.txt
+debug/
 
 # IDE
 .vscode/

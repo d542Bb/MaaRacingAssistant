@@ -20,7 +20,8 @@ from maa.tasker import Tasker
 from maa.resource import Resource
 from maa.controller import Win32Controller
 from maa.custom_action import CustomAction
-from maa.context import Context
+from maa.context import Context, ContextEventSink
+from maa.event_sink import NotificationType
 from maa.toolkit import Toolkit
 
 import vgamepad as vg
@@ -45,6 +46,46 @@ class Logger:
 
 
 logger = Logger(Path(__file__).parent / "logs")
+
+
+# ==================== Pipeline 日志监听 ====================
+class PipelineLogger(ContextEventSink):
+    """监听 MAA pipeline 每步的识别和动作事件并打印日志"""
+
+    def _task_name(self, detail) -> str:
+        return getattr(detail, "name", str(detail))
+
+    def _task_desc(self, name: str) -> str:
+        """给任务名加上中文描述"""
+        descs = {
+            "极速狂飙入口": '找"开始挑战"',
+            "回合1准备": '找"寻找对手"',
+            "回合1比赛": "YOLO 赛车控制",
+            "回合1结束": '找"继续"',
+            "回合2准备": '找"放弃本轮"',
+            "确认放弃": '找"继续放弃"',
+        }
+        return descs.get(name, name)
+
+    def on_node_recognition(self, context, noti_type, detail):
+        ts = NotificationType(noti_type).name
+        name = self._task_name(detail)
+        desc = self._task_desc(name)
+        hit = getattr(detail, "hit", None)
+        if ts == "Succeeded" and hit is not None:
+            logger.log(f"[Pipeline] {name}({desc}) → 识别{'✅命中' if hit else '❌未找到'}")
+        elif ts in ("Starting", "Succeeded"):
+            logger.log(f"[Pipeline] {ts}: {name}({desc})")
+
+    def on_node_action(self, context, noti_type, detail):
+        ts = NotificationType(noti_type).name
+        name = self._task_name(detail)
+        desc = self._task_desc(name)
+        success = getattr(detail, "success", None)
+        if ts == "Succeeded" and success is not None:
+            logger.log(f"[Pipeline] {name}({desc}) → 动作{'✅成功' if success else '❌失败'}")
+        else:
+            logger.log(f"[Pipeline] {ts} 动作: {name}({desc})")
 
 
 # ==================== 窗口查找 ====================
@@ -192,8 +233,14 @@ class RacingLoop(CustomAction):
 
     def stop(self):
         self._running = False
+        # 松开所有手柄按键（RT + 方向）
+        self.gpad.right_trigger(value=0)
+        self.gpad.left_joystick(x_value=0, y_value=0)
+        self.gpad.update()
+        self.last_dir = 0
 
     def _steer(self, direction: int):
+        # 注意：不在此处控制 RT——RT 由 run() 的入口/finally 统一管理
         if direction == -1:
             self.gpad.left_joystick(x_value=-32768, y_value=0)
         elif direction == 1:
@@ -251,9 +298,12 @@ class RacingLoop(CustomAction):
             cx, cy, bw, bh = target
             deadzone = w * 0.06
             if cx < center_x - deadzone:
+                logger.log(f"[YOLO] bonus_car 在左({cx},{cy})，左转对准")
                 return -1
             elif cx > center_x + deadzone:
+                logger.log(f"[YOLO] bonus_car 在右({cx},{cy})，右转对准")
                 return 1
+            logger.log(f"[YOLO] bonus_car 在正中({cx},{cy})，直冲")
             return 0
 
         # 1️⃣ 避让障碍车
@@ -264,33 +314,49 @@ class RacingLoop(CustomAction):
             right_occ = any(cx > center_x and abs(cx - center_x) < lane_w * 2.2 for cx, cy, cw, ch in cars)
 
             if tx < center_x - lane_w * 0.3:
-                return 1 if not right_occ else (-1 if not left_occ else 1)
+                dir = 1 if not right_occ else (-1 if not left_occ else 1)
+                logger.log(f"[YOLO] 障碍车在左({tx},{ty})，{'右' if dir == 1 else '左'}避让" + (f"(右道被占{'→左' if dir == -1 else ''})" if dir == -1 else ""))
+                return dir
             elif tx > center_x + lane_w * 0.3:
-                return -1 if not left_occ else (1 if not right_occ else -1)
+                dir = -1 if not left_occ else (1 if not right_occ else -1)
+                logger.log(f"[YOLO] 障碍车在右({tx},{ty})，{'左' if dir == -1 else '右'}避让" + (f"(左道被占{'→右' if dir == 1 else ''})" if dir == 1 else ""))
+                return dir
             else:
                 if not left_occ and right_occ:
+                    logger.log(f"[YOLO] 障碍车正前({tx},{ty})，左避让")
                     return -1
                 elif not right_occ and left_occ:
+                    logger.log(f"[YOLO] 障碍车正前({tx},{ty})，右避让")
                     return 1
                 elif not left_occ and not right_occ:
+                    logger.log(f"[YOLO] 障碍车正前({tx},{ty})，左避让(两侧空)")
                     return -1
+                logger.log(f"[YOLO] 障碍车正前({tx},{ty})，两侧被占，直行硬刚")
                 return 0
 
         if coins:
             cx = max(coins, key=lambda c: c[1])[0]
             deadzone = w * 0.04
             if cx < center_x - deadzone:
+                logger.log(f"[YOLO] 金币在左({cx})，左转吃币")
                 return -1
             elif cx > center_x + deadzone:
+                logger.log(f"[YOLO] 金币在右({cx})，右转吃币")
                 return 1
             return 0
 
+        if self.frame_id % 15 == 0:
+            logger.log("[YOLO] 无目标，直行")
         return 0
 
     def run(self, context: Context, argv: dict) -> bool:
         ctrl = context.controller
         logger.log("赛车控制启动")
         self._running = True
+
+        # 起步：按住 RT 加速
+        self.gpad.right_trigger(value=255)
+        self.gpad.update()
 
         try:
             while self._running:
@@ -327,7 +393,11 @@ class RacingLoop(CustomAction):
                 if sleep:
                     time.sleep(sleep)
         finally:
-            self._steer(0)
+            # 松开所有按键：RT + 方向归中
+            self.gpad.right_trigger(value=0)
+            self.gpad.left_joystick(x_value=0, y_value=0)
+            self.gpad.update()
+            self.last_dir = 0
             logger.log("赛车控制停止")
         return False
 
@@ -368,6 +438,9 @@ class MaaRacingAssistantController:
 
         self.racing_loop = RacingLoop(str(self.model_path))
         self.resource.register_custom_action("RacingLoop", self.racing_loop)
+
+        # 注册 pipeline 日志监听
+        self.tasker.add_context_sink(PipelineLogger())
 
         return True
 
