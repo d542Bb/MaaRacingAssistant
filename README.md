@@ -21,7 +21,7 @@ python main.py
 main.py	主程序入口
 gui.py	GUI 界面
 train.py	YOLO 模型训练
-capture.py	数据采集
+~~capture.py~~	~~数据采集（已移除）~~
 tools/	辅助工具
 assets/	模型资源
 dataset/	训练数据集

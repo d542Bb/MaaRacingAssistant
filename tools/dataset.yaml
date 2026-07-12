@@ -5,3 +5,4 @@ val: images/val
 names:
   0: coin
   1: car
+  2: bonus_car

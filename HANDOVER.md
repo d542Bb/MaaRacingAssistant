@@ -6,7 +6,7 @@
 
 ## 技术栈
 - MAA Framework 5.11.1（UI 流程 + 窗口控制）
-- YOLOv8 + ONNX Runtime（视觉识别）
+- YOLOv8 + ONNX Runtime（视觉识别，3 类：coin / car / bonus_car）
 - vgamepad（虚拟 Xbox 手柄）
 - ttkbootstrap（GUI）
 
@@ -29,13 +29,14 @@
 - GUI 正常，UAC 提权正常
 - 窗口连接正常
 - Pipeline 绑定正常
-- **YOLO 模型未训练**（下一步）
+- **YOLO 模型已训练** ✅ 见 `assets/model/yolov8n_coins_cars.onnx`（3类: coin/car/bonus_car）
+- **下一步**：运行 `gui.py` 连接游戏测试
 
 ## 文件结构
 - `main.py` — 主入口
 - `gui.py` — 图形界面
 - `train.py` — YOLO 训练
-- `capture.py` — 截图采集
+- ~~`capture.py` — 截图采集（已移除）~~
 - `tools/` — 工具脚本
 - `assets/model/` — 模型文件
 - `config/` — 配置文件

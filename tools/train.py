@@ -1,4 +1,6 @@
 from ultralytics import YOLO
+from pathlib import Path
+import shutil
 
 
 def main():
@@ -18,8 +20,13 @@ def main():
 
     best = YOLO("train_output/weights/best.pt")
     best.export(format="onnx", imgsz=640, simplify=True, opset=12)
-    print("导出完成: train_output/weights/best.onnx")
-    print("请复制到 assets/model/yolov8n_coins_cars.onnx")
+    onnx_path = "train_output/weights/best.onnx"
+    import shutil
+    dst = Path(__file__).parent.parent / "assets" / "model" / "yolov8n_coins_cars.onnx"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(onnx_path, dst)
+    print(f"导出完成: {onnx_path}")
+    print(f"已复制到: {dst}")
 
 
 if __name__ == "__main__":

@@ -143,7 +143,7 @@ class YOLODetector:
 
         mask = max_scores > self.conf
         if not np.any(mask):
-            return [], []
+            return [], [], []
 
         boxes = xywh[mask]
         scores_f = max_scores[mask]
@@ -157,9 +157,9 @@ class YOLODetector:
 
         indices = cv2.dnn.NMSBoxes(xyxy.tolist(), scores_f.tolist(), self.conf, self.iou)
         if len(indices) == 0:
-            return [], []
+            return [], [], []
 
-        coins, cars = [], []
+        coins, cars, bonus_cars = [], [], []
         for i in indices:
             i = int(i)
             cls = int(classes[i])
@@ -170,9 +170,14 @@ class YOLODetector:
             x2, y2 = min(orig_w, x2), min(orig_h, y2)
             cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
             bw, bh = x2 - x1, y2 - y1
-            (coins if cls == 0 else cars).append((int(cx), int(cy), int(bw), int(bh)))
+            if cls == 0:
+                coins.append((int(cx), int(cy), int(bw), int(bh)))
+            elif cls == 1:
+                cars.append((int(cx), int(cy), int(bw), int(bh)))
+            else:
+                bonus_cars.append((int(cx), int(cy), int(bw), int(bh)))
 
-        return coins, cars
+        return coins, cars, bonus_cars
 
 
 # ==================== 赛车控制 ====================
@@ -236,10 +241,22 @@ class RacingLoop(CustomAction):
         gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
         return np.sum(gray > 180) / gray.size > 0.12 and np.var(gray) > 800
 
-    def _decide(self, coins, cars, w: int, h: int) -> int:
+    def _decide(self, coins, cars, bonus_cars, w: int, h: int) -> int:
         center_x = w // 2
         lane_w = w * 0.12
 
+        # 0️⃣ 最高优先级：跳板车/油罐车 → 对准开
+        if bonus_cars:
+            target = max(bonus_cars, key=lambda b: b[1])
+            cx, cy, bw, bh = target
+            deadzone = w * 0.06
+            if cx < center_x - deadzone:
+                return -1
+            elif cx > center_x + deadzone:
+                return 1
+            return 0
+
+        # 1️⃣ 避让障碍车
         threats = [(cx, cy, cw, ch) for cx, cy, cw, ch in cars if abs(cx - center_x) < lane_w * 1.8]
         if threats:
             tx, ty, tw, th = max(threats, key=lambda t: t[1])
@@ -298,8 +315,8 @@ class RacingLoop(CustomAction):
                     self._steer(0)
                     return True
 
-                coins, cars = self.det(img)
-                direction = self._decide(coins, cars, w, h)
+                coins, cars, bonus_cars = self.det(img)
+                direction = self._decide(coins, cars, bonus_cars, w, h)
 
                 if direction != self.last_dir:
                     self._steer(direction)
