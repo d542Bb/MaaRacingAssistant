@@ -1,5 +1,9 @@
 # MaaRacingAssistant
 
+<p align="center">
+  <img src="assets/mra_icon.jpg" width="128" alt="MaaRacingAssistant logo">
+</p>
+
 基于 **MAA Framework** + **YOLOv8** + **vgamepad** 的《巅峰极速》"极速狂飙"活动自动化工具。
 
 自动完成：启动归位 → 光标导航进入活动 → 回合1 YOLO 赛车 → 回合2放弃 → 循环。
