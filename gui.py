@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
-from main import MaaRacingAssistantController, logger
+from main import MaaRacingAssistantController, logger, has_physical_controller
 
 
 def is_admin() -> bool:
@@ -153,6 +153,20 @@ class MRAGUI:
         if not self.controller.check_model():
             self.status_var.set("模型未找到")
             self.status_label.config(bootstyle="danger")
+            return
+
+        if has_physical_controller():
+            dlg = tk.Toplevel(self.root)
+            dlg.title("检测到物理手柄")
+            icon_path = Path(__file__).parent / "assets" / "icon.ico"
+            if icon_path.exists():
+                dlg.iconbitmap(str(icon_path))
+            tk.Label(dlg, text="请断开所有物理手柄后再运行",
+                     font=("Microsoft YaHei", 11), padx=30, pady=20).pack()
+            tk.Button(dlg, text="确定", command=dlg.destroy, width=10).pack(pady=(0, 15))
+            dlg.transient(self.root)
+            dlg.grab_set()
+            dlg.wait_window()
             return
 
         self.running = True

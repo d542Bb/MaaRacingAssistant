@@ -32,6 +32,8 @@
 - `Tasker.bind(resource, controller)` 顺序：resource 在前！
 - `Resource.post_bundle(path)` 不是 `post_path`
 - `Resource.register_custom_action(name, action)`
+- **`XInputGetState(i, buf) == 0` 表示第 i 号物理手柄已连接**（通过 `xinput1_4.dll`/`xinput1_3.dll` 调用）
+- **`ButtonDef` 配置类**：`name`, `pct`(百分比坐标), `page_template`, `template_should_match`, `close_threshold`
 
 ## 已知坑点
 
@@ -42,6 +44,9 @@
 - **光标识别面积评分中心是 260（真光标面积）**，不是 1200，否则误识别成其他圆形 UI（`_find_cursor_by_shape`）
 - **游戏摇杆死区约 13%**，摇杆最低幅度必须 > 4260（`MAX_AXIS * min_speed > 4260`）
 - **销毁手柄（`del gpad`）游戏会自动把光标复位到左上角**，比摇杆归中更可靠
+- **不要加微轴归零阈值**——`abs(dx) < N → lx = 0` 会阻止光标在目标附近的 ±N px 死区内做最终修正，应直接用独立死区让每个非零轴升到 4260 推到底
+- **模板匹配正反逻辑**：`template_should_match=True` 表示匹配到模板 = 成功进入页面；`False` 表示模板消失 = 成功离开页面
+- **`messagebox.showerror` 不继承父窗口图标**，需要自行 `tk.Toplevel + iconbitmap`
 
 ## 文件结构
 
@@ -58,6 +63,9 @@ d:\maaracing_assistant/
 │   ├── model/
 │   │   └── yolov8n_coins_cars.onnx   # YOLO 模型（3 类）
 │   ├── resource/
+│   │   ├── image/
+│   │   │   ├── settings_page_template.jpg   # 归位：设置页面
+│   │   │   └── activity_page_template.jpg   # 导航：活动页面
 │   │   └── pipeline/
 │   │       └── tasks.json            # MAA Pipeline 流程定义
 │   └── icon.ico
@@ -92,15 +100,16 @@ d:\maaracing_assistant/
 
 ## 当前状态
 
-- ✅ GUI — 正常，UAC 提权正常
+- ✅ GUI — 正常，UAC 提权正常，物理手柄检测弹窗带图标
 - ✅ 窗口连接 — 正常
 - ✅ Pipeline 绑定 — 正常
 - ✅ 数据集 — 188 张标注（150 训练 / 38 验证），3 类
 - ✅ YOLO 模型 — 已训练，ONNX 已导出（mAP50 ≈ 0.92）
 - ✅ 启动归位（Homing）— 彩色模板匹配，正常
-- ✅ 光标导航（Navigate）— 光标几何形状识别 + 摇杆控制，已打通
-- ✅ 版本号 — v0.2.0（`main.py __version__`）
-- 👣 下一步 — 端到端测试从启动到进入比赛的全流程
+- ✅ 光标导航（Navigate）— `ButtonDef` 配置驱动，模板匹配正反逻辑，独立死区摇杆控制
+- ✅ 第二个按钮（"开始挑战"）— 测试通过，25px 阈值成功命中
+- ✅ 物理手柄检测 — XInput API，GUI 弹窗阻止运行
+- ✅ 版本号 — v0.3.0（`main.py __version__`）
 
 ## 对 AI 助手的要求
 
@@ -113,3 +122,5 @@ d:\maaracing_assistant/
 7. **所有输出和思考必须使用中文（简体）**
 8. **执行命令后完整打印终端输出**
 9. **请求权限时必须用中文解释目的和后果**
+10. **能直接改就不要先读几十行代码确认**——改前读了代码的话，改后不需要再读一遍验证
+11. **任何不必要的 thinking 和文件读取都在烧 token 烧钱**——确定要动的地方直接动手，别绕路

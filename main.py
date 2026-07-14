@@ -6,10 +6,12 @@ MaaRacingAssistant v0.2.0
 MAA Framework + YOLOv8 ONNX + vgamepad
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 import sys
 import time
+from typing import Optional
+
 import cv2
 import numpy as np
 import onnxruntime as ort
@@ -122,6 +124,27 @@ def hwnd_from_pid(pid: int) -> int:
 
     user32.EnumWindows(callback, 0)
     return _cache.get("hwnd", 0)
+
+
+def has_physical_controller() -> bool:
+    """检测是否有物理 Xbox 手柄已连接（在创建虚拟手柄前调用）"""
+    try:
+        for dll_name in ["xinput1_4.dll", "xinput9_1_0.dll", "xinput1_3.dll"]:
+            try:
+                dll = ctypes.windll[dll_name]
+                break
+            except Exception:
+                continue
+        else:
+            return False
+
+        buf = ctypes.create_string_buffer(16)
+        for i in range(4):
+            if dll.XInputGetState(i, buf) == 0:
+                return True
+        return False
+    except Exception:
+        return False
 
 
 def find_game_hwnd() -> int:
@@ -453,6 +476,20 @@ class RacingLoop(CustomAction):
         return False
 
 
+
+# ==================== 按钮配置 ====================
+class ButtonDef:
+    """按钮定义——只保留配置项"""
+    __slots__ = ('name', 'pct', 'page_template', 'template_should_match', 'close_threshold')
+    def __init__(self, name: str, pct: tuple, page_template: str = "",
+                 template_should_match: bool = True, close_threshold: int = 65):
+        self.name = name
+        self.pct = pct                      # 屏幕百分比位置 (x%, y%)
+        self.page_template = page_template  # 验证模板图文件名
+        self.template_should_match = template_should_match  # True=匹配上算成功, False=消失算成功
+        self.close_threshold = close_threshold              # 按 A 的距离阈值
+
+
 # ==================== 主控制类 ====================
 class MaaRacingAssistantController:
     def __init__(self):
@@ -463,11 +500,145 @@ class MaaRacingAssistantController:
         self.controller = None
         self.racing_loop = None
         self._running = False
+        self._gpad = None  # 虚拟手柄，首次使用时创建，不复位不销毁
 
     # ---------- 基础设施 ----------
 
+    @staticmethod
+    def _dist(p1: tuple, p2: tuple) -> float:
+        """两点距离"""
+        return ((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2) ** 0.5
+
+    def _stop_stick(self, gpad: vg.VX360Gamepad):
+        """摇杆归零"""
+        gpad.left_joystick(x_value=0, y_value=0)
+        gpad.update()
+
+    def _ensure_cursor(self, gpad: vg.VX360Gamepad):
+        """如果截图找不到光标，4方向推摇杆搜索"""
+        # 先看当前帧有没有光标
+        arr = self._screencap()
+        if arr is not None:
+            pos, _, _ = self._find_cursor_by_shape(arr)
+            if pos is not None:
+                logger.log(f"光标已找到: {pos}", "DEBUG")
+                return pos
+        # 找不到 → 4 方向依次搜索
+        for _, x, y in [("右下",12000,-12000),("左下",-12000,-12000),
+                           ("右上",12000,12000),("左上",-12000,12000)]:
+            if not self._running:
+                return None
+            gpad.left_joystick(x_value=x, y_value=y)
+            gpad.update()
+            time.sleep(0.4)
+            self._stop_stick(gpad)
+            time.sleep(0.3)
+            arr = self._screencap()
+            if arr is not None:
+                pos, _, _ = self._find_cursor_by_shape(arr)
+                if pos is not None:
+                    return pos
+        return None
+
+    def _blind_move(self, gpad: vg.VX360Gamepad, last_pos: tuple, target: tuple, elapsed: float):
+        """光标丢失后盲操推摇杆"""
+        dx = target[0] - last_pos[0]
+        dy = target[1] - last_pos[1]
+        dist = (dx * dx + dy * dy) ** 0.5
+        total_needed = dist / 310.0  # 满幅 ~310 px/s
+        if elapsed >= total_needed + 0.3:
+            self._stop_stick(gpad)
+            return
+        ux = dx / dist
+        uy = -dy / dist
+        lx = int(ux * 8000)
+        ly = int(uy * 8000)
+        if lx != 0 and abs(lx) < 4260:
+            lx = 4260 if lx > 0 else -4260
+        if ly != 0 and abs(ly) < 4260:
+            ly = 4260 if ly > 0 else -4260
+        gpad.left_joystick(x_value=max(-8000, min(8000, lx)),
+                          y_value=max(-8000, min(8000, ly)))
+        gpad.update()
+        logger.log(f"盲操: 摇杆=({lx},{ly}), 已推{elapsed:.1f}s/需{total_needed:.1f}s", "DEBUG")
+        self._interruptible_sleep(0.2)
+        self._stop_stick(gpad)
+
+    def _press_and_verify(self, gpad: vg.VX360Gamepad, cursor_area: float,
+                          dist_button: float, btn: ButtonDef) -> bool | None:
+        """按 A → 验证是否命中
+        Returns: True=成功, None=模板权威判定没点上, False=没命中已收缩阈值"""
+        self._stop_stick(gpad)
+        time.sleep(0.2)
+        self._press_button(gpad, vg.XUSB_BUTTON.XUSB_GAMEPAD_A, duration=0.3)
+        self._interruptible_sleep(1.0)
+
+        check_arr = self._screencap()
+        if check_arr is not None and btn.page_template:
+            matched = self._check_page_by_template(btn.page_template)
+            if btn.template_should_match and matched:
+                logger.log(f"页面已切换（模板「{btn.page_template}」匹配），导航完成")
+                return True
+            elif not btn.template_should_match and not matched:
+                logger.log(f"页面已切换（模板「{btn.page_template}」已消失），导航完成")
+                return True
+            elif not btn.template_should_match and matched:
+                logger.log(f"模板「{btn.page_template}」仍可见，页面未切换，收缩阈值", "WARNING")
+                self._nav_close_threshold = max(30, getattr(self, '_nav_close_threshold', btn.close_threshold) - 15)
+                self._interruptible_sleep(0.5)
+                return None
+
+        # Fallback: 光标面积变化
+        if check_arr is not None:
+            check_pos, _, check_area = self._find_cursor_by_shape(check_arr)
+            if check_pos is not None:
+                area_drop = cursor_area - check_area
+                if area_drop > 100:
+                    logger.log(f"页面已切换（面积 {cursor_area}→{check_area}），导航完成")
+                    return True
+                elif btn.template_should_match:
+                    logger.log(f"A 键未命中（面积 {cursor_area}→{check_area}），收缩阈值", "WARNING")
+            elif dist_button < 45:
+                logger.log("页面已切换（光标消失），导航完成")
+                return True
+
+        self._nav_close_threshold = max(30, getattr(self, '_nav_close_threshold', btn.close_threshold) - 15)
+        self._interruptible_sleep(0.5)
+        return False
+
     def check_model(self) -> bool:
         return self.model_path.exists()
+
+    def _get_gpad(self) -> vg.VX360Gamepad:
+        """获取虚拟手柄（懒创建 + 保持复用，不销毁重建）"""
+        if self._gpad is None:
+            self._gpad = vg.VX360Gamepad()
+            logger.log("虚拟手柄已创建", "DEBUG")
+        return self._gpad
+
+    def _reset_gpad(self):
+        """重置手柄：摇杆归零 + 按钮释放，但不销毁"""
+        if self._gpad is not None:
+            try:
+                self._gpad.reset()
+                self._gpad.update()
+            except Exception:
+                pass
+
+    def _destroy_gpad(self):
+        """销毁虚拟手柄，释放资源"""
+        if self._gpad is not None:
+            try:
+                self._gpad.reset()
+                self._gpad.update()
+            except Exception:
+                pass
+            try:
+                del self._gpad
+            except Exception:
+                pass
+            self._gpad = None
+            logger.log("虚拟手柄已销毁", "DEBUG")
 
     def _screencap(self):
         """截图并返回 RGB ndarray，失败返回 None"""
@@ -656,8 +827,13 @@ class MaaRacingAssistantController:
         """
         gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
 
-        # 提取高亮区域（纯白色/近白色光标）
-        _, binary = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY)
+        # 降阈值（185）捕获 hover 态暗中心（193），再用 HSV 饱和度剔除彩色 UI
+        _, binary = cv2.threshold(gray, 185, 255, cv2.THRESH_BINARY)
+
+        # 饱和度过滤：光标是灰白色（S≈0），彩色 UI 元素全部挖掉
+        hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+        _, sat_mask = cv2.threshold(hsv[:, :, 1], 30, 255, cv2.THRESH_BINARY_INV)
+        binary = cv2.bitwise_and(binary, sat_mask)
 
         # 可选：保存调试图像
         if debug:
@@ -671,9 +847,9 @@ class MaaRacingAssistantController:
         best_score = 0.0
 
         h_img, w_img = img.shape[:2]
-        # 面积约束：根据图像尺寸动态调整，覆盖直径约 15~80px 的圆
+        # 面积约束：真实光标面积约 260（中心 pixel），边缘约 450~500
         min_area = max(100, int(h_img * w_img * 0.00008))
-        max_area = min(6000, int(h_img * w_img * 0.006))
+        max_area = min(550, int(h_img * w_img * 0.006))
 
         candidates = []
         for cnt in contours:
@@ -711,20 +887,17 @@ class MaaRacingAssistantController:
             asp = cand["aspect"]
             near_edge = cand["near_edge"]
 
-            # 边缘容忍：靠近边界时放宽圆度要求（部分圆 naturally 圆度低）
-            if near_edge:
-                min_circ = 0.45  # 1/4 圆角落场景
-            else:
-                min_circ = 0.78  # 完整圆硬约束
+            # 边缘容忍降级：即使边缘也必须>0.65（不再允许 0.45 的低质圆形）
+            min_circ = 0.65 if near_edge else 0.82
 
             if circ < min_circ or asp < 0.70:
                 continue
 
-            # 评分：圆度权重最高，面积适中加分，边缘候选降低圆度权重避免误判
+            # 评分：圆度权重最高，面积以 260 为中心评分，边缘候选降低圆度权重
             area_score = 1.0 - abs(cand["area"] - 260) / 400  # 260=实际光标面积中心
             area_score = max(0.0, min(1.0, area_score))
-            circ_weight = 0.5 if near_edge else 0.6
-            score = circ * circ_weight + asp * 0.2 + area_score * 0.2
+            circ_weight = 0.5 if near_edge else 0.65
+            score = circ * circ_weight + asp * 0.15 + area_score * 0.20
 
             if score > best_score:
                 best_score = score
@@ -753,7 +926,7 @@ class MaaRacingAssistantController:
             return False
 
         logger.log("开始归位：按 B 直到进入设置页面...")
-        gpad = vg.VX360Gamepad()
+        gpad = self._get_gpad()
 
         try:
             for i in range(15):
@@ -787,10 +960,10 @@ class MaaRacingAssistantController:
             logger.log("归位超时（15次按B未识别到设置页面），继续执行", "WARNING")
             return False
         finally:
+            # 只释放按钮，不销毁手柄
             try:
-                gpad.reset()
+                gpad.release_button(vg.XUSB_BUTTON.XUSB_GAMEPAD_B)
                 gpad.update()
-                del gpad
             except Exception:
                 pass
 
@@ -798,7 +971,14 @@ class MaaRacingAssistantController:
 
     def _move_cursor_to_target(self, cursor_pos: tuple, target_pos: tuple,
                                gpad: vg.VX360Gamepad, stop_distance: int = 25) -> bool:
-        """控制左摇杆移动光标到目标（慢速防过冲），返回 True 表示已对齐"""
+        """控制左摇杆移动光标到目标，距离自适应保持 + 刹车防过冲
+
+        控制策略：
+        1. 远距（>150px）：满幅 200ms 推送 → 快速接近
+        2. 中距（70~150px）：中幅 100ms 推送 → 平稳靠近
+        3. 近距（<70px）：低幅 60ms 推送 → 精细微调
+        4. 每次推送后刹车 50ms（摇杆归零），让光标减速防止过冲
+        """
         cx, cy = cursor_pos
         tx, ty = target_pos
         dx = tx - cx
@@ -809,42 +989,87 @@ class MaaRacingAssistantController:
             logger.log(f"光标已对齐: 距离={dist:.1f} < {stop_distance}", "DEBUG")
             return True
 
-        # 菜单光标灵敏度高，用小幅值慢速移动防止过冲
+        DEADZONE = 4260   # 游戏摇杆死区 ~13%
         MAX_AXIS = 8000
-        speed = max(0.6, min(1.0, dist / 200))  # 最低 0.6 防死区（游戏需要 ~13% 摇杆幅度）
-        lx = int(dx / dist * MAX_AXIS * speed)
-        ly = int(-dy / dist * MAX_AXIS * speed)  # Y 取反：vgamepad 正值=上，但 dy>0 表示目标在下
+
+        # ── 方向分量（单轴追踪：已接近的轴归零，避免死区拉偏）──
+        if abs(dy) < 30:
+            ux = 1.0 if dx > 0 else -1.0
+            uy = 0.0
+        elif abs(dx) < 30:
+            ux = 0.0
+            uy = -1.0 if dy > 0 else 1.0  # vgamepad Y 正值=上
+        else:
+            ux = dx / dist
+            uy = -dy / dist
+
+        # ── 距离自适应参数 ──
+        if dist > 150:
+            hold_time = 0.2
+            speed = max(0.7, min(1.0, dist / 200))
+        elif dist > 70:
+            hold_time = 0.1
+            speed = max(0.55, dist / 200)
+        else:
+            hold_time = 0.12  # 近距：死区推力要够久才能克服惯性
+            speed = 0.65
+
+        magnitude = MAX_AXIS * speed
+
+        lx = int(ux * magnitude)
+        ly = int(uy * magnitude)
+
+        # ── 死区保障：每个非零轴独立达到死区 ──
+        if lx != 0 and abs(lx) < DEADZONE:
+            lx = DEADZONE if lx > 0 else -DEADZONE
+        if ly != 0 and abs(ly) < DEADZONE:
+            ly = DEADZONE if ly > 0 else -DEADZONE
+        # 各自限制最大值
+        lx = max(-MAX_AXIS, min(MAX_AXIS, lx))
+        ly = max(-MAX_AXIS, min(MAX_AXIS, ly))
+
+        # ── 推送：设置摇杆 → 保持 → 刹车 ──
         gpad.left_joystick(x_value=lx, y_value=ly)
         gpad.update()
-        logger.log(f"移动光标: dx={dx}, dy={dy}, dist={dist:.1f}, 摇杆=({lx},{ly})", "DEBUG")
+        logger.log(f"移动光标: dx={dx}, dy={dy}, dist={dist:.1f}, 摇杆=({lx},{ly}), 保持={hold_time:.2f}s", "DEBUG")
+
+        self._interruptible_sleep(hold_time)
+
+        # 刹车：摇杆归零让光标减速，防止下周期过冲
+        gpad.left_joystick(x_value=0, y_value=0)
+        gpad.update()
+        self._interruptible_sleep(0.05)
+
         return False
 
-    def navigate_to_button(self, center_first: bool = False) -> bool:
-        """识别光标并移动到「极速狂飙」按钮（按钮位置按百分比固定计算），按 A 确认
-        center_first: 首次调用时向右下推摇杆归中光标"""
-        # 按钮位置按百分比硬编码（基于当前窗口分辨率自适应）
-        BUTTON_PCT = (0.898, 0.751)
+    def _check_page_by_template(self, template_name: str) -> bool:
+        """用 OpenCV 模板匹配检测页面是否已切换，用于验证导航是否成功"""
+        arr = self._screencap()
+        if arr is None:
+            return False
+        template = self._load_template(template_name)
+        if template is None:
+            return False
+        pos, conf, _ = self._find_template(arr, template, threshold=0.7)
+        if pos is not None:
+            logger.log(f"模板「{template_name}」匹配成功，置信度={conf:.3f}")
+            return True
+        logger.log(f"模板「{template_name}」未匹配", "DEBUG")
+        return False
 
-        logger.log("开始导航：识别光标...")
-        gpad = vg.VX360Gamepad()
+    def navigate_to_button(self, btn: ButtonDef) -> bool:
+        """导航光标到按钮位置并按 A，用模板匹配/面积变化验证成功"""
+        logger.log(f"导航到「{btn.name}」...")
+        gpad = self._get_gpad()
+
+        self._ensure_cursor(gpad)  # 找不到就4方向搜索，还找不到进盲操
+
+        cursor_lost_start = None
+        last_known_pos = None
 
         try:
-            # 仅首次：光标默认在左上角，向右下推摇杆进入画面
-            if center_first:
-                logger.log("光标归中：向右下推摇杆进入画面...", "DEBUG")
-                # 分两阶段推：先大幅右推确保进入 X 范围，再推下确保进入 Y 范围
-                gpad.left_joystick(x_value=12000, y_value=-12000)
-                gpad.update()
-                time.sleep(0.6)
-                gpad.left_joystick(x_value=0, y_value=0)
-                gpad.update()
-                time.sleep(0.4)
-
-            cursor_lost_start = None  # 光标首次丢失的时间戳
-
             for attempt in range(30):
                 if not self._running:
-                    logger.log("收到停止信号，中断导航")
                     return False
 
                 arr = self._screencap()
@@ -853,43 +1078,49 @@ class MaaRacingAssistantController:
                     continue
 
                 h, w = arr.shape[:2]
-                # 按钮坐标 = 截图尺寸 × 百分比
-                button_pos = (int(w * BUTTON_PCT[0]), int(h * BUTTON_PCT[1]))
-                logger.log(f"按钮目标位置: {button_pos} (基于 {w}x{h} × {BUTTON_PCT})", "DEBUG")
+                button_pos = (int(w * btn.pct[0]), int(h * btn.pct[1]))
+                cursor_pos, _, cursor_area = self._find_cursor_by_shape(arr)
+                close_th = getattr(self, '_nav_close_threshold', btn.close_threshold)
 
-                cursor_pos, cursor_circ, cursor_area = self._find_cursor_by_shape(arr)
+                if cursor_pos is not None:
+                    cursor_lost_start = None
+                    last_known_pos = cursor_pos
+                    dist = self._dist(cursor_pos, button_pos)
+                    logger.log(f"光标 {cursor_pos} → 按钮 {button_pos}  "
+                               f"(dx={button_pos[0]-cursor_pos[0]}, dy={button_pos[1]-cursor_pos[1]})", "DEBUG")
 
-                if cursor_pos is None:
-                    logger.log(f"未找到光标，重试", "DEBUG")
+                    # 接近 → 按 A + 验证
+                    if dist < close_th:
+                        logger.log(f"光标接近按钮：距离={dist:.1f}px（阈值={close_th}），按 A", "DEBUG")
+                        result = self._press_and_verify(gpad, cursor_area, dist, btn)
+                        if result is True:
+                            self._nav_close_threshold = btn.close_threshold
+                            return True
+                        continue  # False/None → 已收缩阈值，下一轮重试
+
+                    # 远 → 移动光标
+                    self._move_cursor_to_target(cursor_pos, button_pos, gpad, stop_distance=25)
+                else:
+                    # 光标丢失 → 盲操
                     if cursor_lost_start is None:
                         cursor_lost_start = time.time()
-                    elif time.time() - cursor_lost_start >= 2.0:
-                        logger.log("光标丢失超过2秒，放弃本次导航（手柄断开→光标复位）", "WARNING")
-                        return False  # finally 会销毁手柄，游戏自动复位光标
-                    # 2 秒内先小幅推摇杆（可能还在边缘外）
-                    if attempt < 3:
-                        gpad.left_joystick(x_value=8000, y_value=-8000)
+                        logger.log("光标丢失，开始盲操", "DEBUG")
+
+                    if time.time() - cursor_lost_start >= 2.0:
+                        logger.log("光标盲操超过2秒，放弃本次导航", "WARNING")
+                        return False
+
+                    if last_known_pos is not None:
+                        self._blind_move(gpad, last_known_pos, button_pos, time.time() - cursor_lost_start)
+                    else:
+                        logger.log("盲操: 无已知位置，向东南搜索", "DEBUG")
+                        gpad.left_joystick(x_value=4260, y_value=4260)
                         gpad.update()
-                        time.sleep(0.2)
-                        gpad.left_joystick(x_value=0, y_value=0)
-                        gpad.update()
-                    self._interruptible_sleep(0.5)
+                        self._interruptible_sleep(0.3)
+                        self._stop_stick(gpad)
+
+                    self._interruptible_sleep(0.3)
                     continue
-
-                # 找到光标 → 重置丢失计时
-                cursor_lost_start = None
-
-                logger.log(f"导航光标 {cursor_pos} → 按钮 {button_pos}  (dx={button_pos[0]-cursor_pos[0]}, dy={button_pos[1]-cursor_pos[1]})", "DEBUG")
-
-                if self._move_cursor_to_target(cursor_pos, button_pos, gpad, stop_distance=25):
-                    gpad.left_joystick(x_value=0, y_value=0)
-                    gpad.update()
-                    time.sleep(0.2)
-                    logger.log("按 A 确认")
-                    self._press_button(gpad, vg.XUSB_BUTTON.XUSB_GAMEPAD_A, duration=0.3)
-                    self._interruptible_sleep(1.5)
-                    logger.log("导航完成，已按 A 确认")
-                    return True
 
                 time.sleep(0.05)
 
@@ -897,9 +1128,8 @@ class MaaRacingAssistantController:
             return False
         finally:
             try:
-                gpad.reset()
+                gpad.left_joystick(x_value=0, y_value=0)
                 gpad.update()
-                del gpad
             except Exception:
                 pass
 
@@ -943,34 +1173,64 @@ class MaaRacingAssistantController:
         self._running = True
         logger.log("开始循环")
 
-        # 1. 归位：按 B 直到回到主界面
-        self.homing()
-
-        # 2. 导航：移动光标到"极速狂飙"按钮并按 A（失败则重新归位重试）
-        for retry in range(3):
-            if not self._running:
-                break
-            if self.navigate_to_button(center_first=(retry == 0)):
-                break
-            logger.log(f"导航失败，第{retry+1}次重试（重新归位）")
-            self.homing()
-        else:
-            if self._running:
-                logger.log("导航失败已达最大重试次数，跳过", "WARNING")
-
-        # 3. 进入 Pipeline 循环
+        # ── 整体导航流程（内部重试失败时重启手柄复位）──
+        # 流程：归位 → 导航一(主界面按钮) → 导航二(开始挑战) → Pipeline
         while self._running:
-            try:
-                self.tasker.post_task("极速狂飙入口").wait()
-                logger.log("本轮完成")
+            # 1. 归位：按 B 直到回到主界面
+            self.homing()
+
+            # 2. 导航一：移动光标到主界面"极速狂飙"入口按钮并按 A
+            BTN_极速狂飙入口 = ButtonDef("极速狂飙入口", (0.880, 0.720), "activity_page_template", True, 50)
+            nav1_ok = False
+            for retry in range(3):
                 if not self._running:
                     break
-                time.sleep(2)
-            except Exception as e:
-                logger.log(f"异常: {e}", "ERROR")
-                time.sleep(5)
+                if self.navigate_to_button(BTN_极速狂飙入口):
+                    nav1_ok = True
+                    break
+                logger.log(f"导航一失败，第{retry+1}次重试——销毁手柄复位")
+                self._destroy_gpad()
+                self._interruptible_sleep(2.0)  # 等游戏检测到手柄断开、复位光标
+                self.homing()  # 重建手柄(_get_gpad) + B键回到主界面
+            if not nav1_ok:
+                if self._running:
+                    logger.log("导航一失败已达最大重试次数，跳过", "WARNING")
+                break
+
+            # 3. 导航二：进入活动页面后，移动光标到"开始挑战"按钮并按 A
+            BTN_开始挑战 = ButtonDef("开始挑战", (0.855, 0.898), "activity_page_template", False, 25)
+            nav2_ok = False
+            for retry in range(3):
+                if not self._running:
+                    break
+                if self.navigate_to_button(BTN_开始挑战):
+                    nav2_ok = True
+                    break
+                logger.log(f"导航二失败，第{retry+1}次重试——销毁手柄复位，从头开始")
+                self._destroy_gpad()
+                self._interruptible_sleep(2.0)
+                # 不在这里归位，直接 break 到外层循环从头开始
+            if not nav2_ok:
+                if self._running:
+                    logger.log("导航二已耗尽重试，回到外层循环重新归位", "WARNING")
+                continue  # 回到外层 while，重新归位+导航一+导航二
+
+            # 4. 导航二成功 → 进入 Pipeline 循环
+            while self._running:
+                try:
+                    self.tasker.post_task("极速狂飙入口").wait()
+                    logger.log("本轮完成")
+                    if not self._running:
+                        break
+                    time.sleep(2)
+                except Exception as e:
+                    logger.log(f"异常: {e}", "ERROR")
+                    time.sleep(5)
+            # Pipeline 结束（被停止或异常）→ 如果还在运行，重新开始循环
+            continue
 
         logger.log("循环已停止")
+        self._destroy_gpad()
 
     def stop(self):
         self._running = False
@@ -982,4 +1242,5 @@ class MaaRacingAssistantController:
                 logger.log("Pipeline 已中断")
             except Exception as e:
                 logger.log(f"中断 Pipeline 时出错: {e}", "ERROR")
+        self._destroy_gpad()  # 销毁虚拟手柄，释放资源
         logger.log("收到停止信号")
