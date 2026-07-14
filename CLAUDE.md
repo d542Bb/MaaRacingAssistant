@@ -39,6 +39,9 @@
 - ttkbootstrap Window 会覆盖图标，用原生 tk.Tk + ttk.Style
 - ttkbootstrap LabelFrame 不支持 padding 参数
 - YOLO ONNX 导出时 `simplify=True` 可能产生损坏模型
+- **光标识别面积评分中心是 260（真光标面积）**，不是 1200，否则误识别成其他圆形 UI（`_find_cursor_by_shape`）
+- **游戏摇杆死区约 13%**，摇杆最低幅度必须 > 4260（`MAX_AXIS * min_speed > 4260`）
+- **销毁手柄（`del gpad`）游戏会自动把光标复位到左上角**，比摇杆归中更可靠
 
 ## 文件结构
 
@@ -94,7 +97,10 @@ d:\maaracing_assistant/
 - ✅ Pipeline 绑定 — 正常
 - ✅ 数据集 — 188 张标注（150 训练 / 38 验证），3 类
 - ✅ YOLO 模型 — 已训练，ONNX 已导出（mAP50 ≈ 0.92）
-- 👣 下一步 — 管理员权限运行 `gui.py`，连接游戏进行端到端测试
+- ✅ 启动归位（Homing）— 彩色模板匹配，正常
+- ✅ 光标导航（Navigate）— 光标几何形状识别 + 摇杆控制，已打通
+- ✅ 版本号 — v0.2.0（`main.py __version__`）
+- 👣 下一步 — 端到端测试从启动到进入比赛的全流程
 
 ## 对 AI 助手的要求
 

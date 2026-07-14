@@ -1,0 +1,84 @@
+# MaaRacingAssistant 修改日志
+
+> 按时间顺序记录每次重大修改。
+
+---
+
+## 2026-07-14
+
+### 光标导航首次打通 🎉
+- **问题：** 彩色模板匹配归位正常（0.706），但光标导航卡在最后 ~50px 到不了按钮
+- **根因：** 摇杆幅度低于游戏死区（4192 < 4260 阈值）+ 面积评分中心 1200 误识别为 470 面积的假光标
+- **修复：**
+  1. **光标面积评分中心 1200→260**，470 面积的假光标被扣到零分，不再误识别（`_find_cursor_by_shape`）
+  2. **摇杆最低速度 0.5→0.6**，保证幅度 4800 > 4260 游戏死区，光标能推到最后（`_move_cursor_to_target`）
+  3. **光标丢失 ≥2 秒 → 放弃导航**，利用 `finally` 销毁手柄触发游戏自动复位光标（`navigate_to_button`）
+- **版本号：** 添加 `__version__ = "0.2.0"`
+
+### 更新 HANDOVER.md 标明未完成状态
+- 标记光标导航为 ❌ 未完成
+- 新增"未完成任务"章节，详细说明光标追踪导航的问题
+- 更新模板表格，标注各模板状态
+- 更新参数表，加入状态列
+- 添加 MAA 截图坐标映射未验证的已知坑点
+
+### 导航盲推尝试
+- 按钮位置改为百分比硬编码 (89.8%, 75.1%)，不再用模板匹配
+- 光标匹配阈值 0.70→0.60，启用灰度匹配
+- 摇杆幅值 32767→8000 防过冲
+- 归中推摇杆值 20000→6000
+- **结果：光标模板假阳性，导航仍未通过**
+
+---
+
+## 2026-07-13
+
+### 启动归位 + 光标追踪导航（大重构）
+- **问题：** stop 后多跑一轮、B 键无反应、阈值太高、模板误匹配
+- **修复：** `_press_button(duration=0.3)`、`_interruptible_sleep()`、阈值 0.55
+- **新增：** `_move_cursor_to_target()`、`navigate_to_button()`、光标归中
+- **新增：** `_load_template()`、`_find_template()`（多尺度 + ROI + 灰度匹配）
+- **新增：** `_screencap_ctypes()` 备用截图
+- 规范化图片命名：`settings_page_template.jpg`、`cursor_template.jpg`、`button_main_template.jpg`
+
+### 日志分级 + 文件名变更
+- 新增日志级别：DEBUG / INFO / WARNING / ERROR
+- GUI 仅显示 INFO+
+- 文件名 `maazs_*` → `MRA_*`
+- `Logger.get_lines(min_level)` 实现级别过滤
+
+---
+
+## 2026-07-12
+
+### Pipeline 日志 + RT 加速 + YOLO 决策日志
+- **PipelineLogger：** `ContextEventSink` 监听每步识别/动作成功状态
+- **RT 加速：** `RacingLoop.run()` 起步 `right_trigger(255)`
+- **YOLO 决策日志：** `_decide()` 打印每种决策的中文日志
+
+### 虚拟手柄生命周期管理
+- `__init__` 不再创建手柄，改为 `_create_pad()` / `_destroy_pad()` 对
+- 每次 `run()` 新创建 + 3 次归零握手清理驱动偏置
+- `_steer()` 增加右摇杆归中 + 空指针保护
+
+### GUI 窗口可拖拽
+- `resizable(True, True)` + `minsize(480, 400)`
+
+### Pipeline 优雅中断
+- `MaaRacingAssistantController.stop()` 增加 `tasker.post_stop()`
+
+### 项目重命名
+- `MaaRM-Alpha` → `MaaRacingAssistant`
+
+---
+
+## 2026-07-11 及之前（初始构建）
+
+### 项目初始化
+- MAA Framework 5.11.1 集成
+- YOLOv8 + ONNX Runtime 视觉识别
+- vgamepad 虚拟手柄控制
+- ttkbootstrap GUI
+- 数据集 188 张标注（3 类：coin / car / bonus_car）
+- YOLO 训练 mAP50≈0.92
+- Pipeline 6 步闭环：`入口→回合1准备→比赛→结束→回合2放弃→确认→循环`

@@ -50,7 +50,8 @@ class MRAGUI:
         self.root = root
         self.root.title("MRA")
         self.root.geometry("600x500")
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
+        self.root.minsize(480, 400)
 
         self.controller = MaaRacingAssistantController()
         self.running = False
