@@ -6,6 +6,18 @@
 
 ## 2026-07-14
 
+### v0.3.0 导航重构+物理手柄检测+第二个按钮通过 🎉
+- **版本号：** `__version__ = "0.3.0"`
+- **导航重构：** `ButtonDef` 配置类统一管理按钮（`name`/`pct`/`page_template`/`template_should_match`/`close_threshold`），新增按钮只需一行定义
+- **模板匹配正反逻辑：** `template_should_match=True` 匹配到模板=成功，`False` 模板消失=成功，同时支持"进入页面"和"离开页面"两种场景
+- **代码瘦身：** 提取 `_press_and_verify`/`_stop_stick`/`_ensure_cursor`/`_blind_move` 等方法，`navigate_to_button` 从 ~220 行精简到 ~80 行
+- **物理手柄检测：** `has_physical_controller()` 通过 XInput API 遍历 4 端口，GUI 检测到手柄时弹自定义对话框阻止运行（带 icon.ico）
+- **弹窗图标修复：** `messagebox.showerror` → 自定义 `tk.Toplevel + iconbitmap`，正确继承应用图标
+- **第二个按钮测试通过：** "开始挑战" 25px 阈值成功命中，模板消失验证通过
+- **新增模板：** `activity_page_template.jpg` (1100×550) 活动页面模板
+- **清理：** 删除 `diagnose_coords.py` 调试文件
+- **文档更新：** HANDOVER.md 全面反映重构后架构，CLAUDE.md 更新状态
+
 ### 光标导航首次打通 🎉
 - **问题：** 彩色模板匹配归位正常（0.706），但光标导航卡在最后 ~50px 到不了按钮
 - **根因：** 摇杆幅度低于游戏死区（4192 < 4260 阈值）+ 面积评分中心 1200 误识别为 470 面积的假光标

@@ -1,63 +1,108 @@
 # MaaRacingAssistant
 
-基于 MAA Framework + YOLOv8 的《巅峰极速》自动化项目。
+基于 **MAA Framework** + **YOLOv8** + **vgamepad** 的《巅峰极速》"极速狂飙"活动自动化工具。
+
+自动完成：启动归位 → 光标导航进入活动 → 回合1 YOLO 赛车 → 回合2放弃 → 循环。
+
+## 功能
+
+- 🎮 **虚拟手柄控制** — vgamepad 模拟 Xbox 手柄，支持摇杆移动 + 按键操作
+- 👁️ **YOLO 视觉识别** — 实时识别金币/障碍车/跳板车（3类），ONNX Runtime 推理（CUDA 加速）
+- 🧭 **光标导航** — 几何形状识别白色光标 + 独立死区摇杆控制，配置化按钮管理
+- 🏎️ **自动赛车** — 吃金币 + 避让障碍车 + 对准跳板车，15FPS 决策循环
+- 🔄 **自动循环** — 回合1赛车 → 回合2放弃 → 重复，MAA Pipeline 驱动
+- 🖥️ **图形界面** — ttkbootstrap GUI，UAC 提权，物理手柄检测，实时日志
+- 🛡️ **容错机制** — 导航失败自动重试（归位→重导航），光标丢失恢复，可中断睡眠
 
 ## 快速开始
 
+### 环境要求
+
+- Windows 10/11（需要 **管理员权限** 截图）
+- Python 3.10+
+- 游戏窗口分辨率 **1280×720**
+
+### 安装
+
 ```bash
-# 1. 创建虚拟环境
+# 1. 克隆仓库
+git clone https://github.com/ZRY233/MaaRacingAssistant.git
+cd MaaRacingAssistant
+
+# 2. 创建虚拟环境
 python -m venv .venv
 .venv\Scripts\activate
 
-# 2. 安装依赖
+# 3. 安装依赖
 pip install -r requirements.txt
 
-# 3. 运行
+# 4. 运行
 python main.py
+```
 
-项目结构
-表格
-文件/目录	说明
-main.py	主程序入口
-gui.py	GUI 界面
-train.py	YOLO 模型训练
-~~capture.py~~	~~数据采集（已移除）~~
-tools/	辅助工具
-assets/	模型资源
-dataset/	训练数据集
-config/	配置文件
-AI 开发指南
-见 HANDOVER.md —— 给 AI 助手的上下文文档。
-备份与回滚
-本项目使用 Git 管理代码。
-每次重大修改前执行：git add -A && git commit -m "描述"
-回滚到上次提交：git checkout .
-plain
+或双击 `gui.py` 启动图形界面（自动申请管理员权限）。
 
----
+### 启动顺序
 
-### 4. 提交到 Git
+1. 打开《巅峰极速》到主界面
+2. 运行 `python main.py`（或双击 gui.py）
+3. 程序自动连接窗口 → 归位 → 导航 → 进入活动循环
 
-在 VSCode 终端（`Ctrl + ``）里执行：
+## 项目结构
 
-```bash
-cd maaracing_assistant
+```
+d:\maaracing_assistant/
+├── main.py                # 主程序：YOLO + Pipeline + 归位 + 导航 + 日志
+├── gui.py                 # 图形界面（ttkbootstrap + UAC 提权）
+├── HANDOVER.md            # AI 助手上下文文档（详尽的开发记录）
+├── CLAUDE.md              # Claude 项目配置
+├── README.md              # 本文件
+├── requirements.txt       # 依赖
+├── assets/
+│   ├── model/
+│   │   └── yolov8n_coins_cars.onnx   # YOLO ONNX 模型（3 类）
+│   ├── resource/
+│   │   ├── image/                     # 模板图片（归位 + 导航）
+│   │   └── pipeline/
+│   │       └── tasks.json            # MAA Pipeline 流程定义
+│   └── icon.ico
+├── config/
+│   └── maa_option.json               # MAA 配置
+├── tools/
+│   ├── train.py          # YOLO 训练脚本
+│   └── dataset.yaml      # 数据集配置
+└── logs/                 # 运行日志（自动生成）
+```
 
-# 查看状态（应该看到 HANDOVER.md、README.md、.gitignore 是未追踪的）
-git status
+## 技术栈
 
-# 加入暂存区
-git add -A
+| 组件 | 用途 |
+|------|------|
+| [MAA Framework](https://github.com/MaaAssistantArknights/MaaFramework) 5.11.1 | UI 流程编排 + 窗口控制 |
+| YOLOv8 + ONNX Runtime | 实时视觉识别（3类：coin / car / bonus_car） |
+| vgamepad | 虚拟 Xbox 手柄模拟 |
+| OpenCV | 模板匹配（归位 + 导航页面验证） |
+| ttkbootstrap | GUI 界面 |
 
-# 提交
-git commit -m "docs: 添加 AI 交接文档和项目说明"
+## Pipeline 流程
 
-红线提醒
-表格
-❌ 永远不要放进 Git	       ✅ 应该放进 Git
-API Key / 密码	            代码逻辑
-.venv/ 文件夹	            requirements.txt
-dataset/ 里的图片	        dataset.yaml
-assets/model/*.onnx	        HANDOVER.md
-logs/、debug/              	README.md
-个人配置（含路径）	         .gitignore
+```
+极速狂飙入口 → 回合1准备 → 回合1比赛(RacingLoop) → 回合1结束 → 回合2放弃 → 确认放弃 → 循环
+```
+
+## 决策优先级（赛车中）
+
+```
+0️⃣ 跳板车(bonus_car)  → 对准撞上去（加分）
+1️⃣ 障碍车(car)        → 躲避（3 车道判断）
+2️⃣ 金币(coin)         → 吃（选最近的）
+3️⃣ 无目标             → 直行
+```
+
+## 开发指南
+
+详细的技术文档、已知坑点、API 速查见 [HANDOVER.md](HANDOVER.md)。
+
+## 许可证
+
+MIT
