@@ -1,4 +1,4 @@
-# MaaRacingAssistant v0.3.0 — 开发交接文档
+# MaaRacingAssistant v0.4.0 — 开发交接文档
 
 ## 项目目标
 自动完成《巅峰极速》"极速狂飙"活动：
@@ -50,8 +50,8 @@
 - ✅ **日志分级** — DEBUG/INFO/WARNING/ERROR 四级，GUI 默认只显示 INFO 及以上
 - ✅ **可中断睡眠** — `_interruptible_sleep()` 每 0.1 秒检查 `_running`，stop 能立即响应
 - ✅ **手柄生命周期管理** — `_create_pad()` / `_destroy_pad()` 对，每次赛车前创建并归零，结束后销毁
-- ✅ **光标导航** — `ButtonDef` 配置驱动，模板匹配正反逻辑，独立死区摇杆控制，`_press_and_verify` 统一验证
-- ✅ **第二个按钮（"开始挑战"）** — 测试通过，25px 阈值成功命中并退出活动页
+- ✅ **光标导航** — `ButtonDef` 配置驱动，模板匹配正反逻辑，双中心面积评分，独立死区摇杆，假光标静止拉黑
+- ✅ **第二个按钮（"开始挑战"）** — 测试通过，12px 阈值成功命中并退出活动页
 
 ### main.py 结构概览
 
@@ -102,34 +102,43 @@
 ### 导航流程（`navigate_to_button(btn: ButtonDef)`）
 
 ```
-center_first=True:  推摇杆(12000,-12000) 0.4秒把光标从左上角拉入画面
+_ensure_cursor() → 找不到就4方向搜索，还找不到进盲操
 
 对 _ in range(30):
-  截图 → _find_cursor_by_shape() 几何形状识别
+  截图 → _find_cursor_by_shape(..., last_known_pos=_, last_stick=_last_stick)
   按钮坐标 = 截图尺寸 × btn.pct
+  缓存帧跳过? → 光标弹回左上角且面积缩小 → 等100ms跳过本帧
   未找到光标? → 计时, ≥2秒放弃
-  找到光标? → _move_cursor_to_target() 独立死区摇杆移动
-  距离 < btn.close_threshold? → _press_and_verify()
+  找到光标? → 距离 < close_th? → _press_and_verify()
+              否则 → _move_cursor_to_target(stop_distance=adaptive)
 
   _press_and_verify:
-    停摇杆 → 按A(0.3秒) → 等待1.5秒
+    停摇杆 → 按A(0.3秒) → 等待1秒
     截图 → 模板匹配
-    btn.template_should_match=True?  → 匹配到=页面已切换 → return True
-    btn.template_should_match=False? → 模板消失=页面已切换 → return True
-    模板未变化? → 缩小阈值(阈值-5,下限10) → 继续
+    template_should_match=True?  → 匹配到=成功 return True
+    template_should_match=False? → 模板消失=成功 return True
+    模板未变化? → close_th ×0.65 收缩(下限5px) → return None(重试)
+    Fallback: 光标面积降>100 → 成功
 
-  假光标检测: 同一位置>3帧 → 强制丢失模式 → 等2秒超时
+  假光标静止检测: 候选人用自己的位置跨帧对比
+    _prev_frame_positions中有该位置+推杆中 → cnt+=1
+    cnt≥3 → continue彻底拉黑(切页面清空)
 超时 → return False
-finally: 摇杆归零(不销毁手柄,保持复用)
+finally: 摇杆归零
 ```
 
 **关键经验：**
-- 光标用几何形状识别（白色圆形 + 圆度≥0.82 + 面积评分中心260），不要用模板匹配
-- **不要加微轴归零阈值**（如 `abs(dy)<10→ly=0`），否则光标在目标附近±10px内无法做Y方向最终修正。应直接用独立死区，每个非零轴自动升到4260推到底
-- 独立死区：每个轴独自判断是否低于4260，低了就升到4260（保留方向），不再等比例缩放两轴
+- 光标用**双中心面积评分**（常态 310 / 变形 420），覆盖两种形态，`area < 240` 硬过滤假光标
+- 假光标静止拉黑：**不依赖 `last_known_pos`**（被选中光标位置），而是跨帧对比候选人自己的位置（`_prev_frame_positions: set[tuple]`）
+- **`_press_and_verify` 失败后不清空 `_last_stick`**，保留推杆方向让下帧运动评分/静止惩罚继续生效
+- 收缩保底公式 `max(5, int(close_th × 0.65))`，不是 `max(30, -15)`（后者对 25px 反而放大）
+- **不要加微轴归零阈值**（如 `abs(dy)<10→ly=0`），否则光标在目标附近±10px内无法做Y方向最终修正
+- 独立死区：每个轴独立升到4260（保留方向），不再等比例缩放
 - vgamepad Y 轴取反：`uy = -dy / dist`
-- 销毁手柄（`del gpad`）能让游戏自动把光标复位到左上角，比摇杆归中可靠
+- 刹车时间自适应：<35px 时 80ms，否则 50ms
+- 销毁手柄（`del gpad`）让游戏自动把光标复位到左上角
 - 按钮用 `ButtonDef` 配置类统一管理，新按钮只需加一行定义
+- 导航调试用 `debug.py`（NavigationDebugger），四色标注
 
 ### 导航重试机制（`start()`）
 
@@ -155,12 +164,14 @@ finally: 摇杆归零(不销毁手柄,保持复用)
 | `_interruptible_sleep(seconds)` | 每 0.1 秒检查 `_running` 的可中断 sleep |
 | `_load_template(name)` | 加载模板（优先 png → jpg），返回 RGB ndarray |
 | `_find_template(img, template, threshold, scales)` | 多尺度 `TM_CCOEFF_NORMED`，返回 (位置, 置信度, 缩放) |
-| `_move_cursor_to_target(cursor_pos, target_pos, gpad)` | 左摇杆移动光标到目标点（带距离衰减） |
+| `_move_cursor_to_target(cursor_pos, target_pos, gpad, stop_distance)` | 左摇杆移动光标（四档距离自适应 + 自适应刹车 + 独立死区） |
 | `_stop_stick(gpad)` | 摇杆归零（3 次全零报告） |
-| `_ensure_cursor(gpad, frame, debug_img)` | 当前帧无光标时 4 方向搜索 |
+| `_ensure_cursor(gpad)` | 当前帧无光标时 4 方向搜索 |
 | `_blind_move(gpad, last_pos, target, elapsed)` | 光标丢失时盲推一次 |
-| `_press_and_verify(gpad, cursor_area, dist_button, btn)` | 按A + 模板验证，返回 True/None/False |
+| `_press_and_verify(gpad, cursor_area, dist_button, btn)` | 按A + 模板验证 + 面积变化兜底，返回 True/None/False |
 | `_dist(p1, p2)` | 静态欧几里得距离计算 |
+| `_find_cursor_by_shape(img, last_known_pos, last_stick)` | 双中心面积评分 + 假光标静止拉黑 + 运动一致性评分 |
+| `NavigationDebugger(proj_dir)` | debug.py 四色每帧截图标注 |
 | `has_physical_controller()` | XInput API 遍历 4 端口，任一连接返回 True |
 
 ### 日志分级
@@ -248,31 +259,39 @@ d:\maaracing_assistant/
 
 | 参数 | 当前值 | 位置 | 状态 |
 |------|--------|------|------|
-| 归位阈值 | 0.70（彩色匹配） | `_match_settings_page()` | ✅ |
+| 归位阈值 | 0.70（彩色多尺度匹配，0.8~1.2×） | `_match_settings_page()` | ✅ |
 | 归位搜索区域 | 左上角 50%×50% | `_match_settings_page()` | ✅ |
-| 光标识别方式 | 几何形状（圆度≥0.82 + 面积评分中心 260） | `_find_cursor_by_shape()` | ✅ |
+| 光标灰度阈值 | 185 | `_find_cursor_by_shape()` | ✅ |
+| HSV 饱和度过滤 | S < 30 保留（光标灰白 S≈0，彩色 UI 挖掉） | `_find_cursor_by_shape()` | ✅ |
+| 光标面积硬过滤 | area < 240 直接排除 | `_find_cursor_by_shape()` | ✅ v0.4.0 |
+| 双中心面积评分 | 常态 310 / 变形 420，各用 `1-abs(area-X)/300` 取 max | `_find_cursor_by_shape()` | ✅ v0.4.0 |
+| 置信度阈值 | best_score < 0.70 → return None | `_find_cursor_by_shape()` | ✅ v0.4.0 |
 | 按钮1(极速狂飙入口)位置 | 88.0%, 72.0% | `BTN_极速狂飙入口.pct` | ✅ |
 | 按钮2(开始挑战)位置 | 85.5%, 89.8% | `BTN_开始挑战.pct` | ✅ |
-| 按钮1 对齐阈值 | 50 px（最短边/2） | `BTN_极速狂飙入口.close_threshold` | ✅ |
-| 按钮2 对齐阈值 | 25 px（最短边/2） | `BTN_开始挑战.close_threshold` | ✅ |
+| 按钮1 对齐阈值 | 50 px | `BTN_极速狂飙入口.close_threshold` | ✅ |
+| 按钮2 对齐阈值 | 12 px（原 25px） | `BTN_开始挑战.close_threshold` | ✅ v0.4.0 |
+| 收缩保底公式 | `max(5, int(close_th × 0.65))`（原 `max(30, -15)` 对 25px 反放大） | `_press_and_verify()` | ✅ v0.4.0 |
 | 按钮1 模板验证 | 匹配 = 成功（template_should_match=True） | `BTN_极速狂飙入口` | ✅ |
 | 按钮2 模板验证 | 消失 = 成功（template_should_match=False） | `BTN_开始挑战` | ✅ |
-| 微调停止距离 | 25 px | `_move_cursor_to_target(stop_distance=25)` | ✅ |
 | 导航超时 | 30 帧 | `navigate_to_button()` | ✅ |
 | 光标丢失超时 | 2 秒 | `navigate_to_button()` | ✅ |
-| 假光标卡死阈值 | 同位置≥3 帧 → 强制丢失 | `navigate_to_button()` | ✅ |
+| 假光标静止拉黑 | 推摇杆时同位置跨帧 ≥3 帧 → `continue` 拉黑 | `_find_cursor_by_shape()` | ✅ v0.4.0 |
+| 黑名单清空时机 | 每次 `navigate_to_button()` 开始时 | `navigate_to_button()` | ✅ v0.4.0 |
+| stop_distance | `max(8, close_th × 0.55)`（原硬编码 25px） | `navigate_to_button()` | ✅ v0.4.0 |
 | 摇杆最大幅值 | 8000 | `_move_cursor_to_target(MAX_AXIS=8000)` | ✅ |
 | 摇杆死区 | 4260（13%） | `_move_cursor_to_target()` | ✅ |
 | 死区策略 | 独立死区（每轴<4260→升到4260，不缩放） | `_move_cursor_to_target()` | ✅ |
 | 远距推送 | >150px: speed=0.7~1.0, hold=0.2s | `_move_cursor_to_target()` | ✅ |
 | 中距推送 | >70px: speed=0.55~0.75, hold=0.1s | `_move_cursor_to_target()` | ✅ |
-| 近距推送 | <70px: speed=0.5, hold=0.06s | `_move_cursor_to_target()` | ✅ |
-| 刹车时间 | 50ms（推完摇杆归零） | `_move_cursor_to_target()` | ✅ |
+| 中近推送 | >35px: speed=0.45, hold=0.08s | `_move_cursor_to_target()` | ✅ v0.4.0 |
+| 微调推送 | <35px: speed=0.28(被死区抬到4260), hold=0.025s | `_move_cursor_to_target()` | ✅ v0.4.0 |
+| 刹车时间 | <35px 时 80ms，否则 50ms | `_move_cursor_to_target()` | ✅ v0.4.0 |
+| 运动一致性评分 | `alignment × 0.15`，Y 取反 `sy = -ly/stick_len` | `_find_cursor_by_shape()` | ✅ v0.4.0 |
 | 导航一重试 | 3次（destroy→2s→homing→retry） | `start()` | ✅ |
 | 导航二重试 | 3次（destroy→2s→continue外层循环） | `start()` | ✅ |
 | 归位最大按B次数 | 15 | `homing()` | ✅ |
 | 按B持续时间 | 0.3 s | `_press_button(duration=0.3)` | ✅ |
-| 归中推摇杆值 | 12000（首次导航前） | `navigate_to_button(center_first)` | ✅ |
+| _ensure_cursor | 4方向搜索（不再有 center_first 归中推） | `navigate_to_button()` | ✅ v0.4.0 |
 | YOLO 置信度 | 0.50 | `YOLODetector(conf=0.5)` | ✅ |
 | YOLO NMS IoU | 0.45 | `YOLODetector(iou=0.45)` | ✅ |
 | 赛车帧率 | 15 FPS | `RacingLoop.run()` 循环 | ✅ |

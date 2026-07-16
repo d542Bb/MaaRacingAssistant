@@ -95,6 +95,15 @@ class MRAGUI:
         model_style = "success" if model_ok else "danger"
         ttk.Label(model_frame, text=model_text, bootstyle=model_style).pack(side=LEFT)
 
+        # DEBUG 模式
+        debug_frame = ttk.Frame(self.root)
+        debug_frame.pack(fill=X, padx=20, pady=2)
+        self.debug_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            debug_frame, text="DEBUG 每帧截图", variable=self.debug_var,
+            bootstyle="warning-toolbutton"
+        ).pack(side=LEFT)
+
         # 按钮区
         btn_frame = ttk.Frame(self.root)
         btn_frame.pack(pady=15)
@@ -174,6 +183,11 @@ class MRAGUI:
         self.stop_btn.config(state=NORMAL)
         self.status_var.set("运行中")
         self.status_label.config(bootstyle="success")
+
+        # 同步 DEBUG 开关
+        self.controller.set_debug_mode(self.debug_var.get())
+        if self.debug_var.get():
+            logger.log("DEBUG 模式开启：每帧截图保存到 debug/navigate/", "INFO")
 
         self.worker_thread = threading.Thread(target=self._worker, daemon=True)
         self.worker_thread.start()

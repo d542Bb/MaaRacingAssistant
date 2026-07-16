@@ -6,7 +6,7 @@ MaaRacingAssistant v0.2.0
 MAA Framework + YOLOv8 ONNX + vgamepad
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 import sys
 import time
@@ -23,12 +23,15 @@ from datetime import datetime
 from maa.tasker import Tasker
 from maa.resource import Resource
 from maa.controller import Win32Controller
+from maa.define import MaaWin32ScreencapMethodEnum
 from maa.custom_action import CustomAction
 from maa.context import Context, ContextEventSink
 from maa.event_sink import NotificationType
 from maa.toolkit import Toolkit
 
 import vgamepad as vg
+
+from debug import NavigationDebugger
 
 
 # ==================== 日志 ====================
@@ -501,6 +504,18 @@ class MaaRacingAssistantController:
         self.racing_loop = None
         self._running = False
         self._gpad = None  # 虚拟手柄，首次使用时创建，不复位不销毁
+        self.debug = NavigationDebugger(self.proj)
+        self._debug_mode = False  # 调试模式开关（由 GUI 控制）
+        self._last_candidates: list[dict] = []  # 最近一帧的光标候选（入围的）
+        self._last_all_candidates: list[dict] = []  # 最近一帧所有被探测到的轮廓（debug 黄圈）
+        self._last_stick = (0, 0)  # 最近一次推杆方向 (lx, ly)，用于运动一致性评分
+        self._prev_frame_positions: set[tuple] = set()  # 上帧候选位置集合，用于静止检测
+        self._stationary_blacklist: dict[tuple, int] = {}  # pos → 连续静止帧数，累到 3 拉黑
+
+    def set_debug_mode(self, enabled: bool):
+        """开启/关闭调试截图模式"""
+        self._debug_mode = enabled
+        self.debug.enabled = enabled
 
     # ---------- 基础设施 ----------
 
@@ -584,7 +599,7 @@ class MaaRacingAssistantController:
                 return True
             elif not btn.template_should_match and matched:
                 logger.log(f"模板「{btn.page_template}」仍可见，页面未切换，收缩阈值", "WARNING")
-                self._nav_close_threshold = max(30, getattr(self, '_nav_close_threshold', btn.close_threshold) - 15)
+                self._nav_close_threshold = max(5, int(getattr(self, '_nav_close_threshold', btn.close_threshold) * 0.65))
                 self._interruptible_sleep(0.5)
                 return None
 
@@ -808,21 +823,26 @@ class MaaRacingAssistantController:
         logger.log(f"未找到模板: 最高置信度={best_val:.3f} < {threshold:.2f}", "DEBUG")
         return None, best_val, best_scale
 
-    def _match_settings_page(self, img: np.ndarray, template: np.ndarray, threshold: float = 0.70) -> bool:
-        """检测是否为设置页面（彩色模板匹配，左上半区，固定尺度）"""
+    def _match_settings_page(self, img: np.ndarray, template: np.ndarray, threshold: float = 0.65) -> bool:
+        """检测是否为设置页面（彩色模板匹配，左上半区，多尺度适应不同窗口比例）"""
         h, w = img.shape[:2]
         roi = (0, 0, int(w * 0.5), int(h * 0.5))  # 左上半区 50%x50%
+        # 多尺度：适应全屏/窗口化不同比例下UI元素的大小差异
         pos, conf, scale = self._find_template(
             img, template, threshold=threshold,
-            scales=[1.0],  # 固定尺度，不做缩放
+            scales=[0.8, 0.9, 1.0, 1.1, 1.2],
             roi=roi, use_gray=False)  # 彩色匹配保留颜色特征
         logger.log(f"设置页面匹配: 置信度={conf:.3f} > {threshold:.2f}? {pos is not None}")
         return pos is not None
 
-    def _find_cursor_by_shape(self, img: np.ndarray, debug: bool = False) -> tuple:
+    def _find_cursor_by_shape(self, img: np.ndarray, debug: bool = False, *,
+                               last_known_pos: tuple | None = None,
+                               last_stick: tuple | None = None) -> tuple:
         """
         基于几何形状识别白色圆形光标。
         对屏幕边缘的部分圆做容忍（圆度阈值动态放宽）。
+        支持运动一致性评分：传入上一帧位置+摇杆方向，假光标因不移动而被扣分。
+
         返回: (位置(x,y), 圆度, 面积) 或 (None, 0, 0)
         """
         gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
@@ -851,7 +871,9 @@ class MaaRacingAssistantController:
         min_area = max(100, int(h_img * w_img * 0.00008))
         max_area = min(550, int(h_img * w_img * 0.006))
 
-        candidates = []
+        self._last_all_candidates = []  # 所有被探测到的轮廓（debug 黄圈）
+        candidates = []                 # 通过硬过滤的入围候选（debug 绿圈）
+
         for cnt in contours:
             area = cv2.contourArea(cnt)
             if area < min_area or area > max_area:
@@ -873,35 +895,83 @@ class MaaRacingAssistantController:
             near_edge = (x <= margin or y <= margin or
                          x + w >= w_img - margin or y + h >= h_img - margin)
 
-            candidates.append({
-                "pos": (x + w // 2, y + h // 2),
+            pos = (x + w // 2, y + h // 2)
+            item = {
+                "pos": pos,
                 "area": area,
                 "circularity": circularity,
                 "aspect": aspect_ratio,
                 "rect": (x, y, w, h),
-                "near_edge": near_edge
-            })
+                "near_edge": near_edge,
+            }
+            self._last_all_candidates.append(item)
+
+            # ── 硬过滤：面积 < 240 的假光标直接排除 ──
+            if area < 240:
+                continue
+
+            # 边缘容忍降级：即使边缘也必须>0.65（不再允许 0.45 的低质圆形）
+            min_circ = 0.65 if near_edge else 0.82
+
+            if circularity < min_circ or aspect_ratio < 0.70:
+                continue
+
+            candidates.append(item)
 
         for cand in candidates:
             circ = cand["circularity"]
             asp = cand["aspect"]
             near_edge = cand["near_edge"]
 
-            # 边缘容忍降级：即使边缘也必须>0.65（不再允许 0.45 的低质圆形）
-            min_circ = 0.65 if near_edge else 0.82
-
-            if circ < min_circ or asp < 0.70:
-                continue
-
-            # 评分：圆度权重最高，面积以 260 为中心评分，边缘候选降低圆度权重
-            area_score = 1.0 - abs(cand["area"] - 260) / 400  # 260=实际光标面积中心
+            # 双中心面积评分：适应常态~310 和变形~530 两种光标形态
+            area_score1 = 1.0 - abs(cand["area"] - 310) / 300
+            area_score2 = 1.0 - abs(cand["area"] - 420) / 300
+            area_score = max(area_score1, area_score2)
             area_score = max(0.0, min(1.0, area_score))
             circ_weight = 0.5 if near_edge else 0.65
             score = circ * circ_weight + asp * 0.15 + area_score * 0.20
 
+            # ── 假光标静止检测（用自己的位置跨帧对比，不依赖 last_known_pos）──
+            if last_stick is not None:
+                lx, ly = last_stick
+                if lx != 0 or ly != 0:
+                    if cand["pos"] in self._prev_frame_positions:
+                        cnt = self._stationary_blacklist.get(cand["pos"], 0) + 1
+                        self._stationary_blacklist[cand["pos"]] = cnt
+                        if cnt >= 3:
+                            continue  # 拉黑，不再参与评选
+                        score -= cnt * 0.10
+                    else:
+                        self._stationary_blacklist.pop(cand["pos"], None)
+
+            # ── 运动一致性评分（仅用于奖励方向一致性）──
+            if last_known_pos is not None and last_stick is not None:
+                lx, ly = last_stick
+                if lx != 0 or ly != 0:
+                    dx = cand["pos"][0] - last_known_pos[0]
+                    dy = cand["pos"][1] - last_known_pos[1]
+                    move_dist = (dx * dx + dy * dy) ** 0.5
+                    if move_dist > 5:
+                        stick_len = (lx * lx + ly * ly) ** 0.5
+                        nx, ny = dx / move_dist, dy / move_dist
+                        sx, sy = lx / stick_len, -ly / stick_len
+                        alignment = nx * sx + ny * sy  # [-1, 1]
+                        score += alignment * 0.15
+
             if score > best_score:
                 best_score = score
                 best_cursor = (cand["pos"], circ, cand["area"])
+
+        # 候选列表供 debug 可视化
+        self._last_candidates = candidates
+        # 保存本帧候选位置集合，供下帧静止检测
+        self._prev_frame_positions = {c["pos"] for c in candidates}
+        self._last_cursor_score = best_score
+
+        # ── 置信度阈值：没有哪个候选足够好，不如承认找不到 ──
+        if best_cursor and best_score < 0.70:
+            best_cursor = None
+            best_score = 0.0
 
         if best_cursor:
             (cx, cy), circ, area = best_cursor
@@ -1010,9 +1080,12 @@ class MaaRacingAssistantController:
         elif dist > 70:
             hold_time = 0.1
             speed = max(0.55, dist / 200)
+        elif dist > 35:
+            hold_time = 0.08
+            speed = 0.45
         else:
-            hold_time = 0.12  # 近距：死区推力要够久才能克服惯性
-            speed = 0.65
+            hold_time = 0.025  # 微调：最短脉冲（~1.5帧），死区推满也只动几个像素
+            speed = 0.28
 
         magnitude = MAX_AXIS * speed
 
@@ -1028,6 +1101,9 @@ class MaaRacingAssistantController:
         lx = max(-MAX_AXIS, min(MAX_AXIS, lx))
         ly = max(-MAX_AXIS, min(MAX_AXIS, ly))
 
+        # ── 记录推杆方向，供下帧运动一致性评分 ──
+        self._last_stick = (lx, ly)
+
         # ── 推送：设置摇杆 → 保持 → 刹车 ──
         gpad.left_joystick(x_value=lx, y_value=ly)
         gpad.update()
@@ -1038,7 +1114,8 @@ class MaaRacingAssistantController:
         # 刹车：摇杆归零让光标减速，防止下周期过冲
         gpad.left_joystick(x_value=0, y_value=0)
         gpad.update()
-        self._interruptible_sleep(0.05)
+        brake_time = 0.08 if dist < 35 else 0.05
+        self._interruptible_sleep(brake_time)
 
         return False
 
@@ -1062,6 +1139,12 @@ class MaaRacingAssistantController:
         logger.log(f"导航到「{btn.name}」...")
         gpad = self._get_gpad()
 
+        # 启动调试可视化（每帧截图标注）
+        self.debug.start_session(btn.name)
+        # 切页面 → 清空假光标黑名单（UI 变了，旧位置不再适用）
+        self._stationary_blacklist.clear()
+        self._prev_frame_positions.clear()
+
         self._ensure_cursor(gpad)  # 找不到就4方向搜索，还找不到进盲操
 
         cursor_lost_start = None
@@ -1072,6 +1155,7 @@ class MaaRacingAssistantController:
                 if not self._running:
                     return False
 
+                time.sleep(0.05)  # 等待游戏渲染新帧，避免 MAA 返回缓存
                 arr = self._screencap()
                 if arr is None:
                     self._interruptible_sleep(0.5)
@@ -1079,15 +1163,41 @@ class MaaRacingAssistantController:
 
                 h, w = arr.shape[:2]
                 button_pos = (int(w * btn.pct[0]), int(h * btn.pct[1]))
-                cursor_pos, _, cursor_area = self._find_cursor_by_shape(arr)
+                # last_stick 传的是上一轮推杆方向（只有 _move_cursor_to_target 会设）
+                cursor_pos, _, cursor_area = self._find_cursor_by_shape(
+                    arr, last_known_pos=last_known_pos, last_stick=self._last_stick)
                 close_th = getattr(self, '_nav_close_threshold', btn.close_threshold)
 
                 if cursor_pos is not None:
                     cursor_lost_start = None
+
+                    # ── 缓存帧检测：光标瞬间弹回左上角且面积缩小 →  跳过本帧 ──
+                    if last_known_pos is not None:
+                        jump = self._dist(cursor_pos, last_known_pos)
+                        if (jump > 250 and cursor_pos[0] < w * 0.3 and cursor_pos[1] < h * 0.2
+                                and cursor_area < 250):
+                            logger.log(f"跳过缓存帧: {cursor_pos}(面积{cursor_area})←{last_known_pos}, 跳距={jump:.0f}", "DEBUG")
+                            self.debug.save_frame(
+                                arr, cursor_pos=cursor_pos, cursor_area=cursor_area,
+                                cursor_score=getattr(self, '_last_cursor_score', 0),
+                                button_pos=button_pos, candidates=self._last_candidates, all_candidates=self._last_all_candidates,
+                                label="skip_cache"
+                            )
+                            time.sleep(0.1)
+                            continue
+
                     last_known_pos = cursor_pos
                     dist = self._dist(cursor_pos, button_pos)
                     logger.log(f"光标 {cursor_pos} → 按钮 {button_pos}  "
                                f"(dx={button_pos[0]-cursor_pos[0]}, dy={button_pos[1]-cursor_pos[1]})", "DEBUG")
+
+                    # 调试截图（每帧标注）
+                    self.debug.save_frame(
+                        arr, cursor_pos=cursor_pos, cursor_area=cursor_area,
+                        cursor_score=getattr(self, '_last_cursor_score', 0),
+                        button_pos=button_pos, candidates=self._last_candidates, all_candidates=self._last_all_candidates,
+                        dist=dist, label="found"
+                    )
 
                     # 接近 → 按 A + 验证
                     if dist < close_th:
@@ -1096,10 +1206,12 @@ class MaaRacingAssistantController:
                         if result is True:
                             self._nav_close_threshold = btn.close_threshold
                             return True
+                        # 按 A 失败 — 不清空 _last_stick，保留推杆方向供下帧运动评分（假光标静止惩罚）
                         continue  # False/None → 已收缩阈值，下一轮重试
 
-                    # 远 → 移动光标
-                    self._move_cursor_to_target(cursor_pos, button_pos, gpad, stop_distance=25)
+                    # 远 → 移动光标（stop_distance 动态跟随阈值，确保能缩到足够近）
+                    stop_dist = max(8, int(close_th * 0.55))
+                    self._move_cursor_to_target(cursor_pos, button_pos, gpad, stop_distance=stop_dist)
                 else:
                     # 光标丢失 → 盲操
                     if cursor_lost_start is None:
@@ -1108,6 +1220,10 @@ class MaaRacingAssistantController:
 
                     if time.time() - cursor_lost_start >= 2.0:
                         logger.log("光标盲操超过2秒，放弃本次导航", "WARNING")
+                        self.debug.save_frame(
+                            arr, cursor_pos=None, button_pos=button_pos,
+                            candidates=self._last_candidates, all_candidates=self._last_all_candidates, label="lost_timeout"
+                        )
                         return False
 
                     if last_known_pos is not None:
@@ -1119,12 +1235,25 @@ class MaaRacingAssistantController:
                         self._interruptible_sleep(0.3)
                         self._stop_stick(gpad)
 
+                    self.debug.save_frame(
+                        arr, cursor_pos=None, button_pos=button_pos,
+                        candidates=self._last_candidates, all_candidates=self._last_all_candidates,
+                        label=f"blind_{time.time()-cursor_lost_start:.1f}s"
+                    )
                     self._interruptible_sleep(0.3)
                     continue
 
                 time.sleep(0.05)
 
             logger.log("导航超时", "WARNING")
+            try:
+                self.debug.save_frame(
+                    arr, cursor_pos=None,
+                    button_pos=button_pos if 'button_pos' in dir() else None,
+                    label="timeout"
+                )
+            except Exception:
+                pass
             return False
         finally:
             try:
@@ -1141,7 +1270,7 @@ class MaaRacingAssistantController:
             logger.log("未找到游戏窗口", "ERROR")
             return False
 
-        self.controller = Win32Controller(hWnd=hwnd)
+        self.controller = Win32Controller(hWnd=hwnd, screencap_method=MaaWin32ScreencapMethodEnum.PrintWindow)
 
         if not self.controller.post_connection().wait():
             logger.log("连接失败，请检查游戏是否运行/管理员权限", "ERROR")
@@ -1198,7 +1327,7 @@ class MaaRacingAssistantController:
                 break
 
             # 3. 导航二：进入活动页面后，移动光标到"开始挑战"按钮并按 A
-            BTN_开始挑战 = ButtonDef("开始挑战", (0.855, 0.898), "activity_page_template", False, 25)
+            BTN_开始挑战 = ButtonDef("开始挑战", (0.855, 0.898), "activity_page_template", False, 12)
             nav2_ok = False
             for retry in range(3):
                 if not self._running:

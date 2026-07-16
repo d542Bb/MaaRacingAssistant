@@ -42,9 +42,16 @@
 - ttkbootstrap LabelFrame 不支持 padding 参数
 - YOLO ONNX 导出时 `simplify=True` 可能产生损坏模型
 - **光标识别面积评分中心是 260（真光标面积）**，不是 1200，否则误识别成其他圆形 UI（`_find_cursor_by_shape`）
+- **双中心面积评分**：常态~310 / 变形选中态~530，`max(1-abs(area-310)/300, 1-abs(area-420)/300)`，同时覆盖两种形态
+- **面积硬过滤 `area < 240`** 排除假光标~206-221，真光标最低~301
 - **游戏摇杆死区约 13%**，摇杆最低幅度必须 > 4260（`MAX_AXIS * min_speed > 4260`）
 - **销毁手柄（`del gpad`）游戏会自动把光标复位到左上角**，比摇杆归中更可靠
 - **不要加微轴归零阈值**——`abs(dx) < N → lx = 0` 会阻止光标在目标附近的 ±N px 死区内做最终修正，应直接用独立死区让每个非零轴升到 4260 推到底
+- **假光标静止拉黑用 `_prev_frame_positions: set[tuple]`**，候选人自己的位置跨帧对比，不依赖 `last_known_pos`（被选中光标位置）。推摇杆时不动的候选人累计静止计数，≥3 帧 `continue` 拉黑
+- **`_press_and_verify` 失败后不要清空 `_last_stick`**——保留推杆方向供下帧运动评分（假光标静止惩罚依赖 `last_stick ≠ (0,0)`）
+- **收缩保底公式 `max(5, int(close_th × 0.65))`**，不是 `max(30, -15)`——后者对 25px 阈值会从 25 放大到 30
+- **stop_distance 自适应 `max(8, close_th × 0.55)`**，不是硬编码 25px——收缩后光标才能推到足够近
+- **微调档位 < 35px：25ms 脉冲 + 80ms 刹车**——死区最低 4260 时 40ms 仍过冲，25ms ~1.5 帧才收敛
 - **模板匹配正反逻辑**：`template_should_match=True` 表示匹配到模板 = 成功进入页面；`False` 表示模板消失 = 成功离开页面
 - **`messagebox.showerror` 不继承父窗口图标**，需要自行 `tk.Toplevel + iconbitmap`
 
@@ -105,11 +112,14 @@ d:\maaracing_assistant/
 - ✅ Pipeline 绑定 — 正常
 - ✅ 数据集 — 188 张标注（150 训练 / 38 验证），3 类
 - ✅ YOLO 模型 — 已训练，ONNX 已导出（mAP50 ≈ 0.92）
-- ✅ 启动归位（Homing）— 彩色模板匹配，正常
-- ✅ 光标导航（Navigate）— `ButtonDef` 配置驱动，模板匹配正反逻辑，独立死区摇杆控制
-- ✅ 第二个按钮（"开始挑战"）— 测试通过，25px 阈值成功命中
+- ✅ 启动归位（Homing）— 彩色多尺度模板匹配，正常
+- ✅ 光标导航（Navigate）— 双中心面积评分 + 假光标静止拉黑 + 独立死区摇杆 + 自适应 stop_distance
+- ✅ 第二个按钮（"开始挑战"）— 测试通过，12px 阈值成功命中
+- ✅ 假光标静止拉黑 — 跨帧位置对比累计 ≥3 帧 `continue` 拉黑
+- ✅ 微调移动 — < 35px 25ms 脉冲 + 80ms 自适应刹车
+- ✅ Debug 可视化 — `debug.py` NavigationDebugger 四色每帧截图标注（红/绿/黑/蓝）
 - ✅ 物理手柄检测 — XInput API，GUI 弹窗阻止运行
-- ✅ 版本号 — v0.3.0（`main.py __version__`）
+- ✅ 版本号 — v0.4.0（`main.py __version__`）
 
 ## 对 AI 助手的要求
 
