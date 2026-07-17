@@ -107,6 +107,16 @@ d:\maaracing_assistant/
 
 详细的技术文档、已知坑点、API 速查见 [HANDOVER.md](HANDOVER.md)。
 
+## 致谢
+
+本项目受益于以下 AI 模型的协作开发：
+
+- **DeepSeek V4** - 代码逻辑优化与问题排查
+- **Kimi K2.6** - 架构设计实现与接口规范
+- **GLM 4.5 Air** - 代码质量审查与改进建议
+
+感谢这些优秀的 AI 模型在开发过程中的技术支持！
+
 ## 许可证
 
 MIT
