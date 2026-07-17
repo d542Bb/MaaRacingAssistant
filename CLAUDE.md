@@ -117,9 +117,10 @@ d:\maaracing_assistant/
 - ✅ 第二个按钮（"开始挑战"）— 测试通过，12px 阈值成功命中
 - ✅ 假光标静止拉黑 — 跨帧位置对比累计 ≥3 帧 `continue` 拉黑
 - ✅ 微调移动 — < 35px 25ms 脉冲 + 80ms 自适应刹车
-- ✅ Debug 可视化 — `debug.py` NavigationDebugger 四色每帧截图标注（红/绿/黑/蓝）
+- ✅ Debug 可视化 — `debug.py` NavigationDebugger 四色每帧截图标注（红/绿/紫/黑/蓝）
+- ✅ 假光标静止拉黑 — 区域式检测 ±5px，光标丢失时延续拉黑状态
 - ✅ 物理手柄检测 — XInput API，GUI 弹窗阻止运行
-- ✅ 版本号 — v0.4.0（`main.py __version__`）
+- ✅ 版本号 — v0.4.1（`main.py __version__`）
 
 ## 对 AI 助手的要求
 

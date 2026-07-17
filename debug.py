@@ -24,10 +24,9 @@ class NavigationDebugger:
 
     def start_session(self, label: str):
         """开始一次导航调试会话"""
-        ts = datetime.now().strftime("%H%M%S")
-        # 纯 ASCII 路径，避免 OpenCV imwrite 在 Windows 上对中文路径支持不良
-        ascii_label = "".join(c if c.isascii() and (c.isalnum() or c in "-_") else "_" for c in label)
-        self.session_dir = self.proj_dir / "debug" / "navigate" / f"{ascii_label}_{ts}"
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # 使用中文标签 + 时间戳作为文件夹名
+        self.session_dir = self.proj_dir / "debug" / "navigate" / f"{label}_{ts}"
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.frame_count = 0
 
@@ -48,6 +47,7 @@ class NavigationDebugger:
         颜色约定：
           🔴 红 — 选中的光标
           🟢 绿 — 入围候选（通过硬过滤，参与评分）
+          🟣 紫 — 静止拉黑（连续3帧不动，被跳过评分）
           ⚫ 黑 — 被硬过滤拉黑的探测项
           🔵 亮蓝 — 按钮目标
         """
@@ -76,18 +76,22 @@ class NavigationDebugger:
                     1,
                 )
 
-        # ── 画入围候选（绿色）覆盖黄色 ──
+        # ── 画入围候选（绿色/紫色）覆盖黄色 ──
         if candidates:
             for c in candidates:
                 px, py = c["pos"]
-                cv2.circle(img, (px, py), 8, (0, 200, 0), 1)
+                if c.get("blacklisted"):
+                    color = (255, 0, 255)  # 紫色：静止拉黑
+                else:
+                    color = (0, 200, 0)    # 绿色：正常候选
+                cv2.circle(img, (px, py), 8, color, 1)
                 cv2.putText(
                     img,
                     f"A{c['area']:.0f} R{c['circularity']:.2f}",
                     (px + 9, py - 4),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.32,
-                    (0, 200, 0),
+                    color,
                     1,
                 )
 
@@ -146,5 +150,5 @@ class NavigationDebugger:
             cv2.putText(img, score_line, (10, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
 
         # 保存
-        fname = f"{self.frame_count:03d}{'_' + label if label else ''}.png"
+        fname = f"{self.frame_count:03d}.png"
         cv2.imwrite(str(self.session_dir / fname), img)

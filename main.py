@@ -6,12 +6,13 @@ MaaRacingAssistant v0.2.0
 MAA Framework + YOLOv8 ONNX + vgamepad
 """
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 import sys
 import time
 from typing import Optional
 
+import opencv_utf8_patch
 import cv2
 import numpy as np
 import onnxruntime as ort
@@ -525,9 +526,10 @@ class MaaRacingAssistantController:
         return ((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2) ** 0.5
 
     def _stop_stick(self, gpad: vg.VX360Gamepad):
-        """摇杆归零"""
+        """摇杆归零，同时清空推杆方向记录"""
         gpad.left_joystick(x_value=0, y_value=0)
         gpad.update()
+        self._last_stick = (0, 0)
 
     def _ensure_cursor(self, gpad: vg.VX360Gamepad):
         """如果截图找不到光标，4方向推摇杆搜索"""
@@ -931,18 +933,30 @@ class MaaRacingAssistantController:
             circ_weight = 0.5 if near_edge else 0.65
             score = circ * circ_weight + asp * 0.15 + area_score * 0.20
 
-            # ── 假光标静止检测（用自己的位置跨帧对比，不依赖 last_known_pos）──
+            # ── 假光标静止检测（区域式对比，不依赖 last_known_pos）──
             if last_stick is not None:
                 lx, ly = last_stick
                 if lx != 0 or ly != 0:
-                    if cand["pos"] in self._prev_frame_positions:
-                        cnt = self._stationary_blacklist.get(cand["pos"], 0) + 1
-                        self._stationary_blacklist[cand["pos"]] = cnt
+                    # 在 ±5px 范围内检测静止（适应截图波动和按钮像素级偏移）
+                    found_in_prev = False
+                    for prev_pos in self._prev_frame_positions:
+                        if abs(cand["pos"][0] - prev_pos[0]) <= 5 and abs(cand["pos"][1] - prev_pos[1]) <= 5:
+                            found_in_prev = True
+                            break
+
+                    if found_in_prev:
+                        # 使用区域中心位置作为 key
+                        region_key = (round(cand["pos"][0] / 5) * 5, round(cand["pos"][1] / 5) * 5)
+                        cnt = self._stationary_blacklist.get(region_key, 0) + 1
+                        self._stationary_blacklist[region_key] = cnt
                         if cnt >= 3:
+                            cand["blacklisted"] = True
                             continue  # 拉黑，不再参与评选
                         score -= cnt * 0.10
                     else:
-                        self._stationary_blacklist.pop(cand["pos"], None)
+                        # 位置离开静止区域 → 清零该区域的静止计数
+                        region_key = (round(cand["pos"][0] / 5) * 5, round(cand["pos"][1] / 5) * 5)
+                        self._stationary_blacklist.pop(region_key, None)
 
             # ── 运动一致性评分（仅用于奖励方向一致性）──
             if last_known_pos is not None and last_stick is not None:
@@ -964,9 +978,23 @@ class MaaRacingAssistantController:
 
         # 候选列表供 debug 可视化
         self._last_candidates = candidates
-        # 保存本帧候选位置集合，供下帧静止检测
+        # 保存本帧候选位置集合，供下帧静止检测（包括已被拉黑的）
         self._prev_frame_positions = {c["pos"] for c in candidates}
         self._last_cursor_score = best_score
+
+        # ── 即使没有最终光标，也要延续对可疑候选的拉黑状态 ──
+        if not best_cursor:  # 光标丢失
+            # 把本帧的候选位置也加入到静止检测流程中（可能检测新的可疑点）
+            for cand in candidates:
+                if not cand.get("blacklisted") and last_stick is not None and last_stick != (0, 0):
+                    region_key = (round(cand["pos"][0] / 5) * 5, round(cand["pos"][1] / 5) * 5)
+                    if any(abs(cand["pos"][0] - prev_pos[0]) <= 5 and abs(cand["pos"][1] - prev_pos[1]) <= 5
+                           for prev_pos in self._prev_frame_positions):
+                        cnt = self._stationary_blacklist.get(region_key, 0) + 1
+                        self._stationary_blacklist[region_key] = cnt
+                        if cnt >= 3:
+                            cand["blacklisted"] = True
+                            logger.log(f"光标丢失但继续拉黑可疑候选: {cand['pos']} (帧{cnt})", "DEBUG")
 
         # ── 置信度阈值：没有哪个候选足够好，不如承认找不到 ──
         if best_cursor and best_score < 0.70:
@@ -1011,13 +1039,6 @@ class MaaRacingAssistantController:
                     self._interruptible_sleep(2.0)
                     logger.log("已返回主界面，开始正式循环")
                     return True
-
-                # 第一次截图保存调试截图
-                if i == 0 and arr is not None:
-                    debug_path = self.proj / "debug" / "homing_debug.png"
-                    debug_path.parent.mkdir(exist_ok=True)
-                    cv2.imwrite(str(debug_path), cv2.cvtColor(arr, cv2.COLOR_RGB2BGR))
-                    logger.log(f"已保存首帧调试截图到 {debug_path}", "DEBUG")
 
                 if arr is None:
                     logger.log("截图失败，继续按 B", "WARNING")
