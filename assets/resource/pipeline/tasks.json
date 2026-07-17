@@ -1,18 +1,4 @@
 {
-    "极速狂飙入口": {
-        "recognition": "OCR",
-        "expected": "开始挑战",
-        "action": "Click",
-        "next": ["回合1准备"],
-        "post_delay": 2000
-    },
-    "回合1准备": {
-        "recognition": "OCR",
-        "expected": "寻找对手",
-        "action": "Click",
-        "next": ["回合1比赛"],
-        "post_delay": 3000
-    },
     "回合1比赛": {
         "action": "Custom",
         "custom_action": "RacingLoop",
@@ -37,7 +23,6 @@
         "recognition": "OCR",
         "expected": "继续放弃",
         "action": "Click",
-        "next": ["极速狂飙入口"],
         "post_delay": 3000
     }
 }

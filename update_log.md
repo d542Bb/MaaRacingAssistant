@@ -6,6 +6,34 @@
 
 ## 2026-07-17
 
+### v0.5.0 导航三+PEEP实时预览+YOLO可视化 🎉
+- **版本号：** `__version__ = "0.5.0"`
+- **导航三（寻找对手按钮）：** `find_opponent_template.jpg` (374×195) 模板匹配，等待页面加载（超时15s）→ 光标导航到按钮 → 模板消失验证。重试×3，失败回外层循环从头开始
+- **Pipeline 重构：** 移除 OCR 预任务（极速狂飙入口/回合1准备），Python 主循环驱动全部导航，Pipeline 只做 RacingLoop + 结束/放弃
+- **PEEP 实时预览模式：** GUI 独立开关 "PEEP 实时预览"，OpenCV 独立线程 (~30fps) 实时显示调试帧，不依赖 DEBUG 存盘
+- **YOLO 检测可视化：** `YOLODetector.__call__()` 新增第4返回值 `debug_dets`（框坐标+置信度+类名），PEEP 窗口每帧显示金色/红色/紫色检测框
+- **模板匹配可视化：** `_check_page_by_template()` 每帧传 template_rects（青色矩形+置信度）到 PEEP 窗口
+- **归位可视化：** `homing()` 直接调用 `_find_template`，每帧显示模板匹配位置
+- **扩充 scales 范围：** `_check_page_by_template` 的模板匹配 scales 从 [0.8~1.2] 扩展到 [0.5~1.8]，阈值降到 0.55
+- **`_wait_for_template()` 新增：** 通用轮询等待模板出现方法，可配超时和间隔
+- **PEEP 不依赖 DEBUG：** 即使不勾选"每帧截图"，PEEP 也能独立工作
+
+
+
+### v0.5.0 导航三+PEEP实时预览+YOLO可视化 🎉
+- **版本号：** `__version__ = "0.5.0"`
+- **导航三（寻找对手按钮）：** `find_opponent_template.jpg` (374×195) 模板匹配，等待页面加载（超时15s）→ 光标导航到按钮 → 模板消失验证。重试×3，失败回外层循环从头开始
+- **Pipeline 重构：** 移除 OCR 预任务（极速狂飙入口/回合1准备），Python 主循环驱动全部导航，Pipeline 只做 RacingLoop + 结束/放弃
+- **PEEP 实时预览模式：** GUI 独立开关 "PEEP 实时预览"，OpenCV 独立线程 (~30fps) 实时显示调试帧，不依赖 DEBUG 存盘
+- **YOLO 检测可视化：** `YOLODetector.__call__()` 新增第4返回值 `debug_dets`（框坐标+置信度+类名），PEEP 窗口每帧显示金色/红色/紫色检测框
+- **模板匹配可视化：** `_check_page_by_template()` 每帧传 template_rects（青色矩形+置信度）到 PEEP 窗口
+- **归位可视化：** `homing()` 直接调用 `_find_template`，每帧显示模板匹配位置
+- **扩充 scales 范围：** `_check_page_by_template` 的模板匹配 scales 从 [0.8~1.2] 扩展到 [0.5~1.8]，阈值降到 0.55
+- **`_wait_for_template()` 新增：** 通用轮询等待模板出现方法，可配超时和间隔
+- **PEEP 不依赖 DEBUG：** 即使不勾选"每帧截图"，PEEP 也能独立工作
+
+
+
 ### v0.4.0 光标识别重构+假光标拉黑+debug可视化 🎉
 - **版本号：** `__version__ = "0.4.0"`
 - **双中心面积评分：** `_find_cursor_by_shape` 改用双中心评分（常态 310 / 变形 420），同时覆盖两种光标形态，不再依赖单一面积中心
