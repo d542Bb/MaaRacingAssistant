@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MaaRacingAssistant v0.2.0
+MaaRacingAssistant
 巅峰极速 · 极速狂飙 自动刷分
 MAA Framework + YOLOv8 ONNX + vgamepad
 """
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 
 import sys
 import time
@@ -80,8 +80,6 @@ class PipelineLogger(ContextEventSink):
     def _task_desc(self, name: str) -> str:
         """给任务名加上中文描述"""
         descs = {
-            "极速狂飙入口": '找"开始挑战"',
-            "回合1准备": '找"寻找对手"',
             "回合1比赛": "YOLO 赛车控制",
             "回合1结束": '找"继续"',
             "回合2准备": '找"放弃本轮"',
@@ -161,15 +159,17 @@ def find_game_hwnd() -> int:
 
     for win in windows:
         if win.class_name == "UnrealWindow":
-            logger.log(f"找到窗口(类名): hWnd={win.hwnd}, title={win.window_name}")
-            return win.hwnd
+            hwnd = int(win.hwnd)
+            logger.log(f"找到窗口(类名): hWnd={hwnd}, title={win.window_name}")
+            return hwnd
 
     keywords = ["巅峰极速", "g112", "Racing Master"]
     for win in windows:
         for kw in keywords:
             if kw in win.window_name:
-                logger.log(f"找到窗口(标题): hWnd={win.hwnd}, title={win.window_name}")
-                return win.hwnd
+                hwnd = int(win.hwnd)
+                logger.log(f"找到窗口(标题): hWnd={hwnd}, title={win.window_name}")
+                return hwnd
 
     GAME_PID = 0
     if GAME_PID:
@@ -217,7 +217,9 @@ class YOLODetector:
         padded[pad_y : pad_y + nh, pad_x : pad_x + nw] = cv2.resize(img_rgb, (nw, nh), interpolation=cv2.INTER_LINEAR)
         blob = padded.transpose(2, 0, 1)[None].astype(np.float32) / 255.0
 
-        outputs = self.session.run(None, {self.input_name: blob})[0]
+        raw_outputs = self.session.run(None, {self.input_name: blob})
+        outputs = raw_outputs[0]
+        assert isinstance(outputs, np.ndarray), f"ONNX 返回非数组: {type(outputs)}"
         preds = outputs[0].transpose(1, 0)
 
         xywh = preds[:, :4]
@@ -227,7 +229,7 @@ class YOLODetector:
 
         mask = max_scores > self.conf
         if not np.any(mask):
-            return [], [], []
+            return [], [], [], []
 
         boxes = xywh[mask]
         scores_f = max_scores[mask]
@@ -241,9 +243,10 @@ class YOLODetector:
 
         indices = cv2.dnn.NMSBoxes(xyxy.tolist(), scores_f.tolist(), self.conf, self.iou)
         if len(indices) == 0:
-            return [], [], []
+            return [], [], [], []
 
         coins, cars, bonus_cars = [], [], []
+        debug_dets = []
         for i in indices:
             i = int(i)
             cls = int(classes[i])
@@ -254,6 +257,12 @@ class YOLODetector:
             x2, y2 = min(orig_w, x2), min(orig_h, y2)
             cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
             bw, bh = x2 - x1, y2 - y1
+            cls_name = {0: "coin", 1: "car", 2: "bonus_car"}.get(cls, "?")
+            debug_dets.append({
+                "box": (int(x1), int(y1), int(x2), int(y2)),
+                "confidence": float(scores_f[i]),
+                "class_name": cls_name,
+            })
             if cls == 0:
                 coins.append((int(cx), int(cy), int(bw), int(bh)))
             elif cls == 1:
@@ -261,14 +270,15 @@ class YOLODetector:
             else:
                 bonus_cars.append((int(cx), int(cy), int(bw), int(bh)))
 
-        return coins, cars, bonus_cars
+        return coins, cars, bonus_cars, debug_dets
 
 
 # ==================== 赛车控制 ====================
 class RacingLoop(CustomAction):
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, debug=None):
         super().__init__()
         self.det = YOLODetector(model_path)
+        self.debug = debug
         self.gpad = None
         self.last_dir = 0
         self.frame_id = 0
@@ -335,7 +345,9 @@ class RacingLoop(CustomAction):
             if img is None:
                 return None
             if hasattr(img, "numpy"):
-                arr = img.numpy()
+                arr = img.numpy()  # type: ignore[attr-defined]  # MAA 图像类型运行时含 numpy()
+            elif isinstance(img, np.ndarray):
+                arr = img
             elif isinstance(img, np.ndarray):
                 arr = img
             else:
@@ -354,7 +366,7 @@ class RacingLoop(CustomAction):
         if roi.size == 0:
             return False
         gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
-        return np.sum(gray > 200) / gray.size > 0.08 and 50 < np.mean(gray) < 150
+        return bool(np.sum(gray > 200) / gray.size > 0.08 and 50 < np.mean(gray) < 150)
 
     def _click_exit_shop(self, ctrl, img: np.ndarray):
         h, w = img.shape[:2]
@@ -366,7 +378,7 @@ class RacingLoop(CustomAction):
         if roi.size == 0:
             return False
         gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
-        return np.sum(gray > 180) / gray.size > 0.12 and np.var(gray) > 800
+        return bool(np.sum(gray > 180) / gray.size > 0.12 and np.var(gray) > 800)
 
     def _decide(self, coins, cars, bonus_cars, w: int, h: int) -> int:
         center_x = w // 2
@@ -429,13 +441,14 @@ class RacingLoop(CustomAction):
             logger.log("[YOLO] 无目标，直行")
         return 0
 
-    def run(self, context: Context, argv: dict) -> bool:
-        ctrl = context.controller
+    def run(self, context: Context, argv: dict) -> bool:  # type: ignore[override]  # MAA stub 参数类型 RunArg, 运行时 dict 兼容
+        ctrl = context.controller  # type: ignore[attr-defined]  # MAA Context 运行时含 controller
         logger.log("赛车控制启动")
         self._running = True
         self._create_pad()
 
         # 起步：按住 RT 加速
+        assert self.gpad is not None, "手柄未创建"
         self.gpad.right_trigger(value=255)
         self.gpad.update()
 
@@ -462,12 +475,17 @@ class RacingLoop(CustomAction):
                     self._steer(0)
                     return True
 
-                coins, cars, bonus_cars = self.det(img)
+                coins, cars, bonus_cars, yolo_debug = self.det(img)
                 direction = self._decide(coins, cars, bonus_cars, w, h)
 
                 if direction != self.last_dir:
                     self._steer(direction)
                     self.last_dir = direction
+
+                # 调试帧：YOLO 检测框 + 决策方向
+                if self.debug is not None and (self.debug.enabled or self.debug.peep_enabled):
+                    self.debug.save_frame(img, detections=yolo_debug,
+                                           label=f"race_f{self.frame_id}_d{'LR'[direction+1]}")
 
                 elapsed = time.time() - t0
                 sleep = max(0, 1 / 15 - elapsed)
@@ -582,7 +600,7 @@ class MaaRacingAssistantController:
         self._stop_stick(gpad)
 
     def _press_and_verify(self, gpad: vg.VX360Gamepad, cursor_area: float,
-                          dist_button: float, btn: ButtonDef) -> bool | None:
+                          dist_button: float, btn: ButtonDef) -> Optional[bool]:
         """按 A → 验证是否命中
         Returns: True=成功, None=模板权威判定没点上, False=没命中已收缩阈值"""
         self._stop_stick(gpad)
@@ -671,7 +689,9 @@ class MaaRacingAssistantController:
                 return self._screencap_ctypes()
 
             if hasattr(img, "numpy"):
-                arr = img.numpy()
+                arr = img.numpy()  # type: ignore[attr-defined]  # MAA 图像类型运行时含 numpy()
+            elif isinstance(img, np.ndarray):
+                arr = img
             elif isinstance(img, np.ndarray):
                 arr = img
             elif hasattr(img, "__array__"):
@@ -692,13 +712,13 @@ class MaaRacingAssistantController:
     def _screencap_ctypes(self):
         """使用 ctypes 直接截取窗口图像（MAA 截图失败时的备用方案）"""
         try:
-            hwnd = self.controller.hWnd if hasattr(self.controller, "hWnd") else 0
+            hwnd = self.controller.hWnd if self.controller is not None and hasattr(self.controller, "hWnd") else 0  # type: ignore[attr-defined]  # MAA Win32Controller 运行时含 hWnd
             if not hwnd:
                 return None
 
             user32 = ctypes.windll.user32
             gdi32 = ctypes.windll.gdi32
-            rect = ctypes.wintypes.RECT()
+            rect = wintypes.RECT()
             user32.GetClientRect(hwnd, ctypes.byref(rect))
             w, h = rect.right, rect.bottom
             if w <= 0 or h <= 0:
@@ -724,7 +744,7 @@ class MaaRacingAssistantController:
                         stride = ((w * bpp + 31) // 32) * 4
                         buf = ctypes.create_string_buffer(stride * h)
                         gdi32.GetBitmapBits(bitmap, len(buf), buf)
-                        arr = np.frombuffer(buf, dtype=np.uint8).reshape((h, w, 4))[:, :, :3]
+                        arr = np.frombuffer(bytes(buf), dtype=np.uint8).reshape((h, w, 4))[:, :, :3]
                         arr = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
                         logger.log(f"ctypes截图成功: {w}x{h}", "DEBUG")
                         return arr
@@ -753,7 +773,7 @@ class MaaRacingAssistantController:
                 return
             time.sleep(0.1)
 
-    def _load_template(self, name: str) -> np.ndarray | None:
+    def _load_template(self, name: str) -> Optional[np.ndarray]:
         """加载模板图片（优先 png，其次 jpg），返回 RGB ndarray"""
         img_dir = self.proj / "assets" / "resource" / "image"
         for ext in (".png", ".jpg"):
@@ -838,8 +858,8 @@ class MaaRacingAssistantController:
         return pos is not None
 
     def _find_cursor_by_shape(self, img: np.ndarray, debug: bool = False, *,
-                               last_known_pos: tuple | None = None,
-                               last_stick: tuple | None = None) -> tuple:
+                               last_known_pos: Optional[tuple] = None,
+                               last_stick: Optional[tuple] = None) -> tuple:
         """
         基于几何形状识别白色圆形光标。
         对屏幕边缘的部分圆做容忍（圆度阈值动态放宽）。
@@ -1033,7 +1053,34 @@ class MaaRacingAssistantController:
                     return False
 
                 arr = self._screencap()
-                if arr is not None and self._match_settings_page(arr, template):
+
+                # 模板匹配（同时用于检测和调试绘制）
+                template_match = None  # (pos, conf, scale)
+                if arr is not None:
+                    h, w = arr.shape[:2]
+                    pos, conf, scale = self._find_template(
+                        arr, template, threshold=0.65,
+                        scales=[0.8, 0.9, 1.0, 1.1, 1.2],
+                        roi=(0, 0, int(w * 0.5), int(h * 0.5)),
+                        use_gray=False)
+                    if pos is not None:
+                        template_match = (pos, conf, scale)
+
+                # 调试帧：模板匹配结果
+                if arr is not None and (self.debug.enabled or self.debug.peep_enabled):
+                    tr_list = []
+                    if template_match:
+                        pos, conf, scale = template_match
+                        tw = int(template.shape[1] * scale)
+                        th = int(template.shape[0] * scale)
+                        tr_list.append({
+                            "pos": pos, "size": (tw, th),
+                            "confidence": conf, "name": "settings"
+                        })
+                    self.debug.save_frame(arr, template_rects=tr_list,
+                                           label=f"homing_{i+1}")
+
+                if arr is not None and template_match:
                     logger.log(f"归位完成：已识别到设置页面（第{i+1}次按B）")
                     self._press_button(gpad, vg.XUSB_BUTTON.XUSB_GAMEPAD_B, duration=0.3)
                     self._interruptible_sleep(2.0)
@@ -1148,11 +1195,36 @@ class MaaRacingAssistantController:
         template = self._load_template(template_name)
         if template is None:
             return False
-        pos, conf, _ = self._find_template(arr, template, threshold=0.7)
+        pos, conf, scale = self._find_template(arr, template, threshold=0.55,
+                                                scales=[0.5, 0.7, 0.9, 1.0, 1.2, 1.5, 1.8])
+        # 调试帧：模板匹配结果
+        if self.debug.enabled or self.debug.peep_enabled:
+            tr_list = []
+            if pos is not None:
+                tw = int(template.shape[1] * scale)
+                th = int(template.shape[0] * scale)
+                tr_list.append({
+                    "pos": pos, "size": (tw, th),
+                    "confidence": conf, "name": template_name
+                })
+            self.debug.save_frame(arr, template_rects=tr_list,
+                                   label=f"tpl_{template_name}")
         if pos is not None:
             logger.log(f"模板「{template_name}」匹配成功，置信度={conf:.3f}")
             return True
         logger.log(f"模板「{template_name}」未匹配", "DEBUG")
+        return False
+
+    def _wait_for_template(self, template_name: str, timeout: float = 15.0, interval: float = 0.5) -> bool:
+        """等待指定模板出现，超时返回 False"""
+        for _ in range(int(timeout / interval)):
+            if not self._running:
+                return False
+            if self._check_page_by_template(template_name):
+                logger.log(f"等待到模板「{template_name}」")
+                return True
+            self._interruptible_sleep(interval)
+        logger.log(f"等待模板「{template_name}」超时({timeout:.0f}s)", "WARNING")
         return False
 
     def navigate_to_button(self, btn: ButtonDef) -> bool:
@@ -1170,6 +1242,8 @@ class MaaRacingAssistantController:
 
         cursor_lost_start = None
         last_known_pos = None
+        arr = None
+        button_pos = None
 
         try:
             for attempt in range(30):
@@ -1268,11 +1342,8 @@ class MaaRacingAssistantController:
 
             logger.log("导航超时", "WARNING")
             try:
-                self.debug.save_frame(
-                    arr, cursor_pos=None,
-                    button_pos=button_pos if 'button_pos' in dir() else None,
-                    label="timeout"
-                )
+                if arr is not None:
+                    self.debug.save_frame(arr, cursor_pos=None, button_pos=button_pos, label="timeout")
             except Exception:
                 pass
             return False
@@ -1305,7 +1376,7 @@ class MaaRacingAssistantController:
         self.resource.post_bundle(self.proj / "assets" / "resource").wait()
         self.tasker.bind(self.resource, self.controller)
 
-        self.racing_loop = RacingLoop(str(self.model_path))
+        self.racing_loop = RacingLoop(str(self.model_path), debug=self.debug)
         self.resource.register_custom_action("RacingLoop", self.racing_loop)
 
         self.tasker.add_context_sink(PipelineLogger())
@@ -1323,8 +1394,8 @@ class MaaRacingAssistantController:
         self._running = True
         logger.log("开始循环")
 
-        # ── 整体导航流程（内部重试失败时重启手柄复位）──
-        # 流程：归位 → 导航一(主界面按钮) → 导航二(开始挑战) → Pipeline
+        # ── 整体导航流程 ──
+        # 流程：归位 → 导航一(极速狂飙入口) → 导航二(开始挑战) → 导航三(寻找对手) → Pipeline(比赛→结束→放弃→确认)
         while self._running:
             # 1. 归位：按 B 直到回到主界面
             self.homing()
@@ -1365,18 +1436,40 @@ class MaaRacingAssistantController:
                     logger.log("导航二已耗尽重试，回到外层循环重新归位", "WARNING")
                 continue  # 回到外层 while，重新归位+导航一+导航二
 
-            # 4. 导航二成功 → 进入 Pipeline 循环
-            while self._running:
+            # 4. 导航三：等待寻找对手页面出现 → 点击"寻找对手"
+            BTN_寻找对手 = ButtonDef("寻找对手", (0.804, 0.753), "find_opponent_template", False, 25)
+            nav3_ok = False
+            for retry in range(3):
+                if not self._running:
+                    break
+                # 先等游戏加载完成，模板出现再导航
+                logger.log(f"等待寻找对手页面...（第{retry+1}次）")
+                if not self._wait_for_template("find_opponent_template", timeout=15):
+                    logger.log("寻找对手页面未出现，销毁手柄重试", "WARNING")
+                    self._destroy_gpad()
+                    self._interruptible_sleep(2.0)
+                    continue
+                if self.navigate_to_button(BTN_寻找对手):
+                    nav3_ok = True
+                    break
+                logger.log(f"导航三失败，第{retry+1}次重试——销毁手柄复位")
+                self._destroy_gpad()
+                self._interruptible_sleep(2.0)
+            if not nav3_ok:
+                if self._running:
+                    logger.log("导航三失败，回到外层循环重新归位", "WARNING")
+                continue
+
+            # 5. 导航三成功 → 进入比赛 Pipeline（回合1比赛 → 结束 → 放弃 → 确认）
+            # Pipeline 完成后回到活动页，外层循环重新归位+导航
+            if self._running:
                 try:
-                    self.tasker.post_task("极速狂飙入口").wait()
+                    assert self.tasker is not None, "Tasker 未初始化"
+                    self.tasker.post_task("回合1比赛").wait()
                     logger.log("本轮完成")
-                    if not self._running:
-                        break
-                    time.sleep(2)
                 except Exception as e:
                     logger.log(f"异常: {e}", "ERROR")
-                    time.sleep(5)
-            # Pipeline 结束（被停止或异常）→ 如果还在运行，重新开始循环
+                self._interruptible_sleep(2)
             continue
 
         logger.log("循环已停止")

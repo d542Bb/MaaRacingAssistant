@@ -95,7 +95,7 @@ class MRAGUI:
         model_style = "success" if model_ok else "danger"
         ttk.Label(model_frame, text=model_text, bootstyle=model_style).pack(side=LEFT)
 
-        # DEBUG 模式
+        # DEBUG / PEEP 模式
         debug_frame = ttk.Frame(self.root)
         debug_frame.pack(fill=X, padx=20, pady=2)
         self.debug_var = tk.BooleanVar(value=False)
@@ -103,6 +103,12 @@ class MRAGUI:
             debug_frame, text="DEBUG 每帧截图", variable=self.debug_var,
             bootstyle="warning-toolbutton"
         ).pack(side=LEFT)
+        self.peep_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            debug_frame, text="PEEP 实时预览", variable=self.peep_var,
+            command=self._toggle_peep,
+            bootstyle="info-toolbutton"
+        ).pack(side=LEFT, padx=(8, 0))
 
         # 按钮区
         btn_frame = ttk.Frame(self.root)
@@ -206,6 +212,14 @@ class MRAGUI:
         self.stop_btn.config(state=DISABLED)
         self.status_var.set("已停止")
         self.status_label.config(bootstyle="secondary")
+        self.controller.debug.disable_peep()
+        self.peep_var.set(False)
+
+    def _toggle_peep(self):
+        if self.peep_var.get():
+            self.controller.debug.enable_peep()
+        else:
+            self.controller.debug.disable_peep()
 
     def _on_stop(self):
         self.controller.stop()

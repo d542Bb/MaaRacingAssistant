@@ -7,6 +7,7 @@ MaaRacingAssistant — 调试可视化模块
 
 from __future__ import annotations
 
+import threading
 import cv2
 import numpy as np
 from pathlib import Path
@@ -18,9 +19,56 @@ class NavigationDebugger:
 
     def __init__(self, proj_dir: Path):
         self.proj_dir = proj_dir
-        self.enabled = False  # GUI 控制开关
+        self.enabled = False  # GUI 控制开关 → 存盘
         self.session_dir: Path | None = None
         self.frame_count = 0
+
+        # PEEP 实时预览（独立于存盘）
+        self.peep_enabled = False
+        self._peep_window = "PEEP - Live Debug View"
+        self._latest_frame: np.ndarray | None = None
+        self._frame_lock = threading.Lock()
+
+    # ---------- PEEP 实时预览 ----------
+
+    def enable_peep(self):
+        """打开 PEEP 实时预览窗口（独立线程）"""
+        if self.peep_enabled:
+            return
+        self.peep_enabled = True
+        t = threading.Thread(target=self._peep_loop, daemon=True)
+        t.start()
+        print(f"[PEEP] 窗口已打开: {self._peep_window}")
+
+    def disable_peep(self):
+        """关闭 PEEP 预览窗口"""
+        self.peep_enabled = False
+
+    def _peep_loop(self):
+        """独立线程：OpenCV 窗口循环，~30fps 刷新最新调试帧"""
+        try:
+            cv2.namedWindow(self._peep_window, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(self._peep_window, 960, 540)
+            cv2.setWindowTitle(self._peep_window, self._peep_window)
+        except Exception:
+            self.peep_enabled = False
+            return
+
+        while self.peep_enabled:
+            frame = None
+            with self._frame_lock:
+                if self._latest_frame is not None:
+                    frame = self._latest_frame.copy()
+            if frame is not None:
+                try:
+                    cv2.imshow(self._peep_window, frame)
+                except Exception:
+                    break
+            cv2.waitKey(30)
+        try:
+            cv2.destroyWindow(self._peep_window)
+        except Exception:
+            pass
 
     def start_session(self, label: str):
         """开始一次导航调试会话"""
@@ -41,6 +89,8 @@ class NavigationDebugger:
         all_candidates: list[dict] | None = None,
         dist: float | None = None,
         label: str = "",
+        template_rects: list[dict] | None = None,
+        detections: list[dict] | None = None,
     ):
         """保存一帧调试截图，标注识别结果
 
@@ -51,7 +101,9 @@ class NavigationDebugger:
           ⚫ 黑 — 被硬过滤拉黑的探测项
           🔵 亮蓝 — 按钮目标
         """
-        if not self.enabled or self.session_dir is None:
+        if not self.enabled and not self.peep_enabled:
+            return
+        if self.session_dir is None and not self.peep_enabled:
             return
 
         self.frame_count += 1
@@ -140,6 +192,33 @@ class NavigationDebugger:
                 2,
             )
 
+        # ── 画模板匹配矩形（青色） ──
+        if template_rects:
+            for tr in template_rects:
+                cx, cy = tr["pos"]
+                tw, th = tr["size"]
+                x1 = cx - tw // 2
+                y1 = cy - th // 2
+                cv2.rectangle(img, (x1, y1), (x1 + tw, y1 + th), (255, 255, 0), 2)
+                cv2.putText(img, f"TPL {tr.get('name','')} {tr['confidence']:.2f}",
+                            (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+
+        # ── 画 YOLO 检测框 ──
+        if detections:
+            colors = {
+                "coin": (0, 215, 255),      # 金色
+                "car": (0, 0, 220),          # 红色
+                "bonus_car": (220, 0, 220),  # 紫色
+            }
+            for det in detections:
+                x1, y1, x2, y2 = det["box"]
+                cls_name = det.get("class_name", "?")
+                color = colors.get(cls_name, (255, 255, 255))
+                cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+                label_text = f"{cls_name} {det['confidence']:.2f}"
+                cv2.putText(img, label_text, (x1, y1 - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+
         # ── 顶部信息栏 ──
         info_line = f"#{self.frame_count}"
         if label:
@@ -149,6 +228,12 @@ class NavigationDebugger:
             score_line = f"score={cursor_score:.3f}"
             cv2.putText(img, score_line, (10, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
 
-        # 保存
-        fname = f"{self.frame_count:03d}.png"
-        cv2.imwrite(str(self.session_dir / fname), img)
+        # 保存到磁盘（仅存盘模式开启时）
+        if self.enabled and self.session_dir is not None:
+            fname = f"{self.frame_count:03d}.png"
+            cv2.imwrite(str(self.session_dir / fname), img)
+
+        # 缓存帧供 PEEP 实时预览
+        if self.peep_enabled:
+            with self._frame_lock:
+                self._latest_frame = img.copy()
