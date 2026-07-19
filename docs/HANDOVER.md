@@ -1,4 +1,4 @@
-# MaaRacingAssistant v0.5.0 — 开发交接文档
+# MaaRacingAssistant v0.6.0 — 开发交接文档
 
 ## 项目目标
 自动完成《巅峰极速》"极速狂飙"活动：
@@ -6,9 +6,9 @@
 
 ## 技术栈
 - MAA Framework 5.11.1（UI 流程 + 窗口控制）
-- YOLOv8 + ONNX Runtime（视觉识别，3 类：coin / car / bonus_car）
+- YOLOv8 + ONNX Runtime DirectML（视觉识别，3 类：coin / car / bonus_car）
 - vgamepad（虚拟 Xbox 手柄）
-- OpenCV（模板匹配：归位识别设置页面 + 导航验证页面切换）
+- OpenCV（模板匹配：归位识别设置页面 + 导航验证页面切换 + 结束检测）
 - ttkbootstrap（GUI）
 
 ## 已确认 API（重要！不要假设）
@@ -57,17 +57,23 @@
 - ✅ **YOLO 检测可视化** — PEEP 窗口实时显示 YOLO 检测框（金色=coin/红色=car/紫色=bonus_car）+ 置信度 ✅ v0.5.0
 - ✅ **模板匹配可视化** — PEEP 窗口实时显示模板匹配位置（青色矩形）+ 置信度 ✅ v0.5.0
 
-### main.py 结构概览
+### main.py → maaracing_assistant/ 包结构
 
-| 类/模块 | 职责 |
-|---------|------|
-| `Logger` | 分级日志（DEBUG/INFO/WARNING/ERROR），文件输出 `MRA_*.log`，GUI 只显示 INFO+ |
-| `PipelineLogger(ContextEventSink)` | 监听 MAA Pipeline 每步识别/动作成功/失败，打印到日志 |
-| `YOLODetector` | ONNX Runtime 推理（优先 CUDA → CPU），NMS 后处理，返回 (coins, cars, bonus_cars) |
-| `RacingLoop(CustomAction)` | 赛车控制：RT 加速 + YOLO 决策 + 手柄转向 |
-| `ButtonDef` | 按钮配置类：`name`/`pct`/`page_template`/`template_should_match`/`close_threshold` |
-| `MaaRacingAssistantController` | 主控：连接/归位/导航/Pipeline 循环/停止 |
-| `has_physical_controller()` | 模块级函数，XInput API 检测物理手柄是否已连接 |
+v0.6.0 已将 `main.py` 拆分为 6 个单一职责模块，统一放入 `maaracing_assistant/` 包目录：
+
+| 模块 | 职责 |
+|------|------|
+| `maaracing_assistant/logger.py` | Logger 类 + 全局实例，分级日志，零项目依赖 |
+| `maaracing_assistant/window_utils.py` | 窗口查找 + XInput 物理手柄检测 |
+| `maaracing_assistant/yolo_detector.py` | YOLODetector ONNX 推理封装 |
+| `maaracing_assistant/pipeline_logger.py` | PipelineLogger MAA 事件监听 |
+| `maaracing_assistant/racing_loop.py` | RacingLoop CustomAction 赛车控制 |
+| `maaracing_assistant/controller.py` | MaaRacingAssistantController 总控编排 |
+| `maaracing_assistant/navigation.py` | Navigation + ButtonDef 光标导航 |
+| `maaracing_assistant/gui.py` | MRAGUI ttkbootstrap 窗口 |
+| `maaracing_assistant/debug.py` | NavigationDebugger 调试可视化 |
+| `maaracing_assistant/opencv_utf8_patch.py` | OpenCV 中文路径补丁 |
+| `run.py` | 快捷入口，一行导入 gui.main() |
 
 ### 模板图片
 
@@ -78,22 +84,54 @@
 | `settings_page_template.jpg` (~484×300) | 归位：识别设置页面（左上角区域，彩色匹配） | 0.65 | ✅ 正常 |
 | `activity_page_template.jpg` (1100×550) | 导航：识别活动页面 / 检测页面已离开（第二个按钮） | 0.70 | ✅ 正常 |
 | `find_opponent_template.jpg` (374×195) | 导航三：识别寻找对手页面，按钮消失验证 | 0.55 | ✅ v0.5.0 |
+| `store_popup_template.jpg` (159×262) | 商店弹窗检测 + `_is_end` 结束检测 | 0.55 | ✅ v0.6.0 |
+| `round1_end_template.jpg` | 回合1结束画面检测（用户截图重命名） | 0.55 | ✅ v0.6.0 |
 | `cursor_template.jpg` (168×176) | 导航：旧模板，已废弃改用几何形状识别 | — | ❌ 已废弃 |
 | `button_main_template.jpg` (~242×67) | 导航：已废弃，按钮位置改为百分比硬编码 | — | ❌ 已废弃 |
 
-### 启动流程（`MaaRacingAssistantController.start()`）
+### 启动流程（`MaaRacingAssistantController.start()` v0.6.0+）
 
 ```
-1. check_model()          → 检查 ONNX 模型存在
-2. connect()              → 查找窗口 → Win32Controller → Tasker 绑定
-3. _running = True        → 允许 stop 中断
-4. homing()               → 按B×N → 截图匹配设置页面 → 再按B回主界面
-5. while _running:        → 外层循环
-   a. navigate_to_button(极速狂飙入口)  → 模板出现确认
-   b. navigate_to_button(开始挑战)      → 模板消失确认
-   c. _wait_for_template(寻找对手页面)  → 加载超时15秒，重试×3
-   d. navigate_to_button(寻找对手)      → 模板消失确认
-   e. Pipeline post_task("回合1比赛")   → 单次通过，完成后回到外层
+[初始化]
+  1. check_model()    → 检查 ONNX 模型存在
+  2. connect()        → 查找窗口 → Win32Controller → Tasker 绑定
+  3. _running = True  → 允许 stop 中断
+
+[大厅层]
+  4. homing()         → 按B×N → 截图匹配设置页面 → 再按B回主界面（仅首次）
+  5. while _running:
+     a. 导航一(极速狂飙入口) ×3:
+        成功 → 模板出现确认
+        失败 → destroy → 等2s → homing() → 重试
+        3次全失败 → 整体结束
+
+     b. while _running:    ← 对局层循环
+        ─── 关口：导航二(开始挑战) ×6 ───
+           成功 → 模板消失确认 → _in_match = True（已进入对局）
+           失败且 _in_match=False → destroy → 等2s → 原地重试（首次穿插homing+导航一兜底）
+           失败且 _in_match=True  → 直接停止流程（对局中不回退大厅）
+           6次全失败(首次) → break(回大厅层)
+
+        ═══ 导航三(寻找对手) ×6 ═══
+          先 _wait_for_template(超时15s) → 等待页面出现
+          成功 → 模板消失确认
+          失败 → destroy → 等2s → 原地重试
+          6次全失败 → 停止流程（对局层异常不可恢复）
+
+        ═══ 商店弹窗处理 ═══
+          _wait_for_template("store_popup_template", 15s)
+          按A关闭 → 验证消失
+          光标自动复位 → 直接进入确认上阵导航
+
+        ═══ 确认上阵 ═══
+          导航到(82.3%,93.1%) → 按A
+
+        ═══ 比赛(RacingLoop) ═══
+          run_direct(self.controller) 直接运行（绕过 MAA CustomAction）
+          运行 < 3秒 → 判定异常，最多重试 3 次
+          全部异常 → 停止流程
+          正常完成 → post_task("回合1结束") → Pipeline OCR 处理后续
+          _in_match = False → continue 从导航二开始下一轮
 ```
 
 ### 归位流程（`homing()`）
@@ -144,25 +182,51 @@ finally: 摇杆归零
 - vgamepad Y 轴取反：`uy = -dy / dist`
 - 刹车时间自适应：<35px 时 80ms，否则 50ms
 - 销毁手柄（`del gpad`）让游戏自动把光标复位到左上角
+- **`_get_gpad()` 创建手柄后必须做 3 次 `reset()+update()` 归零握手**清除驱动层偏置，否则首推方向异常
+- `_ensure_cursor` 4方向搜索顺序：右上→左上→右下→左下（vgamepad y正=下，y负=上）
+- **导航三失败=对局内异常** → 直接停止，不复位不回退（对局内按B无效）
+- **比赛完成** → 从导航二开始下一轮（不经过归位+导航一）
+- **`_in_match` 标记控制回退行为**：导航二成功前可回大厅，成功后不回
+- **DirectML 优先于 CUDA**：`onnxruntime-directml` 不需要 CUDA Toolkit，RTX 4060 推理 ~3.7ms
+- **ONNX Session 选项**：`graph_optimization_level=ORT_ENABLE_ALL` + `optimized_model_filepath` 持久化图优化模型到 `__pycache__/ort_cache/`，DirectML 内核缓存同样存该目录
+- **`_is_end` 统一模板匹配**：不再用 ROI 白色区域检测，加载 `_end_templates` 列表，所有模板用 `matchTemplate` TM_CCOEFF_NORMED 阈值 0.55，任一匹配即返回 True
+- **比赛异常重试**：RacingLoop `run_direct` 运行 < 3 秒判定异常，重试 3 次后停止
 - 按钮用 `ButtonDef` 配置类统一管理，新按钮只需加一行定义
 - 导航调试用 `debug.py`（NavigationDebugger），多色标注体系
 - PEEP 模式用 OpenCV 独立线程实时预览调试帧，不依赖 DEBUG 存盘
 
-### 导航重试机制（`start()`）
+### 导航重试机制（`start()` v0.6.0+）
 
 ```
-外层 while _running:
-  1. homing() → B键回到主界面
-  2. 导航一(极速狂飙入口):  重试×3
-     失败 → _destroy_gpad() → 等2秒 → homing() → 重试
-  3. 导航二(开始挑战):      重试×3
-     失败 → _destroy_gpad() → 等2秒 → continue 外层(从头开始)
-  4. 导航三(寻找对手):      重试×3 (先等模板出现，超时15s)
-     失败 → _destroy_gpad() → 等2秒 → continue 外层(从头开始)
-  5. Pipeline 单次 post_task → 完成 → 回到外层继续
+[大厅层] 归位(仅首次)
+  │
+  导航一(极速狂飙入口) ×3:
+    失败 → _destroy → 等2s → homing() → 重试
+    3次全失败 → break(整体结束)
+  │
+  [对局层循环]
+    │
+    导航二(开始挑战) ×6:       ← 关口：_in_match 控制回退行为
+      成功 → _in_match = True
+      失败且 _in_match=False → 原地重试，穿插 homing+导航一兜底
+      失败且 _in_match=True  → 直接停止（首次以外不回退大厅）
+      6次全失败(首次) → break(回大厅)
+    │
+    导航三(寻找对手) ×6:       ← 对局内
+      失败 → _destroy → 等2s → 原地重试
+      6次全失败 → 停止流程
+    │
+    商店弹窗 → 确认上阵 → 比赛
+    │
+    比赛(RacingLoop):          ← 直接 run_direct，<3秒重试×3
+      异常/短运行 → 最多重试3次→全部失败→停止
+      正常完成 → post_task("回合1结束") → _in_match=False → 从导航二开始下一轮
 ```
 
-导航二/三失败不单独归位，而是跳回外层循环重新归位+导航一+导航二+导航三，确保每次完整重来。
+**关键设计原则：**
+- **导航二成功前（_in_match=False）** → 可回退大厅从导航一重试
+- **导航二成功后（_in_match=True）** → 任何失败不回退大厅，直接停止（对局内按B无效）
+- **比赛异常重试** → 运行 <3秒算异常，最多 3 次，全部异常停止
 
 ### 基础工具方法
 
@@ -212,12 +276,27 @@ finally: 摇杆归零
 
 ```
 d:\maaracing_assistant/
-├── main.py              # 主入口：YOLO + Pipeline + Homing + 导航 + 日志
-├── gui.py               # 图形界面（ttkbootstrap + UAC 提权）
-├── HANDOVER.md          # 本文件 — AI 助手上下文文档
-├── update_log.md        # 修改历史记录
-├── README.md            # 快速开始
-├── requirements.txt     # 依赖
+├── run.py                               # 快捷入口：python run.py
+├── pyproject.toml                       # 现代 Python 项目配置（pip install -e . 支持）
+├── maaracing_assistant/                 # 应用包（13 个源文件）
+│   ├── __init__.py                      # 版本号 "0.6.0"
+│   ├── __main__.py                      # python -m maaracing_assistant 入口
+│   ├── controller.py                    # MaaRacingAssistantController（总控编排）
+│   ├── navigation.py                    # Navigation + ButtonDef（光标导航）
+│   ├── racing_loop.py                   # RacingLoop CustomAction（YOLO 赛车控制）
+│   ├── yolo_detector.py                 # YOLODetector（ONNX 推理）
+│   ├── logger.py                        # Logger（文件+内存日志）
+│   ├── pipeline_logger.py               # PipelineLogger（MAA 事件）
+│   ├── window_utils.py                  # 窗口查找 + XInput 物理手柄检测
+│   ├── gui.py                           # MRAGUI（ttkbootstrap 窗口）
+│   ├── debug.py                         # NavigationDebugger（调试可视化）
+│   └── opencv_utf8_patch.py             # OpenCV 中文路径补丁
+├── docs/                                # 文档集中
+│   ├── HANDOVER.md                       # 本文件
+│   └── update_log.md                    # 修改历史
+├── README.md                            # 快速开始
+├── CLAUDE.md                            # AI 助手项目配置
+├── requirements.txt                     # 依赖
 ├── .gitignore
 ├── assets/
 │   ├── model/
@@ -226,13 +305,14 @@ d:\maaracing_assistant/
 │   │   ├── image/                     # 模板图片
 │   │   │   ├── settings_page_template.jpg   # 归位：设置页面 ✅
 │   │   │   ├── activity_page_template.jpg   # 导航：活动页面 ✅
-│   │   │   ├── cursor_template.jpg          # 导航：光标 ❌ 已废弃
-│   │   │   └── button_main_template.jpg     # 导航：已废弃（位置硬编码）
+│   │   │   ├── find_opponent_template.jpg   # 导航三：寻找对手 ✅ v0.5.0
+│   │   │   ├── cursor_template.jpg          # ❌ 已废弃
+│   │   │   └── button_main_template.jpg     # ❌ 已废弃
 │   │   └── pipeline/
 │   │       └── tasks.json            # MAA Pipeline 流程定义
 │   └── icon.ico
 ├── config/
-│   └── maa_option.json               # MAA 配置（save_on_error 开启）
+│   └── maa_option.json               # MAA 配置
 ├── dataset/
 │   ├── images/train/   (150 张)
 │   ├── images/val/     (38 张)
@@ -244,11 +324,7 @@ d:\maaracing_assistant/
 │   ├── yolov8n.pt       # 预训练权重 YOLOv8n
 │   └── yolo26n.pt       # 预训练权重 YOLO26n
 ├── logs/                # 运行日志 MRA_*.log（gitignore）
-├── debug/               # 调试输出（gitignore）
-│   ├── homing_debug.png            # 归位首帧调试截图
-│   └── on_error/                   # MAA save_on_error 保存的失败截图
-└── MEMORY.md
-```
+└── debug/               # 调试输出（gitignore）
 
 ## Pipeline 流程
 
@@ -305,7 +381,13 @@ d:\maaracing_assistant/
 | _ensure_cursor | 4方向搜索（不再有 center_first 归中推） | `navigate_to_button()` | ✅ v0.4.0 |
 | YOLO 置信度 | 0.50 | `YOLODetector(conf=0.5)` | ✅ |
 | YOLO NMS IoU | 0.45 | `YOLODetector(iou=0.45)` | ✅ |
-| 赛车帧率 | 15 FPS | `RacingLoop.run()` 循环 | ✅ |
+| 赛车帧率 | 15 FPS（YOLO 每 3 帧推理一次） | `RacingLoop._run_impl()` | ✅ v0.6.0 |
+| YOLO 推理后端 | DirectML（fallback CUDA → CPU） | `YOLODetector.__init__()` | ✅ v0.6.0 |
+| ONNX 图优化 | ORT_ENABLE_ALL + 模型缓存到 __pycache__/ort_cache/ | `YOLODetector.__init__()` | ✅ v0.6.0 |
+| _is_end 检测 | 模板匹配 `_end_templates` 列表（阈值 0.55） | `RacingLoop._is_end()` | ✅ v0.6.0 |
+| 比赛异常重试 | <3 秒异常，最多 3 次，全部失败停止 | `start()` | ✅ v0.6.0 |
+| _in_match 标记 | 导航二成功=True，完整一局结束=False | `start()` | ✅ v0.6.0 |
+| debug 磁盘写盘 | 每 15 帧一次（PEEP 每帧更新） | `save_frame(save_to_disk=)` | ✅ v0.6.0 |
 | 导航三(寻找对手)位置 | 80.4%, 75.3% | `BTN_寻找对手.pct` | ✅ v0.5.0 |
 | 导航三对齐阈值 | 25 px | `BTN_寻找对手.close_threshold` | ✅ v0.5.0 |
 | 导航三模板验证 | 消失 = 成功 (template_should_match=False) | `BTN_寻找对手` | ✅ v0.5.0 |

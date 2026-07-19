@@ -11,7 +11,10 @@ import time
 from pathlib import Path
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
-from main import MaaRacingAssistantController, logger, has_physical_controller
+
+from maaracing_assistant.controller import MaaRacingAssistantController
+from maaracing_assistant.logger import logger
+from maaracing_assistant.window_utils import has_physical_controller
 
 
 def is_admin() -> bool:
@@ -20,21 +23,22 @@ def is_admin() -> bool:
         return ctypes.windll.shell32.IsUserAnAdmin()
     except Exception:
         return False
-    
+
+
 def run_as_admin():
     """以管理员权限重启自身（无控制台窗口）"""
     import subprocess
-    
+
     # 用 pythonw.exe 代替 python.exe，不显示控制台
     python_exe = os.path.abspath(sys.executable)
     if python_exe.endswith("python.exe"):
         pythonw_exe = python_exe.replace("python.exe", "pythonw.exe")
     else:
         pythonw_exe = python_exe
-    
+
     script_path = os.path.abspath(sys.argv[0])
     work_dir = os.path.abspath(os.getcwd())
-    
+
     ctypes.windll.shell32.ShellExecuteW(
         None,
         "runas",
@@ -44,6 +48,7 @@ def run_as_admin():
         1
     )
     sys.exit(0)
+
 
 class MRAGUI:
     def __init__(self, root: ttk.Window):
@@ -110,9 +115,38 @@ class MRAGUI:
             bootstyle="info-toolbutton"
         ).pack(side=LEFT, padx=(8, 0))
 
+        # 断点选择
+        bp_frame = ttk.LabelFrame(self.root, text="断点选择（双击列表项跳转）")
+        bp_frame.pack(fill=X, padx=20, pady=(8, 0))
+        bp_inner = ttk.Frame(bp_frame)
+        bp_inner.pack(fill=X, padx=5, pady=5)
+        self.stage_var = tk.StringVar(value=self.controller.STAGE_ORDER[0])
+        self.stage_listbox = tk.Listbox(
+            bp_inner, height=7, font=("Microsoft YaHei", 9),
+            selectbackground="#0078D7", selectforeground="white",
+            exportselection=False,
+        )
+        for s in self.controller.STAGE_ORDER:
+            self.stage_listbox.insert(tk.END, f"  {s}")
+        self.stage_listbox.select_set(0)
+        self.stage_listbox.pack(side=LEFT, fill=X, expand=True)
+        # 滚动条
+        sb = ttk.Scrollbar(bp_inner, orient=tk.VERTICAL, command=self.stage_listbox.yview)
+        sb.pack(side=RIGHT, fill=Y)
+        self.stage_listbox.config(yscrollcommand=sb.set)
+        # 双击跳转
+        self.stage_listbox.bind("<Double-Button-1>", self._on_stage_select)
+        # 当前阶段状态
+        self.stage_status_var = tk.StringVar(value="")
+        stage_status_label = ttk.Label(
+            bp_frame, textvariable=self.stage_status_var,
+            font=("Microsoft YaHei", 9), bootstyle="info"
+        )
+        stage_status_label.pack(anchor=W, padx=8, pady=(0, 4))
+
         # 按钮区
         btn_frame = ttk.Frame(self.root)
-        btn_frame.pack(pady=15)
+        btn_frame.pack(pady=10)
 
         self.start_btn = ttk.Button(
             btn_frame,
@@ -156,12 +190,35 @@ class MRAGUI:
         self._last_log_count = 0
         self._poll_logs()
 
+    def _on_stage_select(self, event=None):
+        """双击断点列表项→选中并打印到日志"""
+        selection = self.stage_listbox.curselection()
+        if selection:
+            stage = self.controller.STAGE_ORDER[selection[0]]
+            logger.log(f"已选择断点: {stage}")
+
     def _poll_logs(self):
         lines = logger.get_lines()
         if len(lines) > self._last_log_count:
             for line in lines[self._last_log_count:]:
                 self._append_log(line)
             self._last_log_count = len(lines)
+
+        # 更新当前阶段显示
+        stage = self.controller.current_stage
+        if stage:
+            self.stage_status_var.set(f"▶ 当前: {stage}")
+        elif self.running:
+            self.stage_status_var.set("▶ 当前: 停止中...")
+        else:
+            self.stage_status_var.set("")
+        # 根据当前阶段高亮列表项
+        if stage and stage in self.controller.STAGE_ORDER:
+            idx = self.controller.STAGE_ORDER.index(stage)
+            self.stage_listbox.selection_clear(0, tk.END)
+            self.stage_listbox.selection_set(idx)
+            self.stage_listbox.see(idx)
+
         self.root.after(200, self._poll_logs)
 
     def _on_start(self):
@@ -173,7 +230,7 @@ class MRAGUI:
         if has_physical_controller():
             dlg = tk.Toplevel(self.root)
             dlg.title("检测到物理手柄")
-            icon_path = Path(__file__).parent / "assets" / "icon.ico"
+            icon_path = Path(__file__).parent.parent / "assets" / "icon.ico"
             if icon_path.exists():
                 dlg.iconbitmap(str(icon_path))
             tk.Label(dlg, text="请断开所有物理手柄后再运行",
@@ -183,6 +240,16 @@ class MRAGUI:
             dlg.grab_set()
             dlg.wait_window()
             return
+
+        # 读取断点选择
+        selection = self.stage_listbox.curselection()
+        if selection:
+            start_from = self.controller.STAGE_ORDER[selection[0]]
+        else:
+            start_from = self.controller.STAGE_ORDER[0]
+
+        if start_from != self.controller.STAGE_ORDER[0]:
+            logger.log(f"断点模式: 从「{start_from}」开始运行")
 
         self.running = True
         self.start_btn.config(state=DISABLED)
@@ -195,12 +262,12 @@ class MRAGUI:
         if self.debug_var.get():
             logger.log("DEBUG 模式开启：每帧截图保存到 debug/navigate/", "INFO")
 
-        self.worker_thread = threading.Thread(target=self._worker, daemon=True)
+        self.worker_thread = threading.Thread(target=self._worker, args=(start_from,), daemon=True)
         self.worker_thread.start()
 
-    def _worker(self):
+    def _worker(self, start_from: str = ""):
         try:
-            self.controller.start()
+            self.controller.start(start_from=start_from)
         except Exception as e:
             logger.log(f"线程异常: {e}", "ERROR")
         finally:
@@ -214,6 +281,7 @@ class MRAGUI:
         self.status_label.config(bootstyle="secondary")
         self.controller.debug.disable_peep()
         self.peep_var.set(False)
+        self.stage_status_var.set("")
 
     def _toggle_peep(self):
         if self.peep_var.get():
@@ -235,12 +303,12 @@ def main():
 
     root = ttk.Window(themename="litera")
     app = MRAGUI(root)
-    
+
     # 在 mainloop 之前设置图标
-    icon_path = Path(__file__).parent / "assets" / "icon.ico"
+    icon_path = Path(__file__).parent.parent / "assets" / "icon.ico"
     if icon_path.exists():
         root.wm_iconbitmap(str(icon_path))
-    
+
     root.mainloop()
 
 
