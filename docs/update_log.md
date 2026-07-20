@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-07-20
+
+### v0.6.0 DirectML GPU 推理 + 性能优化 + 流程重构 🚀
+- **版本号保持 v0.6.0**（未升级版本号）
+- **onnxruntime-directml 替代 CPU-only onnxruntime**：YOLO 推理从 ~33ms 降到 ~3.7ms（9×加速），解决 GPU 4060 未被使用的问题。无需安装 CUDA Toolkit，DirectX 12 即可
+- **ONNX Session 缓存**：图优化（`ORT_ENABLE_ALL`）+ DirectML 内核缓存 + `model_optimized.onnx` 持久化到 `__pycache__/ort_cache/`
+- **跳帧推理**：YOLO 每 3 帧推理一次，中间帧复用缓存结果，GPU 负载降到 1/3
+- **`save_frame` 磁盘控制**：新增 `save_to_disk` 参数，PEEP 预览每帧更新（标注渲染仅 ~1-2ms），磁盘 `cv2.imwrite` 每 15 帧一次
+- **`_is_end` 统一模板匹配**：去掉不可靠的白色区域检测，改用 `store_popup_template.jpg` + `round1_end_template.jpg` 模板匹配（阈值 0.55），`_is_shop` 逻辑合并进 `_is_end`
+- **新增模板 `round1_end_template.jpg`**：用户截取的回合1结束画面
+- **`_in_match` 对局标记**：导航二成功后标记已进入对局，此后所有失败不回退大厅，直接停止流程
+- **RacingLoop 异常重试**：运行 < 3 秒判定异常，最多重试 3 次，全部异常停止
+- **关闭 handle_store_popup 后的光标复位**：直接进入确认上阵导航
+- **`requirements.txt` / `pyproject.toml`**：`onnxruntime` → `onnxruntime-directml`
+- **删除 `profile_racing.py`**：临时性能剖析脚本已清理
+
+---
+
+## 2026-07-19
+
+### v0.6.0 包结构重构 🏗️
+- **版本号：** `__version__ = "0.6.0"`
+- **创建包目录：** 将根目录全部源码移入 `maaracing_assistant/` 包目录
+- **main.py 拆分：** 880 行上帝文件拆分为 6 个单一职责模块（`logger.py` / `window_utils.py` / `yolo_detector.py` / `pipeline_logger.py` / `racing_loop.py` / `controller.py`）
+- **根目录精简：** 7 个 .py 文件减为 1 个（`run.py` 快捷入口）
+- **pyproject.toml：** 添加 setuptools 项目配置，支持 `pip install -e .`
+- **新增 `__main__.py`：** 支持 `python -m maaracing_assistant`
+- **导入链验证：** 全部 9 个模块通过导入检查，零循环导入
+- **环境清理：** 删除 milo 环境，maazs 重命名为 maaracing_assistant
+
+---
+
 ## 2026-07-17
 
 ### v0.5.0 导航三+PEEP实时预览+YOLO可视化 🎉

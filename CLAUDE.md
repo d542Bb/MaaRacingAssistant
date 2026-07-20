@@ -59,12 +59,27 @@
 
 ```
 d:\maaracing_assistant/
-├── main.py              # 主入口：YOLO 推理 + RacingLoop + MaaRacingAssistantController
-├── gui.py               # 图形界面（ttkbootstrap + UAC 提权）
-├── CLAUDE.md            # 本文件
-├── HANDOVER.md          # 完整交接文档
-├── README.md            # 快速开始
-├── requirements.txt     # 依赖
+├── run.py                               # 快捷入口：python run.py
+├── pyproject.toml                       # 项目配置（pip install -e . 支持）
+├── maaracing_assistant/                 # 应用包（源码）
+│   ├── __init__.py                      # 版本号
+│   ├── __main__.py                      # python -m maaracing_assistant 入口
+│   ├── controller.py                    # MaaRacingAssistantController（总控编排）
+│   ├── navigation.py                    # Navigation + ButtonDef（光标导航）
+│   ├── racing_loop.py                   # RacingLoop（YOLO 赛车控制）
+│   ├── yolo_detector.py                 # YOLODetector（ONNX 推理）
+│   ├── logger.py                        # Logger（文件+内存日志）
+│   ├── pipeline_logger.py               # PipelineLogger（MAA 事件）
+│   ├── window_utils.py                  # 窗口查找 + XInput 检测
+│   ├── gui.py                           # MRAGUI（ttkbootstrap 窗口）
+│   ├── debug.py                         # NavigationDebugger（调试可视化）
+│   └── opencv_utf8_patch.py             # OpenCV 中文路径补丁
+├── docs/                                # 文档
+│   ├── HANDOVER.md                      # 完整交接文档
+│   └── update_log.md                    # 更新日志
+├── CLAUDE.md                            # 本文件
+├── README.md                            # 快速开始
+├── requirements.txt                     # 依赖
 ├── .gitignore
 ├── assets/
 │   ├── model/
@@ -121,7 +136,8 @@ d:\maaracing_assistant/
 - ✅ 假光标静止拉黑 — 区域式检测 ±5px，光标丢失时延续拉黑状态
 - ✅ 物理手柄检测 — XInput API，GUI 弹窗阻止运行
 - ✅ GitHub PR 工作流 — master 分支启用保护，必须通过 PR 提交代码
-- ✅ 版本号 — v0.4.1（`main.py __version__`）
+- ✅ 版本号 — v0.6.0（`maaracing_assistant/__init__.py __version__`）
+- ✅ 包结构重构 — 源码归入 `maaracing_assistant/` 包目录，`main.py` 拆分为 6 个单一职责模块，零循环导入
 
 ## 对 AI 助手的要求
 

@@ -71,12 +71,14 @@ class NavigationDebugger:
             pass
 
     def start_session(self, label: str):
-        """开始一次导航调试会话"""
+        """开始一次导航调试会话（仅 enabled 时创建目录）"""
+        self.frame_count = 0
+        self.session_dir = None
+        if not self.enabled:
+            return
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # 使用中文标签 + 时间戳作为文件夹名
         self.session_dir = self.proj_dir / "debug" / "navigate" / f"{label}_{ts}"
         self.session_dir.mkdir(parents=True, exist_ok=True)
-        self.frame_count = 0
 
     def save_frame(
         self,
@@ -91,8 +93,11 @@ class NavigationDebugger:
         label: str = "",
         template_rects: list[dict] | None = None,
         detections: list[dict] | None = None,
+        save_to_disk: bool = True,
     ):
         """保存一帧调试截图，标注识别结果
+
+        save_to_disk: False 时跳过 cv2.imwrite（PEEP 预览始终更新）。
 
         颜色约定：
           🔴 红 — 选中的光标
@@ -228,8 +233,8 @@ class NavigationDebugger:
             score_line = f"score={cursor_score:.3f}"
             cv2.putText(img, score_line, (10, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
 
-        # 保存到磁盘（仅存盘模式开启时）
-        if self.enabled and self.session_dir is not None:
+        # 保存到磁盘（仅存盘模式 + save_to_disk 同时开启时）
+        if self.enabled and self.session_dir is not None and save_to_disk:
             fname = f"{self.frame_count:03d}.png"
             cv2.imwrite(str(self.session_dir / fname), img)
 
