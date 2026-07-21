@@ -12,6 +12,9 @@ from maaracing_assistant.logger import logger
 
 
 class YOLODetector:
+    # 按类别的置信度阈值：coin(0)和bonus_car(2)面积小/样本少，降低阈值
+    CLASS_CONF = {0: 0.35, 1: 0.40, 2: 0.35}
+
     def __init__(self, model_path: str, conf: float = 0.5, iou: float = 0.45):
         # ── Session 选项（图优化 + 缓存） ──
         from pathlib import Path
@@ -58,16 +61,64 @@ class YOLODetector:
         self.conf = conf
         self.iou = iou
         self.input_size = 640
+        self._call_count = 0
 
-    def __call__(self, img_rgb: np.ndarray):
-        orig_h, orig_w = img_rgb.shape[:2]
+    def _to_dets(self, xyxy, scores, classes, pad_x, pad_y, scale, ox, oy, orig_w, orig_h, indices, min_score=0.0):
+        """将索引列表转为检测结果 dicts"""
+        coins, cars, bonus_cars, dets = [], [], [], []
+        for i in indices:
+            i = int(i)
+            if scores[i] < min_score:
+                continue
+            cls = int(classes[i])
+            x1, y1, x2, y2 = xyxy[i]
+            x1, x2 = (x1 - pad_x) / scale + ox, (x2 - pad_x) / scale + ox
+            y1, y2 = (y1 - pad_y) / scale + oy, (y2 - pad_y) / scale + oy
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(orig_w + ox, x2), min(orig_h + oy, y2)
+            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+            bw, bh = x2 - x1, y2 - y1
+            cls_name = {0: "coin", 1: "car", 2: "bonus_car"}.get(cls, "?")
+            dets.append({
+                "box": (int(x1), int(y1), int(x2), int(y2)),
+                "confidence": float(scores[i]),
+                "class_name": cls_name,
+            })
+            if cls == 0:
+                coins.append((int(cx), int(cy), int(bw), int(bh)))
+            elif cls == 1:
+                cars.append((int(cx), int(cy), int(bw), int(bh)))
+            else:
+                bonus_cars.append((int(cx), int(cy), int(bw), int(bh)))
+        return coins, cars, bonus_cars, dets
+
+    def __call__(self, img_rgb: np.ndarray, roi: tuple | None = None):
+        """YOLO 推理
+
+        Args:
+            img_rgb: 全屏 RGB 图像
+            roi: (x1, y1, x2, y2) 裁剪区域（原始图坐标），None 表示全图
+
+        Returns:
+            (coins, cars, bonus_cars, debug_dets, all_raw_dets)
+            all_raw_dets: 低阈值全量检测（debug 可视化用）
+        """
+        if roi is not None:
+            x1, y1, x2, y2 = roi
+            orig = img_rgb[y1:y2, x1:x2].copy()
+            ox, oy = x1, y1
+        else:
+            orig = img_rgb
+            ox, oy = 0, 0
+
+        orig_h, orig_w = orig.shape[:2]
         scale = min(self.input_size / orig_h, self.input_size / orig_w)
         nh, nw = int(orig_h * scale), int(orig_w * scale)
         pad_y = (self.input_size - nh) // 2
         pad_x = (self.input_size - nw) // 2
 
         padded = np.full((self.input_size, self.input_size, 3), 114, dtype=np.uint8)
-        padded[pad_y: pad_y + nh, pad_x: pad_x + nw] = cv2.resize(img_rgb, (nw, nh), interpolation=cv2.INTER_LINEAR)
+        padded[pad_y: pad_y + nh, pad_x: pad_x + nw] = cv2.resize(orig, (nw, nh), interpolation=cv2.INTER_LINEAR)
         blob = padded.transpose(2, 0, 1)[None].astype(np.float32) / 255.0
 
         raw_outputs = self.session.run(None, {self.input_name: blob})
@@ -80,47 +131,60 @@ class YOLODetector:
         max_scores = np.max(cls_conf, axis=1)
         max_classes = np.argmax(cls_conf, axis=1)
 
-        mask = max_scores > self.conf
+        # ── xyxy 坐标（统一计算一次） ──
+        xyxy = np.zeros_like(xywh)
+        xyxy[:, 0] = xywh[:, 0] - xywh[:, 2] / 2
+        xyxy[:, 1] = xywh[:, 1] - xywh[:, 3] / 2
+        xyxy[:, 2] = xywh[:, 0] + xywh[:, 2] / 2
+        xyxy[:, 3] = xywh[:, 1] + xywh[:, 3] / 2
+
+        # ── 诊断：统计各类别原始置信度分布（每 10 帧一次） ──
+        self._call_count += 1
+        if self._call_count % 10 == 0:
+            for cls_name, cls_id in [("coin", 0), ("car", 1), ("bonus_car", 2)]:
+                confs = max_scores[max_classes == cls_id]
+                if len(confs) > 0:
+                    logger.log(f"[RAW] {cls_name}: {len(confs)}个 pred, "
+                               f"max={confs.max():.3f}, mean={confs.mean():.3f}", "DEBUG")
+                else:
+                    logger.log(f"[RAW] {cls_name}: 无 pred（均低于0.01）", "DEBUG")
+
+        # ── 全量低阈值检测（debug 可视化用，每类最多 20 个） ──
+        RAW_CONF = 0.05
+        raw_mask = max_scores > RAW_CONF
+        all_raw_dets = []
+        if np.any(raw_mask):
+            raw_indices = np.where(raw_mask)[0]
+            # 按置信度降序，每类取 top 20
+            raw_sorted = raw_indices[np.argsort(-max_scores[raw_indices])]
+            per_class_count = {0: 0, 1: 0, 2: 0}
+            top_raw = []
+            for idx in raw_sorted:
+                cls = int(max_classes[idx])
+                if per_class_count.get(cls, 0) < 20:
+                    top_raw.append(idx)
+                    per_class_count[cls] = per_class_count.get(cls, 0) + 1
+            _, _, _, all_raw_dets = self._to_dets(
+                xyxy, max_scores, max_classes, pad_x, pad_y, scale, ox, oy,
+                orig_w, orig_h, top_raw, min_score=RAW_CONF)
+
+        # ── 正式过滤：按类别置信度阈值 + NMS ──
+        per_class_thresholds = np.array([self.CLASS_CONF.get(int(c), self.conf) for c in max_classes])
+        mask = max_scores > per_class_thresholds
         if not np.any(mask):
-            return [], [], [], []
+            return [], [], [], [], all_raw_dets
 
-        boxes = xywh[mask]
-        scores_f = max_scores[mask]
-        classes = max_classes[mask]
-
-        xyxy = np.zeros_like(boxes)
-        xyxy[:, 0] = boxes[:, 0] - boxes[:, 2] / 2
-        xyxy[:, 1] = boxes[:, 1] - boxes[:, 3] / 2
-        xyxy[:, 2] = boxes[:, 0] + boxes[:, 2] / 2
-        xyxy[:, 3] = boxes[:, 1] + boxes[:, 3] / 2
-
-        indices = cv2.dnn.NMSBoxes(xyxy.tolist(), scores_f.tolist(), self.conf, self.iou)
+        indices = cv2.dnn.NMSBoxes(
+            xyxy[mask].tolist(), max_scores[mask].tolist(),
+            min(self.CLASS_CONF.values()), self.iou)
         if len(indices) == 0:
-            return [], [], [], []
+            return [], [], [], [], all_raw_dets
 
-        coins, cars, bonus_cars = [], [], []
-        debug_dets = []
-        for i in indices:
-            i = int(i)
-            cls = int(classes[i])
-            x1, y1, x2, y2 = xyxy[i]
-            x1, x2 = (x1 - pad_x) / scale, (x2 - pad_x) / scale
-            y1, y2 = (y1 - pad_y) / scale, (y2 - pad_y) / scale
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(orig_w, x2), min(orig_h, y2)
-            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-            bw, bh = x2 - x1, y2 - y1
-            cls_name = {0: "coin", 1: "car", 2: "bonus_car"}.get(cls, "?")
-            debug_dets.append({
-                "box": (int(x1), int(y1), int(x2), int(y2)),
-                "confidence": float(scores_f[i]),
-                "class_name": cls_name,
-            })
-            if cls == 0:
-                coins.append((int(cx), int(cy), int(bw), int(bh)))
-            elif cls == 1:
-                cars.append((int(cx), int(cy), int(bw), int(bh)))
-            else:
-                bonus_cars.append((int(cx), int(cy), int(bw), int(bh)))
+        # 把 NMS 索引映射回原始索引
+        mask_indices = np.where(mask)[0]
+        real_indices = mask_indices[indices]
+        coins, cars, bonus_cars, debug_dets = self._to_dets(
+            xyxy, max_scores, max_classes, pad_x, pad_y, scale, ox, oy,
+            orig_w, orig_h, real_indices)
 
-        return coins, cars, bonus_cars, debug_dets
+        return coins, cars, bonus_cars, debug_dets, all_raw_dets

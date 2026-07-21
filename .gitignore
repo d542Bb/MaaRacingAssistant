@@ -7,12 +7,14 @@ __pycache__/
 env/
 venv/
 
-# 模型和数据集（大文件）
-assets/model/*.onnx
+# 数据集（大文件）
 dataset/images/
 dataset/labels/
 runs/
 tools/*.pt
+
+# 训练数据暂存
+training/
 
 # 日志
 logs/

@@ -200,7 +200,7 @@ d:\maaracing_assistant/
 │
 ├── assets/
 │   ├── model/
-│   │   └── yolov8n_coins_cars.onnx      # YOLO 模型（3 类）
+│   │   └── model.onnx                    # YOLO 模型（3 类，由 train.py 生成）
 │   ├── resource/
 │   │   ├── image/                       # 模板图片（归位 + 导航 + 结束检测）
 │   │   └── pipeline/
