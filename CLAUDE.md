@@ -83,7 +83,7 @@ d:\maaracing_assistant/
 ├── .gitignore
 ├── assets/
 │   ├── model/
-│   │   └── yolov8n_coins_cars.onnx   # YOLO 模型（3 类）
+│   │   └── model.onnx                 # YOLO 模型（3 类，由 train.py 生成）
 │   ├── resource/
 │   │   ├── image/
 │   │   │   ├── settings_page_template.jpg   # 归位：设置页面

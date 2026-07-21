@@ -40,7 +40,7 @@ class MaaRacingAssistantController:
 
     def __init__(self):
         self.proj = Path(__file__).parent.parent
-        self.model_path = self.proj / "assets" / "model" / "yolov8n_coins_cars.onnx"
+        self.model_path = self.proj / "assets" / "model" / "model.onnx"
         self.tasker = None
         self.resource = None
         self.controller = None
@@ -379,6 +379,8 @@ class MaaRacingAssistantController:
                 # ── 比赛（直接运行，绕过 MAA CustomAction）──
                 self._current_stage = self.STAGE_ORDER[6]
                 if self._running:
+                    # 销毁导航手柄，避免 RacingLoop 创建第二个手柄导致游戏不识別
+                    self._destroy_gpad()
                     race_ok = False
                     for race_retry in range(3):
                         if not self._running:

@@ -1,8 +1,8 @@
-# MaaRacingAssistant v0.6.0 — 开发交接文档
+# MaaRacingAssistant v0.7.0 — 开发交接文档
 
 ## 项目目标
 自动完成《巅峰极速》"极速狂飙"活动：
-**启动归位**（按B直到设置页面，再按B回主界面）→ **光标导航**（`ButtonDef` 配置驱动，3 步导航进比赛 → 左摇杆移动光标到按钮，按A确认）→ 回合1赛车（YOLO识别 + 手柄控制）→ 回合2放弃 → 循环
+**启动归位**（按B直到设置页面，再按B回主界面）→ **光标导航**（`ButtonDef` 配置驱动，3 步导航进比赛 → 左摇杆移动光标到按钮，按A确认）→ 回合1赛车（YOLO识别 + 黄色标线车道检测 + 手柄控制）→ 回合2放弃 → 循环
 
 ## 技术栈
 - MAA Framework 5.11.1（UI 流程 + 窗口控制）
@@ -42,7 +42,7 @@
 - ✅ **物理手柄检测** — XInput API 遍历 4 端口，检测到手柄时弹自定义对话框阻止运行（带 icon.ico）
 - ✅ **窗口连接** — 通过 MAA `find_desktop_windows()` + Win32Controller 正常
 - ✅ **Pipeline 绑定** — `tasks.json` 4 步线性流程：`比赛→结束→放弃→确认`，导航由 Python 主循环驱动
-- ✅ **YOLO 模型** — 已训练 mAP50≈0.92，ONNX 已导出 `assets/model/yolov8n_coins_cars.onnx`（3 类：coin / car / bonus_car）
+- ✅ **YOLO 模型** — 已训练 mAP50≈0.92，ONNX 已导出 `assets/model/model.onnx`（3 类：coin / car / bonus_car）
 - ✅ **Pipeline 日志** — `PipelineLogger(ContextEventSink)` 监听每步识别命中/动作成功状态
 - ✅ **RT 加速** — `RacingLoop.run()` 起步按住 `right_trigger(255)`，`finally` 释放
 - ✅ **YOLO 决策日志** — `_decide()` 每步打印 bonus_car 对准/障碍避让/金币吃取/直行的中文日志
@@ -56,10 +56,17 @@
 - ✅ **PEEP 实时预览** — GUI 独立开关，OpenCV 独立线程实时显示调试帧，不依赖 DEBUG 存盘 ✅ v0.5.0
 - ✅ **YOLO 检测可视化** — PEEP 窗口实时显示 YOLO 检测框（金色=coin/红色=car/紫色=bonus_car）+ 置信度 ✅ v0.5.0
 - ✅ **模板匹配可视化** — PEEP 窗口实时显示模板匹配位置（青色矩形）+ 置信度 ✅ v0.5.0
+- ✅ **黄色标线车道检测** — HSV 滤波（H:15-35, S:80-255, V:80-255）检测道路两侧黄色标线，提供左右边界和车道中心参考 ✅ v0.7.0
+- ✅ **全局路径规划** — `_decide()` 重写：边缘紧急修正 > bonus_car > 障碍避让(车道约束) > 金币(链式评分) > 保持道路中心 ✅ v0.7.0
+- ✅ **车道约束避让** — 以车道中心为参照，检查左右占道，不再以画面中心为"正" ✅ v0.7.0
+- ✅ **YOLO ROI 裁剪** — 只检测 y28%~78% 路面区域（1280×720→1280×360），减少 UI 干扰，坐标自动回映射到全屏 ✅ v0.7.0
+- ✅ **导航阈值分辨率自适应** — 所有硬编码像素阈值改为 `min_dim` 百分比：FAR=20%/MID=10%/NEAR=5%/BASE=28%，ALIGN_PX=2.5% ✅ v0.7.0
+- ✅ **PEEP/存盘双模式可视化** — `_render_full()` 全量绘制存盘 vs `_render_peep()` 精简绘制预览，独立渲染互不干扰 ✅ v0.7.0
+- ✅ **双手柄冲突修复** — controller.py 在 racing 开始前销毁导航手柄 ✅ v0.7.0
 
-### main.py → maaracing_assistant/ 包结构
+### maaracing_assistant/ 包结构
 
-v0.6.0 已将 `main.py` 拆分为 6 个单一职责模块，统一放入 `maaracing_assistant/` 包目录：
+v0.6.0 已将 `main.py` 拆分为 6 个单一职责模块并入 `maaracing_assistant/` 包目录：
 
 | 模块 | 职责 |
 |------|------|
@@ -300,7 +307,7 @@ d:\maaracing_assistant/
 ├── .gitignore
 ├── assets/
 │   ├── model/
-│   │   └── yolov8n_coins_cars.onnx   # YOLO ONNX 模型（3 类：coin/car/bonus_car）
+│   │   └── model.onnx                 # YOLO ONNX 模型（3 类：coin/car/bonus_car）
 │   ├── resource/
 │   │   ├── image/                     # 模板图片
 │   │   │   ├── settings_page_template.jpg   # 归位：设置页面 ✅
@@ -321,7 +328,7 @@ d:\maaracing_assistant/
 ├── tools/
 │   ├── train.py         # YOLO 训练脚本（自动导出 ONNX + 复制到 assets）
 │   ├── dataset.yaml     # 数据集配置（3 类：coin / car / bonus_car）
-│   ├── yolov8n.pt       # 预训练权重 YOLOv8n
+│   ├── yolo11n.pt       # 预训练权重 YOLO11n（首次训练自动下载）
 │   └── yolo26n.pt       # 预训练权重 YOLO26n
 ├── logs/                # 运行日志 MRA_*.log（gitignore）
 └── debug/               # 调试输出（gitignore）
@@ -336,10 +343,11 @@ d:\maaracing_assistant/
 ## 决策优先级（`RacingLoop._decide()`）
 
 ```
-0️⃣ bonus_car（跳板车/油罐车）→ 对准撞上去
-1️⃣ 障碍车（car）→ 躲避（3 车道判断，检查两侧是否被占）
-2️⃣ 金币（coin）→ 吃（选最近的）
-3️⃣ 无目标 → 直行
+0️⃣ 边缘紧急修正 → 车道偏离 >20% 或 >80% 时立即回中（最高优先级）
+1️⃣ bonus_car（跳板车/油罐车）→ 对准撞上去（以车道中心为参考）
+2️⃣ 障碍车（car）→ 车道内避让（检查左右占道，DANGER_Y=h*0.35）
+3️⃣ 金币（coin）→ 链式评分：cy + 附近同伴数×50，选"最有价值"金币
+4️⃣ 无目标 → 保持道路中心（有标线时），否则直行
 ```
 
 ## 关键参数速查
@@ -368,11 +376,11 @@ d:\maaracing_assistant/
 | 摇杆最大幅值 | 8000 | `_move_cursor_to_target(MAX_AXIS=8000)` | ✅ |
 | 摇杆死区 | 4260（13%） | `_move_cursor_to_target()` | ✅ |
 | 死区策略 | 独立死区（每轴<4260→升到4260，不缩放） | `_move_cursor_to_target()` | ✅ |
-| 远距推送 | >150px: speed=0.7~1.0, hold=0.2s | `_move_cursor_to_target()` | ✅ |
-| 中距推送 | >70px: speed=0.55~0.75, hold=0.1s | `_move_cursor_to_target()` | ✅ |
-| 中近推送 | >35px: speed=0.45, hold=0.08s | `_move_cursor_to_target()` | ✅ v0.4.0 |
-| 微调推送 | <35px: speed=0.28(被死区抬到4260), hold=0.025s | `_move_cursor_to_target()` | ✅ v0.4.0 |
-| 刹车时间 | <35px 时 80ms，否则 50ms | `_move_cursor_to_target()` | ✅ v0.4.0 |
+| 远距推送 | >min_dim*0.20: speed=0.7~1.0, hold=0.2s | `_move_cursor_to_target()` | ✅ v0.7.0 |
+| 中距推送 | >min_dim*0.10: speed=0.55~0.75, hold=0.1s | `_move_cursor_to_target()` | ✅ v0.7.0 |
+| 中近推送 | >min_dim*0.05: speed=0.45, hold=0.08s | `_move_cursor_to_target()` | ✅ v0.7.0 |
+| 微调推送 | <min_dim*0.05: speed=0.28(被死区抬到4260), hold=0.025s | `_move_cursor_to_target()` | ✅ v0.7.0 |
+| 刹车时间 | <min_dim*0.05 时 80ms，否则 50ms | `_move_cursor_to_target()` | ✅ v0.7.0 |
 | 运动一致性评分 | `alignment × 0.15`，Y 取反 `sy = -ly/stick_len` | `_find_cursor_by_shape()` | ✅ v0.4.0 |
 | 导航一重试 | 3次（destroy→2s→homing→retry） | `start()` | ✅ |
 | 导航二重试 | 3次（destroy→2s→continue外层循环） | `start()` | ✅ |
@@ -404,6 +412,29 @@ d:\maaracing_assistant/
 | 模板匹配阈值 (find_opponent) | 0.55 | `_check_page_by_template()` | ✅ v0.5.0 |
 | PEEP 模式 | GUI 独立开关，OpenCV 线程实时预览调试帧 | `debug.py` / `gui.py` | ✅ v0.5.0 |
 | YOLO 调试返回 | 每帧返回 debug_dets (框坐标+置信度+类名) | `YOLODetector.__call__()` | ✅ v0.5.0 |
+
+### v0.7.0 新增参数
+
+| 参数 | 当前值 | 位置 | 状态 |
+|------|--------|------|------|
+| 黄色标线 HSV 范围 | H:15-35, S:80-255, V:80-255 | `RacingLoop._detect_lane()` | ✅ v0.7.0 |
+| 标线检测区域 | y55%~80% 水平条 | `RacingLoop._detect_lane()` | ✅ v0.7.0 |
+| 标线宽度校验 | 车道宽 30%~85% 画面宽 | `RacingLoop._detect_lane()` | ✅ v0.7.0 |
+| 标线最小黄色像素 | ≥20 像素（左右各≥5） | `RacingLoop._detect_lane()` | ✅ v0.7.0 |
+| 车道归中阈值 | 偏离 >20% 或 >80% | `RacingLoop._keep_center()` | ✅ v0.7.0 |
+| 障碍车危险区 | DANGER_Y = h*0.35（中下部） | `RacingLoop._decide()` | ✅ v0.7.0 |
+| 车道宽度基准 | LANE_W = w*0.12 | `RacingLoop._avoid()` | ✅ v0.7.0 |
+| 威胁横向范围 | THREAT_RANGE = LANE_W*1.8 | `RacingLoop._avoid()` | ✅ v0.7.0 |
+| 金币链式评分 | cy + 附近同伴数×50（附近<w*0.2 且 <h*0.3） | `RacingLoop._decide()` | ✅ v0.7.0 |
+| 对准死区 | w*0.06（以车道中心为参考） | `RacingLoop._aim_at()` | ✅ v0.7.0 |
+| YOLO ROI | (0, 201, 1280, 561) = y28%~78% | `RacingLoop.ROI` | ✅ v0.7.0 |
+| 导航 FAR 阈值 | min_dim*0.20 (~144px @720p) | `_move_cursor_to_target()` | ✅ v0.7.0 |
+| 导航 MID 阈值 | min_dim*0.10 (~72px @720p) | `_move_cursor_to_target()` | ✅ v0.7.0 |
+| 导航 NEAR 阈值 | min_dim*0.05 (~36px @720p) | `_move_cursor_to_target()` | ✅ v0.7.0 |
+| 导航 BASE 归一化 | min_dim*0.28 | `_move_cursor_to_target()` | ✅ v0.7.0 |
+| 方向对齐 ALIGN_PX | max(12, min_dim*0.025) (~18px @720p) | `_move_cursor_to_target()` | ✅ v0.7.0 |
+| PEEP 精简渲染 | YOLO框(无置信度)/标线/方向大字/统计，不画候选/模板 | `_render_peep()` | ✅ v0.7.0 |
+| 存盘全量渲染 | 黑色过滤/绿紫候选/红色光标+评分/青色模板/YOLO+置信度/标线+坐标 | `_render_full()` | ✅ v0.7.0 |
 
 ## 对 AI 助手的要求
 1. 先沟通对齐，再输出代码

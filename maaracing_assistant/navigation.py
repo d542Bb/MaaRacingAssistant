@@ -315,7 +315,8 @@ class Navigation:
     # ---------- 光标移动 ----------
 
     def _move_cursor_to_target(self, cursor_pos: tuple, target_pos: tuple,
-                                gpad: vg.VX360Gamepad, stop_distance: int = 25) -> bool:
+                                gpad: vg.VX360Gamepad, stop_distance: int = 25,
+                                w: int = 1280, h: int = 720) -> bool:
         """控制左摇杆移动光标到目标"""
         cx, cy = cursor_pos
         tx, ty = target_pos
@@ -329,8 +330,11 @@ class Navigation:
 
         DEADZONE = 4260
         MAX_AXIS = 8000
+        min_dim = min(w, h)
 
-        if abs(dy) < 30:
+        ALIGN_PX = max(12, int(min_dim * 0.025))   # 方向对齐像素阈值（~18px @ 720p）
+
+        if abs(dy) < ALIGN_PX:
             ux = 1.0 if dx > 0 else -1.0
             uy = 0.0
         elif abs(dx) < 30:
@@ -340,13 +344,19 @@ class Navigation:
             ux = dx / dist
             uy = -dy / dist
 
-        if dist > 150:
+        # 距离阈值自适应（基于屏幕尺寸百分比）
+        FAR = int(min_dim * 0.20)        # > 20% = 远
+        MID = int(min_dim * 0.10)        # > 10% = 中
+        NEAR = int(min_dim * 0.05)       # > 5% = 近
+        BASE = int(min_dim * 0.28)       # 速度归一化基数
+
+        if dist > FAR:
             hold_time = 0.2
-            speed = max(0.7, min(1.0, dist / 200))
-        elif dist > 70:
+            speed = max(0.7, min(1.0, dist / BASE))
+        elif dist > MID:
             hold_time = 0.1
-            speed = max(0.55, dist / 200)
-        elif dist > 35:
+            speed = max(0.55, dist / BASE)
+        elif dist > NEAR:
             hold_time = 0.08
             speed = 0.45
         else:
@@ -651,7 +661,8 @@ class Navigation:
                         continue
 
                     stop_dist = max(8, int(close_th * 0.55))
-                    self._move_cursor_to_target(cursor_pos, button_pos, gpad, stop_distance=stop_dist)
+                    self._move_cursor_to_target(cursor_pos, button_pos, gpad,
+                                                stop_distance=stop_dist, w=w, h=h)
                 else:
                     if cursor_lost_start is None:
                         cursor_lost_start = time.time()
