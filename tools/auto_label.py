@@ -27,7 +27,7 @@ from maaracing_assistant.logger import logger
 
 def main():
     # ── 配置 ──
-    img_dir = Path("D:/nvdia/g112-Win64-Shipping.exe")
+    img_dir = Path(__file__).resolve().parent.parent / "training"
     model_path = Path(__file__).resolve().parent.parent / "assets" / "model" / "model.onnx"
 
     if not model_path.exists():
@@ -35,17 +35,24 @@ def main():
         return
 
     # 预标用较低阈值（宁可多标假阳性，回头删比手标省事）
-    det = YOLODetector(str(model_path), conf=0.25, iou=0.5)
+    detector = YOLODetector(str(model_path), conf=0.25, iou=0.5)
     # coin 和 bonus_car 再单独降低
-    det.CLASS_CONF = {0: 0.15, 1: 0.30, 2: 0.15}
+    detector.CLASS_CONF = {0: 0.15, 1: 0.30, 2: 0.15}
 
     images = sorted(img_dir.glob("*.jpg")) + sorted(img_dir.glob("*.png"))
     print(f"找到 {len(images)} 张图片")
 
     total_labels = {0: 0, 1: 0, 2: 0}
     skipped = 0
+    auto_labeled = 0
 
     for i, img_path in enumerate(images):
+        # 跳过已有标注的图片
+        label_path = img_path.with_suffix(".txt")
+        if label_path.exists():
+            skipped += 1
+            continue
+
         img_bgr = cv2.imread(str(img_path))
         if img_bgr is None:
             print(f"  跳过（无法读取）: {img_path.name}")
@@ -54,13 +61,13 @@ def main():
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
         h, w = img_rgb.shape[:2]
-        coins, cars, bonus_cars, debug_dets = det(img_rgb)
+        coins, cars, bonus_cars, debug_dets = detector(img_rgb)
 
         # 合并所有检测结果，转 YOLO 格式
         lines = []
-        for det in debug_dets:
-            x1, y1, x2, y2 = det["box"]
-            cls_name = det["class_name"]
+        for d in debug_dets:
+            x1, y1, x2, y2 = d["box"]
+            cls_name = d["class_name"]
             cls_id = {"coin": 0, "car": 1, "bonus_car": 2}.get(cls_name, -1)
             if cls_id < 0:
                 continue
@@ -77,14 +84,14 @@ def main():
             total_labels[cls_id] = total_labels.get(cls_id, 0) + 1
 
         # 写入 .txt
-        label_path = img_path.with_suffix(".txt")
         with open(label_path, "w") as f:
             f.write("\n".join(lines))
 
+        auto_labeled += 1
         if (i + 1) % 50 == 0:
             print(f"  进度: {i+1}/{len(images)}")
 
-    print(f"\n完成！跳过 {skipped} 张无法读取的图片")
+    print(f"\n完成！已有标注跳过 {skipped} 张，新预标 {auto_labeled} 张")
     print(f"标注统计（可手动修改 .txt 增删改）:")
     print(f"  coin(0):       {total_labels[0]}")
     print(f"  car(1):        {total_labels[1]}")

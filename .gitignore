@@ -7,8 +7,7 @@ __pycache__/
 env/
 venv/
 
-# 模型和数据集（大文件）
-assets/model/*.onnx
+# 数据集（大文件）
 dataset/images/
 dataset/labels/
 runs/
