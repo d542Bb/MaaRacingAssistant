@@ -1,4 +1,4 @@
-# MaaRacingAssistant v0.7.0 — 开发交接文档
+# MaaRacingAssistant v0.7.1 — 开发交接文档
 
 ## 项目目标
 自动完成《巅峰极速》"极速狂飙"活动：
@@ -56,8 +56,13 @@
 - ✅ **PEEP 实时预览** — GUI 独立开关，OpenCV 独立线程实时显示调试帧，不依赖 DEBUG 存盘 ✅ v0.5.0
 - ✅ **YOLO 检测可视化** — PEEP 窗口实时显示 YOLO 检测框（金色=coin/红色=car/紫色=bonus_car）+ 置信度 ✅ v0.5.0
 - ✅ **模板匹配可视化** — PEEP 窗口实时显示模板匹配位置（青色矩形）+ 置信度 ✅ v0.5.0
-- ✅ **黄色标线车道检测** — HSV 滤波（H:15-35, S:80-255, V:80-255）检测道路两侧黄色标线，提供左右边界和车道中心参考 ✅ v0.7.0
-- ✅ **全局路径规划** — `_decide()` 重写：边缘紧急修正 > bonus_car > 障碍避让(车道约束) > 金币(链式评分) > 保持道路中心 ✅ v0.7.0
+- ✅ **黄色标线车道检测** — HSV 滤波（H:20-30, S:150-255, V:150-255）HoughLinesP 直线检测 ✅ v0.7.1
+- ✅ **全局路径规划** — `_decide()` 重写：防碰撞(C区/B区) > bonus_car > 障碍避让 > 金币 > 回带 ✅ v0.7.1
+- ✅ **三区防碰撞** — `_wall_avoidance` 替代 `_keep_center`，A区安全/B区二阶导加速监控/C区硬边界突发修正 ✅ v0.7.1
+- ✅ **反打修正（突发+归中）** — C 区不再持续满打，改为 2 帧突发 + 5 帧强制归中滑行，防止来回弹墙 ✅ v0.7.1
+- ✅ **标线不推断对侧** — 只信任真实检出的标线，防碰撞只读真实侧 ✅ v0.7.1
+- ✅ **标线丢失记忆回带** — `_wall_memory` 机制，标线丢失有历史记忆时轻柔回带 ✅ v0.7.1
+- ✅ **Debug 摇杆状态条** — 底部方向文字替换为摇杆滑条指示器 ✅ v0.7.1
 - ✅ **车道约束避让** — 以车道中心为参照，检查左右占道，不再以画面中心为"正" ✅ v0.7.0
 - ✅ **YOLO ROI 裁剪** — 只检测 y28%~78% 路面区域（1280×720→1280×360），减少 UI 干扰，坐标自动回映射到全屏 ✅ v0.7.0
 - ✅ **导航阈值分辨率自适应** — 所有硬编码像素阈值改为 `min_dim` 百分比：FAR=20%/MID=10%/NEAR=5%/BASE=28%，ALIGN_PX=2.5% ✅ v0.7.0
@@ -343,11 +348,12 @@ d:\maaracing_assistant/
 ## 决策优先级（`RacingLoop._decide()`）
 
 ```
-0️⃣ 边缘紧急修正 → 车道偏离 >20% 或 >80% 时立即回中（最高优先级）
-1️⃣ bonus_car（跳板车/油罐车）→ 对准撞上去（以车道中心为参考）
+0️⃣ 防碰撞 C 区（L>450 或 R<750）→ 强制反打（突发 2 帧 + 归中 5 帧）← 最高优先级
+1️⃣ bonus_car（跳板车/油罐车）→ 对准撞上去（无障碍边界约束）
 2️⃣ 障碍车（car）→ 车道内避让（检查左右占道，DANGER_Y=h*0.35）
 3️⃣ 金币（coin）→ 链式评分：cy + 附近同伴数×50，选"最有价值"金币
-4️⃣ 无目标 → 保持道路中心（有标线时），否则直行
+   防碰撞 B 区 → 如果转向方向朝墙（ddL>5 或 ddR<-5）则取消该决策
+4️⃣ 无目标 → 标线丢失有记忆时回带，否则直行
 ```
 
 ## 关键参数速查
@@ -413,20 +419,21 @@ d:\maaracing_assistant/
 | PEEP 模式 | GUI 独立开关，OpenCV 线程实时预览调试帧 | `debug.py` / `gui.py` | ✅ v0.5.0 |
 | YOLO 调试返回 | 每帧返回 debug_dets (框坐标+置信度+类名) | `YOLODetector.__call__()` | ✅ v0.5.0 |
 
-### v0.7.0 新增参数
+### v0.7.0 参数（部分 v0.7.1 已更新）
 
 | 参数 | 当前值 | 位置 | 状态 |
 |------|--------|------|------|
-| 黄色标线 HSV 范围 | H:15-35, S:80-255, V:80-255 | `RacingLoop._detect_lane()` | ✅ v0.7.0 |
-| 标线检测区域 | y55%~80% 水平条 | `RacingLoop._detect_lane()` | ✅ v0.7.0 |
-| 标线宽度校验 | 车道宽 30%~85% 画面宽 | `RacingLoop._detect_lane()` | ✅ v0.7.0 |
-| 标线最小黄色像素 | ≥20 像素（左右各≥5） | `RacingLoop._detect_lane()` | ✅ v0.7.0 |
-| 车道归中阈值 | 偏离 >20% 或 >80% | `RacingLoop._keep_center()` | ✅ v0.7.0 |
+| 黄色标线 HSV 范围 | H:20-30, S:150-255, V:150-255 | `RacingLoop._detect_lane()` | ✅ v0.7.1 |
+| 标线检测方式 | HoughLinesP（原像素扫描） | `RacingLoop._detect_lane()` | ✅ v0.7.1 |
+| 标线检测区域 | y50%~80% 水平条 | `RacingLoop._detect_lane()` | ✅ v0.7.0 |
+| Hough 参数 | threshold=60, minLineLength=40, maxLineGap=40 | `RacingLoop._detect_lane()` | ✅ v0.7.1 |
+| 左标线角度 | 120°~165° | `RacingLoop._detect_lane()` | ✅ v0.7.1 |
+| 右标线角度 | 15°~60° | `RacingLoop._detect_lane()` | ✅ v0.7.1 |
 | 障碍车危险区 | DANGER_Y = h*0.35（中下部） | `RacingLoop._decide()` | ✅ v0.7.0 |
 | 车道宽度基准 | LANE_W = w*0.12 | `RacingLoop._avoid()` | ✅ v0.7.0 |
 | 威胁横向范围 | THREAT_RANGE = LANE_W*1.8 | `RacingLoop._avoid()` | ✅ v0.7.0 |
 | 金币链式评分 | cy + 附近同伴数×50（附近<w*0.2 且 <h*0.3） | `RacingLoop._decide()` | ✅ v0.7.0 |
-| 对准死区 | w*0.06（以车道中心为参考） | `RacingLoop._aim_at()` | ✅ v0.7.0 |
+| 对准死区 | w*0.06 | `RacingLoop._aim_at()` | ✅ v0.7.0 |
 | YOLO ROI | (0, 201, 1280, 561) = y28%~78% | `RacingLoop.ROI` | ✅ v0.7.0 |
 | 导航 FAR 阈值 | min_dim*0.20 (~144px @720p) | `_move_cursor_to_target()` | ✅ v0.7.0 |
 | 导航 MID 阈值 | min_dim*0.10 (~72px @720p) | `_move_cursor_to_target()` | ✅ v0.7.0 |
@@ -435,6 +442,20 @@ d:\maaracing_assistant/
 | 方向对齐 ALIGN_PX | max(12, min_dim*0.025) (~18px @720p) | `_move_cursor_to_target()` | ✅ v0.7.0 |
 | PEEP 精简渲染 | YOLO框(无置信度)/标线/方向大字/统计，不画候选/模板 | `_render_peep()` | ✅ v0.7.0 |
 | 存盘全量渲染 | 黑色过滤/绿紫候选/红色光标+评分/青色模板/YOLO+置信度/标线+坐标 | `_render_full()` | ✅ v0.7.0 |
+
+### v0.7.1 新增参数（防碰撞系统）
+
+| 参数 | 当前值 | 位置 | 状态 |
+|------|--------|------|------|
+| A 区安全阈值 | L<350 且 R>850 | `_wall_avoidance()` | ✅ v0.7.1 |
+| B 区警戒阈值 | L:350~450 / R:750~850 | `_wall_avoidance()` | ✅ v0.7.1 |
+| B 区加速阈值 | ddL>5 或 ddR<-5 | `_wall_avoidance()` | ✅ v0.7.1 |
+| C 区硬边界 | L>450 或 R<750 | `_wall_avoidance()` | ✅ v0.7.1 |
+| C 区突发修正 | 2 帧满打反方向 | `_run_impl()` / `_c_burst` | ✅ v0.7.1 |
+| C 区强制归中 | 5 帧滑行（burst 后） | `_run_impl()` / `_c_coast` | ✅ v0.7.1 |
+| 防撞记忆回带 | `_wall_memory` 标线丢失 + 无目标时使用 | `_wall_avoidance()` | ✅ v0.7.1 |
+| 左墙记忆触发 | L>400 | `_wall_avoidance()` | ✅ v0.7.1 |
+| 右墙记忆触发 | R<800 | `_wall_avoidance()` | ✅ v0.7.1 |
 
 ## 对 AI 助手的要求
 1. 先沟通对齐，再输出代码
