@@ -286,7 +286,7 @@ d:\maaracing_assistant/
 ├── run.py                               # 快捷入口：python run.py
 ├── pyproject.toml                       # 现代 Python 项目配置（pip install -e . 支持）
 ├── maaracing_assistant/                 # 应用包（13 个源文件）
-│   ├── __init__.py                      # 版本号 "0.6.0"
+│   ├── __init__.py                      # 版本号 "0.7.0"
 │   ├── __main__.py                      # python -m maaracing_assistant 入口
 │   ├── controller.py                    # MaaRacingAssistantController（总控编排）
 │   ├── navigation.py                    # Navigation + ButtonDef（光标导航）
