@@ -142,7 +142,7 @@ d:\maaracing_assistant/
 - ✅ 假光标静止拉黑 — 区域式检测 ±5px，光标丢失时延续拉黑状态
 - ✅ 物理手柄检测 — XInput API，GUI 弹窗阻止运行
 - ✅ GitHub PR 工作流 — master 分支启用保护，必须通过 PR 提交代码
-- ✅ 版本号 — v0.7.1（`maaracing_assistant/__init__.py __version__`）
+- ✅ 版本号 — 通过 Git Tag `vX.Y.Z` 管理，`setuptools-scm` 自动推导（详见"版本管理约定"）
 - ✅ 包结构重构 — 源码归入 `maaracing_assistant/` 包目录，`main.py` 拆分为 6 个单一职责模块，零循环导入
 - ✅ HoughLinesP 标线检测 — y50%~80% 区域 Hough 直线法检测黄色标线，断裂自动延长对齐
 - ✅ 三区防碰撞 — `_wall_avoidance`：A 区安全/B 区 ddL/ddR 加速监控/C 区硬边界，替代旧 `_keep_center`
@@ -150,6 +150,49 @@ d:\maaracing_assistant/
 - ✅ 标线不推断对侧 — 只信任真实检出的标线，防碰撞只读真实侧
 - ✅ 标线丢失记忆回带 — `_wall_memory` 机制，无目标时轻柔回带
 - ✅ Debug 摇杆状态条 — 底部滑条指示器代替方向文字
+
+## 版本管理约定
+
+### 规则
+
+1. **严格遵循 SemVer 2.0.0**：版本号格式 `X.Y.Z`（主版本.次版本.修订号）
+2. **Git Tag 是唯一信源**：版本号由 Git Tag `vX.Y.Z` 驱动，禁止手动修改源码中的版本号
+3. **`setuptools-scm` 自动管理**：`pyproject.toml` 不写死版本号，`__version__` 从自动生成的 `_version.py` 读取
+4. **Tag 推送触发 CI/CD**：推送 `v*` tag 到 GitHub 后，Actions 自动校验格式 + 创建 Release
+
+### 发布操作流程
+
+```bash
+# 开发在 feature 分支 → PR 合并到 master
+# 合并后在本地 master 打 tag 并推送
+git checkout master
+git pull origin master
+git tag v1.2.3
+git push origin v1.2.3      # 触发 GitHub Actions 创建 Release
+```
+
+### 版本号递增规则（SemVer）
+
+| 变动类型 | 递进位段 | 示例 |
+|---------|---------|------|
+| 不兼容修改 | 主版本号 | 0.7.1 → 1.0.0 |
+| 向下兼容的新功能 | 次版本号 | 0.7.1 → 0.8.0 |
+| 向下兼容的 Bug 修复 | 修订号 | 0.7.1 → 0.7.2 |
+
+### 验证方式
+
+包安装后：
+```python
+from maaracing_assistant import __version__
+print(__version__)  # 与最近的 git tag 一致
+```
+
+### 对应文件
+
+- `maaracing_assistant/_version.py` — 自动生成，已加入 `.gitignore`
+- `maaracing_assistant/__init__.py` — 从 `_version.py` 导入
+- `pyproject.toml` — `[tool.setuptools-scm]` 配置段
+- `.github/workflows/release.yml` — Release CI/CD 工作流
 
 ## 对 AI 助手的要求
 
