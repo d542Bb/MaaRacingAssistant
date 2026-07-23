@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=61.0", "setuptools-scm>=8.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "maaracing-assistant"
-version = "0.6.0"
+dynamic = ["version"]
 description = "《巅峰极速》极速狂飙自动刷分助手 — MAA Framework + YOLOv8 ONNX + vgamepad"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -20,3 +20,6 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 include = ["maaracing_assistant*"]
+
+[tool.setuptools-scm]
+write_to = "maaracing_assistant/_version.py"

@@ -1,0 +1,99 @@
+# =============================================================================
+# Release CI/CD — 推送 Git Tag 时自动创建 GitHub Release
+# Tag 版本号遵循 SemVer 2.0.0 规范（X.Y.Z），tag 格式 vX.Y.Z
+# =============================================================================
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    name: 创建 Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 需要完整历史以生成 changelog
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 提取版本号
+        id: version
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: 校验 SemVer 格式
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          echo "校验版本号: $VERSION"
+          if ! echo "$VERSION" | grep -qP '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$'; then
+            echo "❌ 版本号 '$VERSION' 不符合 SemVer 2.0.0 规范！"
+            echo "正确格式: X.Y.Z 或 X.Y.Z-pre.id+build"
+            exit 1
+          fi
+          echo "✅ SemVer 格式校验通过"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install build setuptools-scm
+
+      - name: 验证包构建
+        run: |
+          # 验证 setuptools-scm 能从当前 tag 正确读取版本
+          python -c "
+          from setuptools_scm import get_version
+          v = get_version(root='.')
+          print(f'setuptools-scm 解析版本: {v}')
+          assert v == '${{ steps.version.outputs.version }}', f'版本不匹配: setuptools-scm={v}, tag=${{ steps.version.outputs.version }}'
+          print('✅ 版本一致性验证通过')
+          "
+
+      - name: 生成 Changelog
+        id: changelog
+        run: |
+          PREV_TAG=$(git tag --sort=-v:refname | head -n 2 | tail -n 1 || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            LOG=$(git log --oneline --no-decorate "$PREV_TAG".."${{ steps.version.outputs.tag }}" 2>/dev/null | head -50)
+          else
+            LOG=$(git log --oneline --no-decorate --max-count=50 2>/dev/null)
+          fi
+          echo "log<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$LOG" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: 构建分发包
+        run: |
+          python -m build
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: v${{ steps.version.outputs.version }}
+          body: |
+            ## v${{ steps.version.outputs.version }}
+
+            ### 变更记录
+            ${{ steps.changelog.outputs.log }}
+
+            ---
+            > 版本号遵循 [SemVer 2.0.0](https://semver.org/lang/zh-CN/) 规范
+          files: |
+            dist/*.tar.gz
+            dist/*.whl
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
