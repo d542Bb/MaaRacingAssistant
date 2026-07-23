@@ -92,6 +92,32 @@ class YOLODetector:
                 bonus_cars.append((int(cx), int(cy), int(bw), int(bh)))
         return coins, cars, bonus_cars, dets
 
+    def _nms_per_class(self, xyxy, scores, classes, mask,
+                       pad_x, pad_y, scale, ox, oy, orig_w, orig_h):
+        """按类别分别做 NMS，避免跨类抑制（如 car 压掉 bonus_car）
+
+        返回的索引是原始数组下标（供 _to_dets 使用）
+        """
+        classes_arr = classes[mask]
+        unique_classes = np.unique(classes_arr)
+        # mask_indices[i] = 原始数组中第 i 个被 mask 选中的下标
+        mask_indices = np.where(mask)[0]
+        all_indices = []
+        for cls in unique_classes:
+            cls_mask = classes_arr == cls
+            # cls_local[j] = 第 j 个属于该类别的元素在 masked 数组中的位置
+            cls_local = np.where(cls_mask)[0]
+            cls_boxes = xyxy[mask][cls_mask].tolist()
+            cls_scores = scores[mask][cls_mask].tolist()
+            if not cls_boxes:
+                continue
+            nms_idx = cv2.dnn.NMSBoxes(cls_boxes, cls_scores, 0.0, self.iou)
+            if len(nms_idx) > 0:
+                # 映射链：NMS下标 → 类别内下标 → masked下标 → 原始下标
+                orig = mask_indices[cls_local[np.array(nms_idx)]]
+                all_indices.extend(orig.tolist())
+        return all_indices
+
     def __call__(self, img_rgb: np.ndarray, roi: tuple | None = None):
         """YOLO 推理
 
@@ -168,21 +194,17 @@ class YOLODetector:
                 xyxy, max_scores, max_classes, pad_x, pad_y, scale, ox, oy,
                 orig_w, orig_h, top_raw, min_score=RAW_CONF)
 
-        # ── 正式过滤：按类别置信度阈值 + NMS ──
+        # ── 正式过滤：按类别置信度阈值 + 按类分别做 NMS ──
         per_class_thresholds = np.array([self.CLASS_CONF.get(int(c), self.conf) for c in max_classes])
         mask = max_scores > per_class_thresholds
         if not np.any(mask):
             return [], [], [], [], all_raw_dets
 
-        indices = cv2.dnn.NMSBoxes(
-            xyxy[mask].tolist(), max_scores[mask].tolist(),
-            min(self.CLASS_CONF.values()), self.iou)
-        if len(indices) == 0:
+        real_indices = self._nms_per_class(
+            xyxy, max_scores, max_classes, mask,
+            pad_x, pad_y, scale, ox, oy, orig_w, orig_h)
+        if len(real_indices) == 0:
             return [], [], [], [], all_raw_dets
-
-        # 把 NMS 索引映射回原始索引
-        mask_indices = np.where(mask)[0]
-        real_indices = mask_indices[indices]
         coins, cars, bonus_cars, debug_dets = self._to_dets(
             xyxy, max_scores, max_classes, pad_x, pad_y, scale, ox, oy,
             orig_w, orig_h, real_indices)

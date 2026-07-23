@@ -21,8 +21,10 @@ from datetime import datetime
 
 
 def _put_text(frame, text, pos, scale=0.5, color=(255, 255, 255), stroke=1):
-    """带黑色描边的文字绘制，提升各种背景下的可读性"""
+    """带黑色阴影和描边的文字绘制，确保任何背景都清晰"""
     x, y = pos
+    # 1px 阴影（始终有，极低成本提升可读性）
+    cv2.putText(frame, text, (x + 1, y + 1), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 1)
     if stroke > 1:
         cv2.putText(frame, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), stroke * 2 + 1)
     cv2.putText(frame, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, max(1, stroke))
@@ -40,6 +42,38 @@ def _draw_dashed_rect(frame, pt1, pt2, color, thickness=1, dash_len=8):
         y_end = min(i + dash_len, y2)
         cv2.line(frame, (x1, i), (x1, y_end), color, thickness)
         cv2.line(frame, (x2, i), (x2, y_end), color, thickness)
+
+
+def _dedup_overlapping(dets, iou_thresh=0.5):
+    """同类别重叠框去重：每个重叠区域只保留最高置信度的一个，避免虚线框堆叠"""
+
+    if not dets:
+        return []
+    by_class: dict[str, list] = {}
+    for d in dets:
+        by_class.setdefault(d["class_name"], []).append(d)
+
+    result = []
+    for cls, cls_dets in by_class.items():
+        sorted_dets = sorted(cls_dets, key=lambda d: -d["confidence"])
+        kept = []
+        for d in sorted_dets:
+            x1, y1, x2, y2 = d["box"]
+            overlap = False
+            for k in kept:
+                kx1, ky1, kx2, ky2 = k["box"]
+                ix1, iy1 = max(x1, kx1), max(y1, ky1)
+                ix2, iy2 = min(x2, kx2), min(y2, ky2)
+                if ix1 < ix2 and iy1 < iy2:
+                    inter = (ix2 - ix1) * (iy2 - iy1)
+                    union = (x2 - x1) * (y2 - y1) + (kx2 - kx1) * (ky2 - ky1) - inter
+                    if union > 0 and inter / union > iou_thresh:
+                        overlap = True
+                        break
+            if not overlap:
+                kept.append(d)
+        result.extend(kept)
+    return result
 
 
 class NavigationDebugger:
@@ -143,13 +177,42 @@ class NavigationDebugger:
                 _put_text(frame, f"{cls_name} {det['confidence']:.2f}", (x1, y1 - 5), 0.4, color)
 
     def _draw_raw_dets(self, frame, all_raw, detections):
-        """全部原始检测框（低阈值，虚线，仅 debug 全量模式）"""
+        """全部原始检测框（低阈值，虚线，仅 debug 全量模式）
+
+        去重策略：
+          1. 同类别重叠框只保留最高分（_dedup_overlapping）
+          2. 与实线框重叠的虚线框→隐藏（NMS 跨类压制导致高分变虚线很迷惑）
+        """
         if not all_raw:
             return
         det_set = {(d["box"], d["class_name"]) for d in (detections or [])}
-        for det in all_raw:
+        deduped = _dedup_overlapping(all_raw, iou_thresh=0.5)
+
+        # 构建实线框的边界盒列表供重叠检查
+        solid_boxes = [d["box"] for d in (detections or [])]
+
+        to_draw = []
+        for det in deduped:
             if (det["box"], det["class_name"]) in det_set:
                 continue
+            dx1, dy1, dx2, dy2 = det["box"]
+            # 检查是否与任何实线框显著重叠（IoU > 0.3，跨类也压）
+            overlaps_solid = False
+            for sx1, sy1, sx2, sy2 in solid_boxes:
+                ix1, iy1 = max(dx1, sx1), max(dy1, sy1)
+                ix2, iy2 = min(dx2, sx2), min(dy2, sy2)
+                if ix1 < ix2 and iy1 < iy2:
+                    inter = (ix2 - ix1) * (iy2 - iy1)
+                    d_area = (dx2 - dx1) * (dy2 - dy1)
+                    s_area = (sx2 - sx1) * (sy2 - sy1)
+                    union = d_area + s_area - inter
+                    if union > 0 and inter / union > 0.3:
+                        overlaps_solid = True
+                        break
+            if not overlaps_solid:
+                to_draw.append(det)
+
+        for det in to_draw:
             x1, y1, x2, y2 = det["box"]
             cls_name = det.get("class_name", "?")
             conf = det.get("confidence", 0)
@@ -187,31 +250,89 @@ class NavigationDebugger:
                 _put_text(frame, f"LANE FAIL: {failed}", (10, 100), 0.45, (0, 0, 255))
             return
 
-        # 画真实检出的标线（可能只有一侧）
-        lx = lane.get("left")
-        rx = lane.get("right")
-        cx = lane.get("center")
+        # 画标线（新格式单边或旧格式双边兼容）
+        side = lane.get("side")
+        pos = lane.get("pos")
         if dbg and "zone" in dbg:
             zy1, zy2 = dbg["zone"][1], dbg["zone"][3]
         else:
             zy1, zy2 = 0, h
 
         ln_w = 3 if not lite else 2
-        if lx is not None:
-            cv2.line(frame, (lx, zy1), (lx, zy2), (0, 255, 255), ln_w)
-        if rx is not None:
-            cv2.line(frame, (rx, zy1), (rx, zy2), (0, 255, 255), ln_w)
-        if cx is not None:
-            cv2.line(frame, (cx, zy1), (cx, zy2), (0, 255, 0), 1)
-
-        if not lite:
-            mid_y = (zy1 + zy2) // 2
+        if side and pos is not None:
+            cv2.line(frame, (pos, zy1), (pos, zy2), (0, 255, 255), ln_w)
+            if not lite:
+                mid_y = (zy1 + zy2) // 2
+                label = "L" if side == "left" else "R"
+                _put_text(frame, f"{label}={pos}", (
+                    pos + 4 if side == "left" else pos - 56, mid_y), 0.4, (0, 255, 255))
+        else:
+            # 旧格式兼容（left/right/center）
+            lx = lane.get("left")
+            rx = lane.get("right")
+            cx = lane.get("center")
             if lx is not None:
-                _put_text(frame, f"L={lx}", (lx + 4, mid_y), 0.4, (0, 255, 255))
+                cv2.line(frame, (lx, zy1), (lx, zy2), (0, 255, 255), ln_w)
             if rx is not None:
-                _put_text(frame, f"R={rx}", (rx - 60, mid_y), 0.4, (0, 255, 255))
+                cv2.line(frame, (rx, zy1), (rx, zy2), (0, 255, 255), ln_w)
             if cx is not None:
-                _put_text(frame, f"C={cx}", (cx + 4, mid_y + 16), 0.35, (0, 255, 0))
+                cv2.line(frame, (cx, zy1), (cx, zy2), (0, 255, 0), 1)
+            if not lite:
+                mid_y = (zy1 + zy2) // 2
+                if lx is not None:
+                    _put_text(frame, f"L={lx}", (lx + 4, mid_y), 0.4, (0, 255, 255))
+                if rx is not None:
+                    _put_text(frame, f"R={rx}", (rx - 60, mid_y), 0.4, (0, 255, 255))
+                if cx is not None:
+                    _put_text(frame, f"C={cx}", (cx + 4, mid_y + 16), 0.35, (0, 255, 0))
+
+    def _draw_racing_zones(self, frame, zone_lines: tuple | None, horizon_locked: bool = False):
+        """地平线 + 远/中/近 + 透视车道线（未锁地平线时 30% 不透明度）"""
+        if not zone_lines or len(zone_lines) < 4:
+            return
+        horizon, far_bot, mid_bot, roi_bot = zone_lines
+        h, w = frame.shape[:2]
+
+        alpha = 0.65 if horizon_locked else 0.30
+        SKY_BLUE = (210, 180, 100)  # BGR 天蓝色
+        overlay = frame.copy()
+
+        # ── 水平距离分界线 ──
+        for y, label in [
+            (horizon, "地平线"), (far_bot, "远/中"), (mid_bot, "中/近"),
+        ]:
+            cv2.line(overlay, (0, y), (w, y), SKY_BLUE, 1, cv2.LINE_AA)
+            _put_text(overlay, label, (w - 65, y - 5), 0.35, SKY_BLUE)
+        _put_text(overlay, "天", (6, horizon // 2 + 4), 0.45, SKY_BLUE)
+        _put_text(overlay, "远", (6, (horizon + far_bot) // 2 + 4), 0.45, SKY_BLUE)
+        _put_text(overlay, "中", (6, (far_bot + mid_bot) // 2 + 4), 0.45, SKY_BLUE)
+        _put_text(overlay, "近", (6, (mid_bot + roi_bot) // 2 + 4), 0.45, SKY_BLUE)
+
+        # ── 透视车道线 ──
+        center_x = w // 2
+        vp_left = int(center_x - w * 0.005)
+        vp_right = int(center_x + w * 0.005)
+
+        lane_pts = [
+            (0.00, 0.61, vp_left),   # 左侧路缘
+            (0.00, 0.75, vp_left),   # 左1/左2
+            (0.22, 1.00, vp_left),   # 左2/中
+            (0.78, 1.00, vp_right),  # 中/右2
+            (1.00, 0.75, vp_right),  # 右2/右1
+            (1.00, 0.61, vp_right),  # 右侧路缘
+        ]
+        for x_frac, y_frac, vp_x in lane_pts:
+            mx = int(x_frac * w)
+            my = int(y_frac * h)
+            if my <= horizon:
+                continue
+            dx = mx - vp_x
+            dy = my - horizon
+            x_bot = vp_x + dx * (h - horizon) // dy if dy else vp_x
+            cv2.line(overlay, (vp_x, horizon), (mx, my), SKY_BLUE, 1, cv2.LINE_AA)
+            cv2.line(overlay, (mx, my), (x_bot, h), SKY_BLUE, 1, cv2.LINE_AA)
+
+        cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
 
     def _draw_cursor(self, frame, cursor_pos, cursor_area=0.0, cursor_score=0.0, dist=None, lite=False):
         """选中的光标位置（红色圈 + 十字）"""
@@ -228,7 +349,7 @@ class NavigationDebugger:
                     info += f" D={dist:.0f}"
                 _put_text(frame, info, (cx + 14, cy - 6), 0.4, (0, 0, 220))
         elif not lite:
-            _put_text(frame, "NO CURSOR", (w // 2 - 50, h // 2), 0.6, (0, 0, 220), stroke=2)
+            _put_text(frame, "NO CURSOR", (w // 2 - 50, 22), 0.55, (0, 0, 220), stroke=2)
 
     def _draw_button(self, frame, button_pos, lite=False):
         """按钮目标（蓝色圈 + 十字）"""
@@ -296,9 +417,12 @@ class NavigationDebugger:
             _put_text(frame, f"#{fid}  raw:{n_raw}  filtered:{n_filt}", (10, 60), 0.5, (255, 255, 255))
             _put_text(frame, f"coin:{n_coins}  car:{n_cars}  bonus:{n_bonus}", (10, 80), 0.45, (180, 180, 180))
 
-        # 右上：决策原因
+        # 右上：决策原因 + 详细说明
         reason_color = self._REASON_COLORS.get(reason, (255, 255, 255))
+        detail = ri.get("detail", "")
         _put_text(frame, reason, (w - 110, 24), 0.65, reason_color)
+        if detail:
+            _put_text(frame, detail, (w - 110, 46), 0.4, (200, 200, 200))
 
         # 底部：左摇杆状态条（取代方向文字）
         stick = ri.get("stick", dir_val * 32767) if ri else dir_val * 32767
@@ -330,21 +454,12 @@ class NavigationDebugger:
         elif stick > 5000:
             _put_text(frame, "→", (bar_x2 + 12, bar_cy + 6), 0.6, (255, 200, 0))
 
-        # 底部：车道位置条
-        if lane and "left" in lane and "right" in lane and "center" in lane:
-            bar_y = h - 30
-            bar_x1, bar_x2 = 50, w - 50
-            bar_w = bar_x2 - bar_x1
-            lw = w if w > 0 else 1
-            cv2.rectangle(frame, (bar_x1, bar_y - 6), (bar_x2, bar_y + 6), (60, 60, 60), -1)
-            lx_bar = bar_x1 + int(lane["left"] / lw * bar_w)
-            rx_bar = bar_x1 + int(lane["right"] / lw * bar_w)
-            cv2.rectangle(frame, (lx_bar, bar_y - 6), (rx_bar, bar_y + 6), (0, 180, 180), -1)
-            # 车位置（画面中心）
-            cv2.circle(frame, (bar_x1 + bar_w // 2, bar_y), 6, (0, 0, 255), -1)
-            # 道路中心
-            lc_bar = bar_x1 + int(lane["center"] / lw * bar_w)
-            cv2.circle(frame, (lc_bar, bar_y), 4, (0, 255, 0), -1)
+        # 油门深度值（两种模式都显示）
+        if "throttle" in ri:
+            thr = ri["throttle"]
+            thr_color = (0, 255, 0) if thr >= 255 else (0, 255, 255) if thr >= 180 else (0, 0, 255)
+            _put_text(frame, f"RT={thr}", (w - 80, h - 80) if not lite else (w - 70, h - 28),
+                      0.4, thr_color)
 
     # ==================================================================
     #  组合渲染
@@ -357,6 +472,10 @@ class NavigationDebugger:
         label = kw.get("label", "")
         lane = kw.get("lane")
         ri = kw.get("racing_info")
+
+        # 距离区域分割线（画在最底层）
+        if ri:
+            self._draw_racing_zones(frame, ri.get("zone_lines"), ri.get("horizon_locked", False))
 
         # 导航场景元素
         self._draw_nav_candidates(frame, kw.get("candidates"), kw.get("all_candidates"))
@@ -391,6 +510,10 @@ class NavigationDebugger:
         label = kw.get("label", "")
         lane = kw.get("lane")
         ri = kw.get("racing_info")
+
+        # 距离区域分割线（精简版）
+        if ri:
+            self._draw_racing_zones(frame, ri.get("zone_lines"), ri.get("horizon_locked", False))
 
         # YOLO 检测框（精简：无置信度文字）
         self._draw_yolo_dets(frame, kw.get("detections"), lite=True)
