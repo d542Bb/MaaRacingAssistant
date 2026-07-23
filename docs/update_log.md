@@ -6,6 +6,20 @@
 
 ## 2026-07-23
 
+### v0.10.0 转向平滑校准 + 防碰撞优化 + 阴影标线检测 🎯
+- **版本号：** `v0.10.0`
+- **转向平滑系统：** 指数平滑 `smoothed = smoothed × alpha + target × (1-alpha)`，消除镜头惯性导致的摆动
+- **alpha 校准状态机：** baseline→steer→settle 三阶段嵌入主循环，dd 加速度检测转向响应，自动计算 alpha = 0.5^(1/settle)
+- **校准四区域策略：** 检测 L/R 标线 + 中线估测 → 决定先往中线打还是先往标线打，保证全程可见标线且不撞墙
+- **校准数据验证：** settle 后检查标线位移 ≥15px，不够则重试（最多 2 次，每次转向帧数 +4），全部失败回退 alpha=0.6
+- **C 区防碰撞 cum3 位移过滤：** 3 帧累计位移 >10px 才触发 C 区，防止车道 1 正常行驶误触（pos~500 触发旧阈值）
+- **HSV 阴影标线检测：** S/V 下限从 150 降至 80，可识别 #7f7200 等阴影下的黄色标线
+- **道路中线估测（`_estimate_road_center`）：** 从单侧标线推断中线位置，-50/+50 修正偏向中心
+- **Debug 实时值追踪：** `_apply_trigger` / `_steer` 封装手柄操作并自动记录 `_last_rt` / `_last_stick`，debug 帧显示真实油门和摇杆值（不再硬编码）
+- **Debug 校准可视化：** 校准帧 `save_to_disk=True`，label 带 frame_id，可查看完整校准过程
+
+## 2026-07-23
+
 ### v0.9.0 赛车决策系统重构 + NMS 跨类抑制修复 + 车道保持 🔄
 - **版本号：** `v0.9.0`
 - **NMS 按类分别处理（`_nms_per_class`）：** 避免 YOLO 跨类 NMS 压掉 bonus_car（car 0.89 压 bonus_car 0.86），索引映射链 `mask_indices[cls_local[nms_idx]]`

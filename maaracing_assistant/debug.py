@@ -152,6 +152,7 @@ class NavigationDebugger:
     _REASON_COLORS = {
         "归中": (0, 165, 255), "跳板车": (220, 0, 220), "避障": (0, 0, 220),
         "金币": (0, 215, 255), "标线": (0, 200, 0), "直行": (180, 180, 180),
+        "防撞": (0, 0, 255), "冷却": (100, 100, 100), "回带": (0, 165, 255),
     }
 
     # ---------- 场景类型判断 ----------
@@ -266,6 +267,12 @@ class NavigationDebugger:
                 label = "L" if side == "left" else "R"
                 _put_text(frame, f"{label}={pos}", (
                     pos + 4 if side == "left" else pos - 56, mid_y), 0.4, (0, 255, 255))
+            # 估算中线（细绿线）
+            cx = lane.get("center")
+            if cx is not None:
+                cv2.line(frame, (cx, zy1), (cx, zy2), (0, 200, 0), 1)
+                if not lite:
+                    _put_text(frame, f"C={cx}", (cx + 4, (zy1 + zy2) // 2 + 16), 0.35, (0, 200, 0))
         else:
             # 旧格式兼容（left/right/center）
             lx = lane.get("left")
@@ -406,35 +413,28 @@ class NavigationDebugger:
         n_bonus = ri.get("n_bonus", 0)
         fid = ri.get("frame_id", 0)
 
+        # ── 左上：帧号 + 检测统计（合并为一行） ──
         if lite:
-            # PEEP：精简信息
-            _put_text(frame, f"#{fid}", (10, 24), 0.6, (255, 255, 255))
-            _put_text(frame, f"coin:{n_coins}  car:{n_cars}  bonus:{n_bonus}", (10, 48), 0.5, (180, 180, 180))
+            _put_text(frame, f"#{fid}  coin:{n_coins} car:{n_cars} bonus:{n_bonus}",
+                      (10, 24), 0.5, (255, 255, 255))
         else:
-            # Debug：含 raw/filtered 统计
             n_raw = len(all_raw) if all_raw else 0
             n_filt = len(detections) if detections else 0
-            _put_text(frame, f"#{fid}  raw:{n_raw}  filtered:{n_filt}", (10, 60), 0.5, (255, 255, 255))
-            _put_text(frame, f"coin:{n_coins}  car:{n_cars}  bonus:{n_bonus}", (10, 80), 0.45, (180, 180, 180))
+            _put_text(frame, f"#{fid}  raw:{n_raw} filt:{n_filt}  coin:{n_coins} car:{n_cars} bonus:{n_bonus}",
+                      (10, 24), 0.45, (255, 255, 255))
 
-        # 右上：决策原因 + 详细说明
-        reason_color = self._REASON_COLORS.get(reason, (255, 255, 255))
-        detail = ri.get("detail", "")
-        _put_text(frame, reason, (w - 110, 24), 0.65, reason_color)
-        if detail:
-            _put_text(frame, detail, (w - 110, 46), 0.4, (200, 200, 200))
-
-        # 底部：左摇杆状态条（取代方向文字）
+        # ── 底部：转向条（缩短 50%） ──
         stick = ri.get("stick", dir_val * 32767) if ri else dir_val * 32767
         bar_y = h - 55
-        bar_x1, bar_x2 = int(w * 0.15), int(w * 0.85)
+        half_bar = int(w * 0.175)  # 原来 0.35，减半
+        bar_cx = w // 2
+        bar_x1, bar_x2 = bar_cx - half_bar, bar_cx + half_bar
         bar_w = bar_x2 - bar_x1
         bar_cy = bar_y
 
         # 背景槽
         cv2.rectangle(frame, (bar_x1, bar_cy - 4), (bar_x2, bar_cy + 4), (60, 60, 60), -1)
-        cv2.line(frame, (bar_x1 + bar_w // 2, bar_cy - 8),
-                 (bar_x1 + bar_w // 2, bar_cy + 8), (80, 80, 80), 1)
+        cv2.line(frame, (bar_cx, bar_cy - 8), (bar_cx, bar_cy + 8), (80, 80, 80), 1)
 
         # 摇杆位置点
         norm = max(-32768, min(32767, stick))
@@ -445,8 +445,7 @@ class NavigationDebugger:
         cv2.circle(frame, (pos, bar_cy), 6, (255, 255, 255), 1)
 
         # 数值文字
-        val_text = f"{stick}"
-        _put_text(frame, val_text, (bar_x1 + bar_w // 2 - 30, bar_cy + 22), 0.4, color)
+        _put_text(frame, f"{stick}", (bar_cx - 20, bar_cy + 22), 0.4, color)
 
         # 方向标签
         if stick < -5000:
@@ -454,12 +453,37 @@ class NavigationDebugger:
         elif stick > 5000:
             _put_text(frame, "→", (bar_x2 + 12, bar_cy + 6), 0.6, (255, 200, 0))
 
-        # 油门深度值（两种模式都显示）
+        # ── 底部居中：决策原因 + 详细说明（转向条上方） ──
+        reason_color = self._REASON_COLORS.get(reason, (255, 255, 255))
+        detail = ri.get("detail", "")
+        info_y = bar_cy - 28
+        (tw_r, _), _ = cv2.getTextSize(reason, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+        _put_text(frame, reason, (bar_cx - tw_r // 2, info_y), 0.6, reason_color)
+        if detail:
+            (tw_d, _), _ = cv2.getTextSize(detail, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+            _put_text(frame, detail, (bar_cx - tw_d // 2, info_y + 18), 0.4, (200, 200, 200))
+
+        # ── 右下：油门深度 + 竖向条 ──
         if "throttle" in ri:
             thr = ri["throttle"]
             thr_color = (0, 255, 0) if thr >= 255 else (0, 255, 255) if thr >= 180 else (0, 0, 255)
-            _put_text(frame, f"RT={thr}", (w - 80, h - 80) if not lite else (w - 70, h - 28),
-                      0.4, thr_color)
+            # 文字
+            _put_text(frame, f"RT={thr}", (w - 80, h - 28), 0.4, thr_color)
+            # 竖向条：高 60px，从下往上填充
+            bar_x = w - 28
+            bar_top = h - 90
+            bar_bot = h - 30
+            bar_h = bar_bot - bar_top
+            cv2.rectangle(frame, (bar_x, bar_top), (bar_x + 8, bar_bot), (60, 60, 60), -1)
+            fill_h = int(bar_h * thr / 255)
+            if fill_h > 0:
+                cv2.rectangle(frame, (bar_x, bar_bot - fill_h), (bar_x + 8, bar_bot), thr_color, -1)
+            cv2.rectangle(frame, (bar_x, bar_top), (bar_x + 8, bar_bot), (120, 120, 120), 1)
+
+        # ── 右下：alpha 平滑系数 ──
+        if "steer_alpha" in ri:
+            a = ri["steer_alpha"]
+            _put_text(frame, f"a={a:.2f}", (w - 80, h - 100), 0.35, (160, 160, 160))
 
     # ==================================================================
     #  组合渲染
@@ -489,17 +513,17 @@ class NavigationDebugger:
         self._draw_yolo_dets(frame, kw.get("detections"))
         self._draw_lane(frame, lane)
 
-        # 顶部信息栏
-        info_line = f"#{self.frame_count}"
-        if label:
-            info_line += f" | {label}"
-        _put_text(frame, info_line, (10, 22), 0.5, (255, 255, 255))
-        if kw.get("cursor_score", 0) > 0:
-            _put_text(frame, f"score={kw['cursor_score']:.3f}", (10, 42), 0.4, (200, 200, 200))
-
-        # 赛车 HUD
+        # 赛车 HUD（含帧号+统计，不重复绘制顶部栏）
         if ri:
             self._draw_racing_hud(frame, ri, lane, kw.get("detections"), kw.get("all_raw_dets"))
+        else:
+            # 非赛车场景：顶部信息栏
+            info_line = f"#{self.frame_count}"
+            if label:
+                info_line += f" | {label}"
+            _put_text(frame, info_line, (10, 22), 0.5, (255, 255, 255))
+            if kw.get("cursor_score", 0) > 0:
+                _put_text(frame, f"score={kw['cursor_score']:.3f}", (10, 42), 0.4, (200, 200, 200))
 
         return frame
 

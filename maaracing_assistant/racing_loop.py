@@ -56,6 +56,9 @@ class RacingLoop(CustomAction):
         self._c_burst = 0  # C区突发修正剩余帧数
         self._c_burst_dir = 0
         self._c_coast = 0  # 突发后强制归中滑行剩余帧数
+        self._force_init_count = None  # force_init 观察帧计数
+        self._steer_smoothed = 0.0  # 转向平滑值（指数平滑，消除镜头延迟抖动）
+        self._steer_alpha = 0.6    # 平滑系数（由校准动态设置）
 
         # 加载结束检测模板（任一匹配即认为本轮结束）
         from pathlib import Path
@@ -91,6 +94,8 @@ class RacingLoop(CustomAction):
             self.gpad.update()
             time.sleep(0.05)
         logger.log("虚拟手柄已创建并归零")
+        self._last_rt: int = 0
+        self._last_stick: tuple[int, int] = (0, 0)
 
     def _destroy_pad(self):
         """销毁虚拟手柄，释放设备"""
@@ -140,6 +145,15 @@ class RacingLoop(CustomAction):
         self.gpad.left_joystick(x_value=x, y_value=0)
         self.gpad.right_joystick(x_value=0, y_value=0)
         self.gpad.update()
+        self._last_stick = (x, 0)
+
+    def _apply_trigger(self, value: int):
+        """设置油门并记录状态"""
+        if self.gpad is None:
+            return
+        self.gpad.right_trigger(value=value)
+        self.gpad.update()
+        self._last_rt = value
 
     def _calc_throttle(self, reason: str, direction: int) -> int:
         """根据路况动态调整油门深度（转向收油换机动性，空旷全油冲）"""
@@ -149,6 +163,8 @@ class RacingLoop(CustomAction):
             return 180   # 避让障碍车，适度减速
         if reason in ("金币", "跳板车") and direction != 0:
             return 200   # 转向吃分，稍收油便于精确定位
+        if reason == "冷却":
+            return 180   # 镜头延迟期间适度减速，避免跑太远
         return 255       # 直行/空旷路面 = 全油门
 
     def _cap(self, ctrl):
@@ -293,8 +309,8 @@ class RacingLoop(CustomAction):
         roi = img_rgb[y1:y2, :]
 
         hsv = cv2.cvtColor(roi, cv2.COLOR_RGB2HSV)
-        # 严格黄色范围：只取高饱和高亮度的纯黄色，排除路面反射/阴影
-        lower = np.array([20, 150, 150])
+        # 黄色范围：含阴影下的暗黄色（S/V 下限放宽）
+        lower = np.array([20, 80, 80])
         upper = np.array([30, 255, 255])
         mask = cv2.inRange(hsv, lower, upper)
 
@@ -392,6 +408,20 @@ class RacingLoop(CustomAction):
             logger.log(f"[LANE] 单边={side} pos={pos_at_mid} 线={len(best_lines)}条")
         return {"side": side, "pos": pos_at_mid}
 
+    def _estimate_road_center(self, lane: dict | None, w: int) -> int:
+        """从标线检测结果估算道路中线（单边检测 + 向中心修正50px）"""
+        if lane is None:
+            return w // 2
+        side = lane.get("side")
+        pos = lane.get("pos", w // 2)
+        if side == "left":
+            # 左标线 → 中线在右侧，向中心方向偏移50
+            return (pos + w) // 2 - 50
+        elif side == "right":
+            # 右标线 → 中线在左侧，向中心方向偏移50
+            return (0 + pos) // 2 + 50
+        return w // 2
+
     # ---------- 全局路径规划 ----------
 
     def _wall_avoidance(self, lane: dict, w: int) -> tuple[int, int]:
@@ -434,8 +464,12 @@ class RacingLoop(CustomAction):
             if len(self._wall_pos_history) >= 3:
                 d_prev = self._wall_pos_history[-2] - self._wall_pos_history[-3]
                 dd = d - d_prev
-            if pos > 450:
-                logger.log(f"[WALL] 左墙C区 pos={pos}，强制右转")
+            # 累计位移：3帧内移动>10px 才判定为真实接近（过滤噪声）
+            cum3 = 0
+            if len(self._wall_pos_history) >= 4:
+                cum3 = self._wall_pos_history[-1] - self._wall_pos_history[-4]
+            if pos > 450 and cum3 > 10:
+                logger.log(f"[WALL] 左墙C区 pos={pos} cum3={cum3}，强制右转")
                 return (2, 1)
             if dd > 5 and d > 0:
                 return (1, 1)
@@ -447,8 +481,12 @@ class RacingLoop(CustomAction):
             if len(self._wall_pos_history) >= 3:
                 d_prev = self._wall_pos_history[-2] - self._wall_pos_history[-3]
                 dd = d - d_prev
-            if pos < 830:
-                logger.log(f"[WALL] 右墙C区 pos={pos}，强制左转")
+            # 累计位移：3帧内移动>10px 才判定为真实接近（过滤噪声）
+            cum3 = 0
+            if len(self._wall_pos_history) >= 4:
+                cum3 = self._wall_pos_history[-1] - self._wall_pos_history[-4]
+            if pos < 830 and cum3 < -10:
+                logger.log(f"[WALL] 右墙C区 pos={pos} cum3={cum3}，强制左转")
                 return (2, -1)
             if dd < -5 and d < 0:
                 return (1, -1)
@@ -473,27 +511,31 @@ class RacingLoop(CustomAction):
         self._keep_last_frame = self.frame_id
         self._keep_side = lane["side"]
 
-        # ── 强制初始化：非直行策略切回时的立即回正 ──
+        # ── 强制初始化：从避障/奖励切回直行时，观察两帧再修正 ──
         if force_init:
             self._keep_hist.clear()
             self._keep_strength = 0.0
             self._keep_dir = 0
-            side = lane["side"]
-            if side == "left":
-                offset = 270 - pos  # 正数=车偏右→左转回正
-            else:
-                offset = 1010 - pos  # 正数=车偏右→左转回正
-            if abs(offset) > 15:  # 偏移超过 15px 才激活
-                self._keep_dir = -1 if offset > 0 else 1
-                # 力度：15px→50%, 100px→75%, 200px+→100%
-                strength = min(1.0, max(0.5, abs(offset) / 200 + 0.4))
-                self._keep_strength = min(1.0, strength)
-                return int(self._keep_dir * self._keep_strength * 32767)
-            return 0
+            self._force_init_count = 0
 
         self._keep_hist.append(pos)
         if len(self._keep_hist) > 30:
             self._keep_hist.pop(0)
+
+        # force_init 模式：前两帧观察，第三帧开始修正
+        if hasattr(self, '_force_init_count') and self._force_init_count is not None:
+            self._force_init_count += 1
+            if self._force_init_count < 3:
+                return 0
+            if len(self._keep_hist) >= 2:
+                diff = self._keep_hist[-1] - self._keep_hist[-2]
+                if abs(diff) >= 8:
+                    self._keep_dir = 1 if diff > 0 else -1
+                    self._keep_strength = 0.5
+                    self._force_init_count = None
+                    return int(self._keep_dir * self._keep_strength * 32767)
+            self._force_init_count = None
+
         if len(self._keep_hist) < 6:
             return 0
 
@@ -519,17 +561,17 @@ class RacingLoop(CustomAction):
             elif dd > 0:
                 # 漂移仍在加速 → 升档
                 self._keep_strength = min(1.0, self._keep_strength + 0.25)
-            elif dd > -5:
+            elif dd > -2:
                 # 慢速收敛 → 维持
                 pass
             else:
                 # 快速收敛 → 减档
                 self._keep_strength = max(0.5, self._keep_strength - 0.1)
-        elif self._keep_strength > 0 and abs(diff) < 8:
-            # 漂移已收敛 → 逐步降低力度
-            self._keep_strength = max(0, self._keep_strength - 0.15)
+        elif self._keep_strength > 0 and abs(diff) < 12:
+            # 漂移已收敛 → 快速降低力度
+            self._keep_strength = max(0, self._keep_strength - 0.3)
             if self._keep_strength < 0.01:
-                self._keep_cooldown = 15  # 完全关闭，冷却 1 秒
+                self._keep_cooldown = 8  # 完全关闭，冷却约 0.5 秒
                 return 0
         else:
             # 阈值之间（8~14），保持当前力度不调
@@ -543,7 +585,8 @@ class RacingLoop(CustomAction):
 
     def _aim_at(self, target: tuple, w: int, h: int, lane: dict | None = None) -> int:
         """三区变力度瞄准：远50%/中100%/近0%，水平居中时不转"""
-        cx, cy = target[0], target[1]
+        cx, cy, bw, bh = target[0], target[1], target[2], target[3]
+        bottom_y = cy + bh // 2  # 框底部中心
         center_x = w // 2
         offset = (cx - center_x) / (w / 2)
 
@@ -551,7 +594,7 @@ class RacingLoop(CustomAction):
             return 0
 
         sign = 1 if offset > 0 else -1
-        zone = self._get_zone(cy, 0)
+        zone = self._get_zone(bottom_y, 0)
 
         # 近区：来不及了
         if zone == 2:
@@ -574,13 +617,13 @@ class RacingLoop(CustomAction):
         threat = max(threats, key=lambda c: c[1])
         tx, ty = threat[0], threat[1]
         tw, th = threat[2], threat[3]
+        bottom_y = ty + th // 2  # 框底部中心
 
-        # 近区来不及
-        if self._get_zone(ty, th) == 2:
-            return 0
+        # 记录区域，远区用50%力度
+        zone = self._get_zone(ty, th)
 
-        # 用透视分界线判断目标框是否进入行驶方向（框左沿 < R2c 且框右沿 > L2c）
-        b = self._lane_boundaries_at_y(ty, h, w)
+        # 用透视分界线判断框下边线是否进入行驶方向（框左沿 < R2c 且框右沿 > L2c）
+        b = self._lane_boundaries_at_y(bottom_y, h, w)
         left = tx - tw // 2
         right = tx + tw // 2
         in_path = left < b["R2c"] and right > b["L2c"]
@@ -594,29 +637,35 @@ class RacingLoop(CustomAction):
                 for c in threats if c is not threat
             )
 
-        # 先试右躲，右侧被挡再试左躲
         right_ok = not occupied(b["R2c"], b["R12"])
         left_ok = not occupied(b["L12"], b["L2c"])
-        if right_ok:
-            return 1
-        if left_ok:
-            return -1
+
+        # 力度：远区50%，中近区100%
+        strength = 16383 if zone == 0 else 32767
+
+        # 根据障碍物在主车道内的位置决定优先方向：偏右→左躲，偏左→右躲
+        mid_lane = (b["L2c"] + b["R2c"]) / 2
+        if tx > mid_lane:
+            # 障碍物偏右，优先左躲
+            if left_ok:
+                return -strength
+            if right_ok:
+                return strength
+        else:
+            # 障碍物偏左，优先右躲
+            if right_ok:
+                return strength
+            if left_ok:
+                return -strength
         return 0
 
     def _decide(self, coins: list, cars: list, bonus_cars: list,
-                lane: dict | None, w: int, h: int) -> tuple[int, str, str]:
+                lane: dict | None, w: int, h: int,
+                wall_zone: int = 0, wall_dir: int = 0) -> tuple[int, str, str]:
         """
         全局决策，返回 (direction, reason, detail)
+        wall_zone/wall_dir: 由外部预计算的防撞状态（避免重复调用 _wall_avoidance）
         """
-        # ========== 0. 防碰撞检查 ==========
-        wall_zone, wall_dir = 0, 0
-        if lane is not None:
-            wall_zone, wall_dir = self._wall_avoidance(lane, w)
-        elif self._wall_memory != 0:
-            # 无标线但记忆仍在 → 假设仍处于 C 区，强制反打
-            wall_zone = 2
-            wall_dir = self._wall_memory  # mem=1(左墙)→右转(1), mem=-1(右墙)→左转(-1)
-
         # C区：无条件强制
         if wall_zone == 2:
             d_cls = "左" if wall_dir == -1 else "右"
@@ -702,6 +751,181 @@ class RacingLoop(CustomAction):
             logger.log("[YOLO] 无目标，直行")
         return 0, "直行", "无目标 直行"
 
+    def _cal_detect_lane_pos(self, img) -> int | None:
+        """校准用：从截图中检测标线位置，返回 x 坐标或 None"""
+        h, w = img.shape[:2]
+        roi_y1, roi_y2 = int(h * 0.50), int(h * 0.80)
+        roi = img[roi_y1:roi_y2, :]
+        hsv = cv2.cvtColor(roi, cv2.COLOR_RGB2HSV)
+        mask = cv2.inRange(hsv, np.array([20, 80, 80]), np.array([30, 255, 255]))
+        kernel = np.ones((3, 3), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        edges = cv2.Canny(mask, 100, 200)
+        lines = cv2.HoughLinesP(edges, 1, np.pi / 180, 60, minLineLength=40, maxLineGap=40)
+        if lines is None:
+            return None
+        for x1, y1_, x2, y2_ in lines.reshape(-1, 4):
+            if x2 == x1:
+                continue
+            angle = np.degrees(np.arctan2(y2_ - y1_, x2 - x1)) % 180
+            mid_x = (x1 + x2) / 2
+            if 120 <= angle <= 165 and mid_x < w * 0.50:
+                return int((x1 + x2) / 2)
+            elif 15 <= angle <= 60 and mid_x >= w * 0.50:
+                return int((x1 + x2) / 2)
+        return None
+
+    def _cal_init(self) -> None:
+        """初始化校准状态（嵌入主循环，每帧执行一步）"""
+        self._cal_phase = "init"
+        self._cal_step = 0
+        self._cal_positions = []
+        self._cal_stable = 0
+        self._cal_settles = []
+        self._cal_seq = []
+        self._cal_seq_idx = 0
+        self._cal_steer_frames = 8
+        self._cal_retries = 0
+        self._cal_pos_start = None
+
+    def _calibrate_step(self, img, ctrl) -> bool:
+        """每帧执行一步校准。返回 True=校准中，False=校准完成"""
+        STRENGTH = 16383
+        MAX_WAIT = 30
+        DD_THRESHOLD = 5
+        DD_CONFIRM = 2
+        MIN_POS_DELTA = 15  # 标线最少移动 15px 才算有效
+        MAX_RETRIES = 2
+
+        w = img.shape[1]
+        center = w // 2
+        pos = self._cal_detect_lane_pos(img)
+
+        if self._cal_phase == "init":
+            if pos is None:
+                logger.log("[CAL] 未检测到标线，等待...")
+                return True
+            side = "left" if pos < center else "right"
+            left_of_center = pos < center
+            if side == "left":
+                self._cal_seq = [(1, "右→中线"), (-1, "左→标线")] if left_of_center else [(-1, "左→标线"), (1, "右→中线")]
+            else:
+                self._cal_seq = [(1, "右→标线"), (-1, "左→中线")] if left_of_center else [(-1, "左→中线"), (1, "右→标线")]
+            logger.log(f"[CAL] 检测到{side.upper()}标线 pos={pos}，车在中线{'左' if left_of_center else '右'}侧")
+            logger.log(f"[CAL] 转向顺序: {self._cal_seq[0][1]} → {self._cal_seq[1][1]}")
+            # 低油门起步
+            self._apply_trigger(64)
+            self._cal_phase = "baseline"
+            self._cal_step = 0
+            self._cal_positions = []
+            self._cal_dir, _ = self._cal_seq[0]
+            self._cal_seq_idx = 0
+            return True
+
+        if self._cal_phase == "baseline":
+            if pos is not None:
+                self._cal_positions.append(pos)
+            self._cal_step += 1
+            if self._cal_step >= 2:
+                # 记录转向前位置，开始转向
+                self._cal_pos_start = self._cal_positions[-1] if self._cal_positions else None
+                self._steer(self._cal_dir * STRENGTH)
+                self._cal_phase = "steer"
+                self._cal_step = 0
+            return True
+
+        if self._cal_phase == "steer":
+            if pos is not None:
+                self._cal_positions.append(pos)
+            self._cal_step += 1
+            # dd 超阈值 → 检测到有效变化，立即停止转向进入 settle（至少打满 3 帧）
+            if self._cal_step >= 3 and len(self._cal_positions) >= 3:
+                p = self._cal_positions
+                dd = (p[-1] - p[-2]) - (p[-2] - p[-3])
+                if abs(dd) >= DD_THRESHOLD:
+                    logger.log(f"[CAL]   {self._cal_seq[self._cal_seq_idx][1]} lag={self._cal_step}帧")
+                    self._steer(0)
+                    self._cal_phase = "settle"
+                    self._cal_step = 0
+                    self._cal_stable = 0
+                    return True
+            # 超时兜底：打满 steer_frames 仍无变化 → 也进 settle（后续 delta 检查会判失败）
+            if self._cal_step >= self._cal_steer_frames:
+                self._steer(0)
+                self._cal_phase = "settle"
+                self._cal_step = 0
+                self._cal_stable = 0
+            return True
+
+        if self._cal_phase == "settle":
+            if pos is not None:
+                self._cal_positions.append(pos)
+            if len(self._cal_positions) >= 3:
+                p = self._cal_positions
+                dd = (p[-1] - p[-2]) - (p[-2] - p[-3])
+                if abs(dd) < DD_THRESHOLD:
+                    self._cal_stable += 1
+                else:
+                    self._cal_stable = 0
+            self._cal_step += 1
+
+            settle_done = self._cal_stable >= DD_CONFIRM or self._cal_step >= MAX_WAIT
+            if settle_done:
+                settle = self._cal_step
+                # 检查标线位移是否足够
+                cur_pos = self._cal_positions[-1] if self._cal_positions else None
+                delta = abs(cur_pos - self._cal_pos_start) if (cur_pos is not None and self._cal_pos_start is not None) else 0
+                if delta < MIN_POS_DELTA:
+                    if self._cal_retries < MAX_RETRIES:
+                        self._cal_retries += 1
+                        self._cal_steer_frames += 4
+                        logger.log(f"[CAL] 标线仅移动{delta}px < {MIN_POS_DELTA}px，数据不可信，重试({self._cal_retries}/{MAX_RETRIES}) steer_frames={self._cal_steer_frames}")
+                        self._cal_phase = "init"
+                        self._cal_step = 0
+                        self._cal_positions = []
+                        self._cal_stable = 0
+                        self._cal_settles = []
+                        self._cal_seq = []
+                        self._cal_seq_idx = 0
+                        self._cal_pos_start = None
+                        self._steer(0)
+                    else:
+                        logger.log(f"[CAL] 重试耗尽，校准失败，使用默认 alpha=0.6")
+                        self._steer_alpha = 0.6
+                        self._cal_phase = "done"
+                        self._steer(0)
+                    return True
+
+                logger.log(f"[CAL]   {self._cal_seq[self._cal_seq_idx][1]} settle={settle}帧 位移={delta}px")
+                self._cal_settles.append(settle)
+                self._cal_seq_idx += 1
+                if self._cal_seq_idx < len(self._cal_seq):
+                    # 下一个方向
+                    self._cal_dir, _ = self._cal_seq[self._cal_seq_idx]
+                    self._cal_phase = "baseline"
+                    self._cal_step = 0
+                    self._cal_positions = []
+                else:
+                    # 校准完成
+                    self._cal_finish()
+                    return False
+            return True
+
+        return False
+
+    def _cal_finish(self) -> None:
+        """校准完成：计算 alpha，恢复油门"""
+        self._apply_trigger(255)
+        self._steer(0)
+        settles = [v for v in self._cal_settles if v < 30]
+        avg = sum(settles) / len(settles) if settles else 8.0
+        alpha = max(0.5, min(0.9, 0.5 ** (1.0 / avg)))
+        self._steer_alpha = alpha
+        self._cal_phase = "done"
+        logger.log(f"[CAL] settle数据: {settles}，平均={avg:.1f}帧 → alpha={alpha:.2f}")
+        logger.log(f"[CAL] === 校准完成 → alpha={alpha:.2f}，主逻辑启动 ===")
+
     def _run_impl(self, ctrl) -> bool:
         """赛车控制核心逻辑（被 run / run_direct 共用）"""
         logger.log("赛车控制启动")
@@ -711,9 +935,14 @@ class RacingLoop(CustomAction):
         self._dynamic_horizon = None  # 重置动态地平线
         self._c_burst = 0
         self._c_coast = 0
+        self._steer_smoothed = 0.0
+        self._steer_alpha = 0.6
         if self.debug is not None:
             self.debug.start_session("racing")
         self._create_pad()
+
+        # ── 镜头迟滞校准（嵌入主循环，跳过决策逻辑，共享 debug 绘制） ──
+        self._cal_init()
 
         # ── 常量 ──
         YOLO_INTERVAL = 2          # 每 2 游戏帧做一次 YOLO 推理
@@ -721,8 +950,7 @@ class RacingLoop(CustomAction):
 
         # 起步：按住 RT 加速（游戏内部有倒计时，车不会立即动）
         assert self.gpad is not None, "手柄未创建"
-        self.gpad.right_trigger(value=255)
-        self.gpad.update()
+        self._apply_trigger(255)
 
         try:
             while self._running:
@@ -734,6 +962,32 @@ class RacingLoop(CustomAction):
 
                 self.frame_id += 1
                 h, w = img.shape[:2]
+
+                # ── 校准模式：跳过所有决策逻辑，只跑校准步骤 ──
+                if self._cal_phase != "done":
+                    cal_done = not self._calibrate_step(img, ctrl)
+                    # 校准期间也画 debug（标线+状态）
+                    if self.debug is not None:
+                        lane = self._detect_lane(img)
+                        lane_vis = self._lane_debug
+                        if lane:
+                            center = self._estimate_road_center(lane, w)
+                            lane_vis = {**lane, "center": center, "_debug": self._lane_debug} if self._lane_debug else {**lane, "center": center}
+                        self.debug.save_frame(
+                            img, lane=lane_vis,
+                            label=f"cal_{self._cal_phase}_{self.frame_id}",
+                            save_to_disk=True,
+                            racing_info={"direction": self._cal_dir, "reason": "校准",
+                                         "detail": f"{self._cal_phase} alpha={self._steer_alpha:.2f}",
+                                         "frame_id": self.frame_id,
+                                         "throttle": self._last_rt,
+                                         "n_coins": 0, "n_cars": 0, "n_bonus": 0,
+                                         "stick": self._last_stick[0],
+                                         "horizon_locked": False},
+                        )
+                    if cal_done:
+                        logger.log(f"[CAL] alpha={self._steer_alpha:.2f}，进入主逻辑")
+                    continue
 
                 # ── 黄色标线检测（每帧，开销极低） ──
                 lane = self._detect_lane(img)
@@ -764,7 +1018,17 @@ class RacingLoop(CustomAction):
                 # 动态地平线推断（仅首次成功）
                 self._detect_horizon(all_raw, h, w)
 
-                direction, reason, detail = self._decide(coins, cars, bonus_cars, lane, w, h)
+                # ── 防碰撞检查（独立于冷却，始终执行） ──
+                wall_zone, wall_dir = 0, 0
+                if lane is not None:
+                    wall_zone, wall_dir = self._wall_avoidance(lane, w)
+                elif self._wall_memory != 0:
+                    wall_zone = 2
+                    wall_dir = self._wall_memory
+
+                direction, reason, detail = self._decide(
+                    coins, cars, bonus_cars, lane, w, h,
+                    wall_zone, wall_dir)
 
                 # ── 闭环车道保持：仅直行/回带时按漂移趋势自适应调节 ──
                 if (direction == 0 and lane is not None
@@ -792,23 +1056,32 @@ class RacingLoop(CustomAction):
                     actual_dir = 0
                     self._c_coast -= 1
                 elif reason == "防撞" and direction != 0:
-                    # 触发新的突发修正
+                    # 触发新的突发修正（中断归中）
+                    self._c_coast = 0
                     self._c_burst = 2
                     self._c_burst_dir = direction
                     actual_dir = direction
                     self._c_burst -= 1
                     cls = "左" if direction == -1 else "右"
                     logger.log(f"[WALL] 突发修正{cls}转×2帧")
-                if actual_dir != self.last_dir:
-                    self._steer(actual_dir)
-                    self.last_dir = actual_dir
+                # ── 转向平滑：消除镜头延迟导致的急转急回 ──
+                # C 区突发期间不平滑（安全机制，需要满力度）
+                if self._c_burst > 0:
+                    self._steer_smoothed = float(actual_dir * 32767)
+                else:
+                    target = actual_dir * 32767.0
+                    a = self._steer_alpha
+                    self._steer_smoothed = self._steer_smoothed * a + target * (1 - a)
+                smoothed_dir = int(self._steer_smoothed)
+                if smoothed_dir != self.last_dir:
+                    self._steer(smoothed_dir)
+                    self.last_dir = smoothed_dir
 
                 # ── 油门控制 ──
                 throttle = self._calc_throttle(reason, direction)
                 if throttle != self._current_throttle:
-                    self.gpad.right_trigger(value=throttle)
+                    self._apply_trigger(throttle)
                     self._current_throttle = throttle
-                    self.gpad.update()
 
                 # ── 决策日志（DEBUG 级别，仅 yolo 推理帧） ──
                 if self.frame_id % YOLO_INTERVAL == 0:
@@ -856,11 +1129,15 @@ class RacingLoop(CustomAction):
                         "zone_lines": self._zone_boundaries,
                         "throttle": throttle,
                         "horizon_locked": self._dynamic_horizon is not None,
+                        "wall_zone": wall_zone,
+                        "keep_strength": self._keep_strength,
+                        "steer_alpha": self._steer_alpha,
                     }
                     # 把标线检测中间数据（扫描区域、边缘点）合并到 lane 供 debug 可视化
                     lane_vis = self._lane_debug  # debug 数据含 zone/edges/failed
                     if lane:
-                        lane_vis = {**lane, "_debug": self._lane_debug} if self._lane_debug else lane
+                        center = self._estimate_road_center(lane, w)
+                        lane_vis = {**lane, "center": center, "_debug": self._lane_debug} if self._lane_debug else {**lane, "center": center}
                     self.debug.save_frame(
                         img, detections=yolo_debug, lane=lane_vis,
                         label=f"race_f{self.frame_id}_d{dir_char}",
