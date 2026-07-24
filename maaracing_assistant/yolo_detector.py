@@ -12,8 +12,8 @@ from maaracing_assistant.logger import logger
 
 
 class YOLODetector:
-    # 按类别的置信度阈值：coin(0)和bonus_car(2)面积小/样本少，降低阈值
-    CLASS_CONF = {0: 0.35, 1: 0.40, 2: 0.35}
+    # 按类别的置信度阈值
+    CLASS_CONF = {0: 0.35, 1: 0.35, 2: 0.35}
 
     def __init__(self, model_path: str, conf: float = 0.5, iou: float = 0.45):
         # ── Session 选项（图优化 + 缓存） ──
