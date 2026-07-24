@@ -100,7 +100,7 @@ class MRAGUI:
         model_style = "success" if model_ok else "danger"
         ttk.Label(model_frame, text=model_text, bootstyle=model_style).pack(side=LEFT)
 
-        # DEBUG / PEEP 模式
+        # DEBUG / PEEP / 记录模式
         debug_frame = ttk.Frame(self.root)
         debug_frame.pack(fill=X, padx=20, pady=2)
         self.debug_var = tk.BooleanVar(value=False)
@@ -113,6 +113,11 @@ class MRAGUI:
             debug_frame, text="PEEP 实时预览", variable=self.peep_var,
             command=self._toggle_peep,
             bootstyle="info-toolbutton"
+        ).pack(side=LEFT, padx=(8, 0))
+        self.record_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            debug_frame, text="📹 记录模式", variable=self.record_var,
+            bootstyle="success-toolbutton"
         ).pack(side=LEFT, padx=(8, 0))
 
         # 断点选择
@@ -227,13 +232,15 @@ class MRAGUI:
             self.status_label.config(bootstyle="danger")
             return
 
-        if has_physical_controller():
+        # 记录模式需要物理手柄，非记录模式需要断开物理手柄
+        record_mode = self.record_var.get()
+        if has_physical_controller() and not record_mode:
             dlg = tk.Toplevel(self.root)
             dlg.title("检测到物理手柄")
             icon_path = Path(__file__).parent.parent / "assets" / "icon.ico"
             if icon_path.exists():
                 dlg.iconbitmap(str(icon_path))
-            tk.Label(dlg, text="请断开所有物理手柄后再运行",
+            tk.Label(dlg, text="请断开所有物理手柄后再运行\n（记录模式除外）",
                      font=("Microsoft YaHei", 11), padx=30, pady=20).pack()
             tk.Button(dlg, text="确定", command=dlg.destroy, width=10).pack(pady=(0, 15))
             dlg.transient(self.root)
@@ -262,12 +269,17 @@ class MRAGUI:
         if self.debug_var.get():
             logger.log("DEBUG 模式开启：每帧截图保存到 debug/navigate/", "INFO")
 
-        self.worker_thread = threading.Thread(target=self._worker, args=(start_from,), daemon=True)
+        # 同步记录模式开关
+        record_mode = self.record_var.get()
+        if record_mode:
+            logger.log("📹 记录模式开启：不拦截手柄，记录人工操作数据", "INFO")
+
+        self.worker_thread = threading.Thread(target=self._worker, args=(start_from, record_mode), daemon=True)
         self.worker_thread.start()
 
-    def _worker(self, start_from: str = ""):
+    def _worker(self, start_from: str = "", record_mode: bool = False):
         try:
-            self.controller.start(start_from=start_from)
+            self.controller.start(start_from=start_from, record_mode=record_mode)
         except Exception as e:
             logger.log(f"线程异常: {e}", "ERROR")
         finally:

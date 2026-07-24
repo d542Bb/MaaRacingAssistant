@@ -198,7 +198,7 @@ class MaaRacingAssistantController:
 
     # ---------- 连接与启停 ----------
 
-    def connect(self) -> bool:
+    def connect(self, record_mode: bool = False) -> bool:
         hwnd = find_game_hwnd()
         if hwnd == 0:
             logger.log("未找到游戏窗口", "ERROR")
@@ -215,7 +215,7 @@ class MaaRacingAssistantController:
         self.tasker = Tasker()
         self.resource = Resource()
 
-        self.racing_loop = RacingLoop(str(self.model_path), debug=self.debug)
+        self.racing_loop = RacingLoop(str(self.model_path), debug=self.debug, record_mode=record_mode)
         self.resource.register_custom_action("RacingLoop", self.racing_loop)
 
         self.resource.post_bundle(self.proj / "assets" / "resource").wait()
@@ -225,9 +225,10 @@ class MaaRacingAssistantController:
 
         return True
 
-    def start(self, start_from: str = ""):
+    def start(self, start_from: str = "", record_mode: bool = False):
         """启动循环，从指定阶段开始（空字符串表示从第一个阶段开始）
         start_from: STAGE_ORDER 中的阶段名，供 GUI 断点选择
+        record_mode: 记录模式，不拦截手柄，记录人工操作数据
 
         流程分层：
           大厅层: 归位 → 导航一(极速狂飙入口) → 导航二(开始挑战)
@@ -237,7 +238,7 @@ class MaaRacingAssistantController:
             logger.log(f"模型不存在: {self.model_path}", "ERROR")
             return
 
-        if not self.connect():
+        if not self.connect(record_mode=record_mode):
             return
 
         self._running = True
@@ -251,6 +252,19 @@ class MaaRacingAssistantController:
             start_from = self.STAGE_ORDER[0]
 
         logger.log("开始循环")
+
+        # 记录模式：跳过导航，直接运行比赛
+        if record_mode:
+            logger.log("📹 记录模式：跳过导航流程，直接进入比赛")
+            self._current_stage = self.STAGE_ORDER[6]
+            try:
+                self.racing_loop.run_direct(self.controller)
+            except Exception as e:
+                logger.log(f"记录模式异常: {e}", "ERROR")
+            finally:
+                self._current_stage = ""
+                self._destroy_gpad()
+            return
 
         BTN_极速狂飙入口 = ButtonDef("极速狂飙入口", (0.880, 0.720), "activity_page_template", True, 50)
         BTN_开始挑战 = ButtonDef("开始挑战", (0.855, 0.898), "activity_page_template", False, 12)

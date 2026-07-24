@@ -480,10 +480,19 @@ class NavigationDebugger:
                 cv2.rectangle(frame, (bar_x, bar_bot - fill_h), (bar_x + 8, bar_bot), thr_color, -1)
             cv2.rectangle(frame, (bar_x, bar_top), (bar_x + 8, bar_bot), (120, 120, 120), 1)
 
-        # ── 右下：alpha 平滑系数 ──
-        if "steer_alpha" in ri:
-            a = ri["steer_alpha"]
-            _put_text(frame, f"a={a:.2f}", (w - 80, h - 100), 0.35, (160, 160, 160))
+        # ── 右上：前馈调试信息 ──
+        aim_debug = ri.get("aim_debug", {})
+        if aim_debug:
+            ff_offset = aim_debug.get("offset", 0)
+            ff_stop = aim_debug.get("stop_zone", 0)
+            ff_dx = aim_debug.get("dx", 0)
+            ff_moving = aim_debug.get("moving", False)
+            ff_reason = aim_debug.get("ff_reason", "")
+            ff_in_center = aim_debug.get("in_center", True)
+            ff_color = (0, 200, 255) if ff_reason == "前馈停止" else (0, 150, 255) if ff_reason == "偏离中心" else (180, 180, 180)
+            _put_text(frame, f"off={ff_offset:+.3f} stop={ff_stop:.3f}", (w - 220, 24), 0.4, ff_color)
+            _put_text(frame, f"dx={ff_dx:+.1f} mov={ff_moving}", (w - 220, 44), 0.4, ff_color)
+            _put_text(frame, f"in={ff_in_center} [{ff_reason}]", (w - 220, 64), 0.4, ff_color)
 
     # ==================================================================
     #  组合渲染
