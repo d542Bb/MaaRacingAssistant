@@ -16,7 +16,7 @@
   <img src="https://github.com/d542Bb/MaaRacingAssistant/actions/workflows/test.yml/badge.svg" alt="Test">
   <img src="https://img.shields.io/badge/status-development-yellow" alt="Status">
   <a href="https://afdian.com/a/MaaRacingAssistant">
-    <img src="https://img.shields.io/endpoint?url=https://api.swo.moe/stats/afdian/MaaRacingAssistant&style=flat" alt="爱发电 粉丝">
+    <img src="https://img.shields.io/badge/爱发电-赞助-blue?logo=afdian&logoColor=white" alt="爱发电 赞助">
   </a>
   <!-- 正式 v1.0.0 发版时换用 release badge：
   <img src="https://github.com/d542Bb/MaaRacingAssistant/actions/workflows/release.yml/badge.svg" alt="Release"> -->
@@ -81,7 +81,7 @@
 > **眼见为实**：下面这段视频展示电脑自己完成一场巅峰鉴宝——数据页 PEEP 实时预览 + 自动出价 + 结算看板。
 
 <p align="center">
-  <video src="assets/demo/mra_preview.mp4" width="640" controls muted></video>
+  <video src="https://github.com/user-attachments/assets/9bf47361-2773-447c-9900-bdf70d4b2af0" width="640" controls muted></video>
   <br>
   <em>无人值守自动鉴宝：实时预览 → 智能出价 → 结算分红</em>
 </p>
