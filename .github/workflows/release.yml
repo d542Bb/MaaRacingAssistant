@@ -106,12 +106,13 @@ jobs:
 
       - name: 构建分发包
         run: |
-          # python -m build 默认在隔离 venv 中构建，setuptools-scm 在隔离环境读不到 git tag 会回退 0.0.0；
-          # 用 tag 版本注入 SETUPTOOLS_SCM_PRETEND_VERSION（值仍来自 Git Tag，符合「Tag 是唯一信源」）。
-          # 注意 PRETEND_VERSION 需 PEP 440 格式（0.15.0.dev7），tag 是 SemVer 格式（0.15.0-dev.7），先转换。
+          # python -m build 默认在隔离 venv 中构建：setuptools-scm 在隔离环境 git 探测失败（listing git files failed）
+          # 且 SETUPTOOLS_SCM_PRETEND_VERSION 实测未生效，sdist/wheel 版本号仍回退 0.0.0。
+          # 改用 --no-isolation 在当前环境构建：setuptools-scm 直接读 git tag（「验证包构建」步骤已证明可行），
+          # PRETEND_VERSION 保留作兜底。注意其需 PEP 440 格式（0.15.0.dev8），tag 是 SemVer 格式（0.15.0-dev.8）。
           PRETEND=$(python -c "from packaging.version import Version; print(str(Version('${{ steps.version.outputs.version }}')))")
           echo "PRETEND_VERSION=$PRETEND"
-          SETUPTOOLS_SCM_PRETEND_VERSION="$PRETEND" python -m build
+          SETUPTOOLS_SCM_PRETEND_VERSION="$PRETEND" python -m build --no-isolation
 
       - name: 创建 GitHub Release
         uses: softprops/action-gh-release@v2
