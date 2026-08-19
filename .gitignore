@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.pyc
+
+# setuptools-scm 自动生成（版本号从 Git Tag 推导）
+maaracing_assistant/_version.py
+*.pyo
+*.egg-info/
+.venv/
+env/
+venv/
+
+# 数据集（大文件）
+dataset/images/
+dataset/labels/
+runs/
+tools/*.pt
+
+# 训练数据暂存（仅项目根）
+/training/
+
+# 日志
+logs/
+*.log
+debug.txt
+/debug/
+
+# 运行时数据（鉴宝结构化落盘数据库 data/treasure/treasure.db）
+/data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# AI 工作目录 / 本机 harness 配置（不同步到远端；.trae/ 下已跟踪的旧文件用 git rm --cached 移出）
+.trae/
+.claude/
+AGENTS.md
+
+# 本机 harness 配置说明（含本机路径，仅本地参考）
+docs/trae-dsh-config-share.md
+
+# 前端设计稿：只保留 pages/ 与 token 文件，忽略预检/报告等过程产物
+.design/.preflight/
+.design/runtime-orchestration-summary.json
+.design/validation-report.json
+
+# 归档（被 sidecar + WinUI3 取代的旧 GUI、历史 spike）
+archive/
+
+# WinUI 3 / .NET 构建产物（apps/mra_shell）
+apps/mra_shell/bin/
+apps/mra_shell/obj/
+
+# 发布打包产物（体积大，不入库；本地 staging/zip/sha256 放这里）
+build/release/
+# 探索/验证用临时运行时（spike 的完整 python runtime 数百 MB，不入库）
+build/spike/
+
+# 本地复用缓存（已验证 runtime 依赖 + 已编译 GUI，跳过重复下载/编译）
+build/runtime-cache/
+build/publish-cache/
+
+# assemble.ps1 本地打包产物（默认输出到 scripts/release；CI 输出到 build/release 已忽略）
+scripts/release/MaaRacingAssistant-*/
+scripts/release/MaaRacingAssistant-*.zip
+scripts/release/MaaRacingAssistant-*.zip.sha256
+
+# 系统
+Thumbs.db
+.DS_Store
+
+# 本机启动快捷方式（指向机器相关构建产物路径，仅本地使用，不同步）
+*.lnk

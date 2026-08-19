@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0", "setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maaracing-assistant"
+dynamic = ["version"]
+description = "模块化游戏自动化平台 — MAA Framework + YOLOv8 ONNX + vgamepad，主打巅峰鉴宝"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "opencv-python",
+    "onnxruntime-directml",
+    "vgamepad",
+    "windows-capture",
+    "MaaFw",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+]
+# 训练/导出模型所用（tools/training/train.py）。运行时推理走 onnxruntime-directml，
+# 不依赖 ultralytics/torch，故作为可选 extra 避免发布包拽入 torch。
+train = [
+    "ultralytics>=8.4.92",
+]
+
+[tool.setuptools.packages.find]
+include = ["maaracing_assistant*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# 单测只覆盖纯逻辑模块，避免拉入 maa/opencv 等重量级依赖
+addopts = "-ra"
+python_files = ["test_*.py", "*_test.py"]
+
+[tool.setuptools-scm]
+write_to = "maaracing_assistant/_version.py"

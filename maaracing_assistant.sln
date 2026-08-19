@@ -1,0 +1,29 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.2.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "apps", "apps", "{E54166BF-D5A5-D108-1244-AA6816D2859D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "mra_shell", "apps\mra_shell\mra_shell.csproj", "{A47D98FE-3B27-8185-5DCA-ACA22421E4AE}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A47D98FE-3B27-8185-5DCA-ACA22421E4AE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A47D98FE-3B27-8185-5DCA-ACA22421E4AE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A47D98FE-3B27-8185-5DCA-ACA22421E4AE}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A47D98FE-3B27-8185-5DCA-ACA22421E4AE}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{A47D98FE-3B27-8185-5DCA-ACA22421E4AE} = {E54166BF-D5A5-D108-1244-AA6816D2859D}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {A1C7319C-469B-4F4D-B2BC-84F7C2E03CB9}
+	EndGlobalSection
+EndGlobal

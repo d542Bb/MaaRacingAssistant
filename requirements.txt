@@ -1,0 +1,11 @@
+maafw>=5.11.1
+vgamepad>=0.1.0
+onnxruntime-directml>=1.24.0
+rapidocr>=3.9.2
+opencv-python>=5.0.0.93
+numpy>=2.4.6
+windows-capture>=2.0.1
+# 注意：
+# 1. ultralytics 已移出运行时依赖（仅 tools/training/ 训练用，见 pyproject [project.optional-dependencies].train），
+#    避免在发布包中拉入 torch 等训练期依赖，大幅减小体积。
+# 2. strenum 是 maafw 的运行时依赖，勿删。

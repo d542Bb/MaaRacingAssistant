@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>MRA</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- ===== 顶部标题栏（系统 drag rect 区域；右侧系统按钮由 AppWindowTitleBar overlay） ===== -->
+  <header id="titlebar">
+    <div class="brand">
+      <img class="brand-logo" src="logo.png" alt="MRA">
+      <span class="brand-title">MRA</span>
+      <span class="brand-version" id="app-version"></span>
+    </div>
+    <nav class="tabs">
+      <span class="tab-slider" id="tab-slider"></span>
+      <button class="mra-tab mra-tab--active" data-tab="control">主控</button>
+      <button class="mra-tab" data-tab="data">数据</button>
+      <button class="mra-tab" data-tab="settings">设置</button>
+      <button class="mra-tab" data-tab="about">关于</button>
+    </nav>
+    <div class="header-spacer"></div>
+  </header>
+
+  <!-- ===== 主体：四个 tab 页 ===== -->
+  <main>
+    <!-- ===== 主控 ===== -->
+    <section class="page" id="page-control">
+      <div class="col-left">
+        <div class="card">
+          <div class="card-head"><h3>活动模块</h3></div>
+          <div class="card-body">
+            <div class="select-wrap">
+              <select id="module-select"></select>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+            </div>
+            <p class="module-desc" id="module-desc"></p>
+            <!-- 模块专属选项：当前仅 treasure（鉴宝）展示；其它模块隐藏。
+                 两行结构避免拥挤：
+                 • 第1行（2列）：刷到第几场 + 出价策略
+                 • 第2行（整行）：目标场次（实习/专家/大师，分段按钮组，互斥单选） -->
+            <div class="module-options" id="module-options" style="display:none;margin-top:18px;">
+              <div class="module-options-row" style="display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:end;">
+                <div class="mra-field">
+                  <label class="mra-field-label" for="opt-max-loops">刷到第几场<span class="field-hint">（今日刷到第 N 场为止，0=不指定，按游戏默认 50）</span></label>
+                  <div class="mra-field-control">
+                    <input id="opt-max-loops" type="number" min="0" max="50" step="1" value="50">
+                    <span class="field-suffix">场</span>
+                  </div>
+                </div>
+                <div class="mra-field">
+                  <label class="mra-field-label" for="opt-bid-strategy">策略模式<span class="field-hint" id="opt-bid-strategy-hint">（赚钱=吃分红/捡漏，稳赚不亏）</span></label>
+                  <div class="select-wrap select-wrap--compact">
+                    <select id="opt-bid-strategy">
+                      <option value="profit">赚钱（吃分红/捡漏）</option>
+                      <option value="egg">赚蛋（搏拍中彩蛋）</option>
+                    </select>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                  </div>
+                </div>
+              </div>
+              <div class="module-options-row" style="margin-top:14px;">
+                <div class="mra-field">
+                  <label class="mra-field-label" for="opt-risk-cap">每局最多接受亏多少<span class="field-hint">（兜底上限，防意外接盘巨亏）</span></label>
+                  <div class="mra-field-control">
+                    <input id="opt-risk-cap" type="number" min="0" step="1000" value="50000">
+                    <span class="field-suffix">金币</span>
+                  </div>
+                </div>
+              </div>
+              <div class="module-options-row" style="margin-top:14px;">
+                <div class="mra-field">
+                  <label class="mra-field-label">目标场次<span class="field-hint">（每次回大厅先点对应场次标签，再点「开始匹配」）</span></label>
+                  <div class="mra-segmented" id="opt-target-session" role="group" aria-label="目标场次">
+                    <button type="button" class="seg-btn" data-value="intern"><span class="seg-dot seg-dot--intern"></span>实习场</button>
+                    <button type="button" class="seg-btn" data-value="expert"><span class="seg-dot seg-dot--expert"></span>专家场</button>
+                    <button type="button" class="seg-btn seg-btn--selected" data-value="master"><span class="seg-dot seg-dot--master"></span>大师场</button>
+                  </div>
+                </div>
+              </div>
+              <p class="module-options-status" id="module-options-status"></p>
+            </div>
+          </div>
+        </div>
+        <div class="card card-flex">
+          <div class="card-head">
+            <h3>当前阶段</h3>
+          </div>
+          <div class="breakpoint-list" id="stage-list"></div>
+        </div>
+      </div>
+      <div class="col-right">
+        <div class="card card-flex">
+          <div class="card-head">
+            <h3>运行日志</h3>
+            <div class="log-head-actions">
+              <button class="icon-btn" id="btn-log-clear" title="清空">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+              </button>
+              <button class="icon-btn" id="btn-log-copy" title="复制">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="log-area" id="log-area"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 数据（卡片由 JS 按当前模块渲染，见 app.js renderModulePages） ===== -->
+    <section class="page hidden" id="page-data"></section>
+
+    <!-- ===== 设置（卡片由 JS 按当前模块渲染，见 app.js renderModulePages） ===== -->
+    <section class="page hidden" id="page-settings"></section>
+
+    <!-- ===== 关于 ===== -->
+    <section class="page page-about hidden" id="page-about">
+      <div class="about-container">
+        <div class="about-hero">
+          <div class="about-hero-inner">
+            <div class="about-icon"><img src="../../../assets/icon.ico" alt="MaaRacingAssistant"></div>
+            <div style="flex:1;min-width:0;">
+              <h1 class="about-title">MaaRacingAssistant</h1>
+              <p class="about-subtitle">模块化游戏自动化平台 —— MAA Framework × YOLOv8 × vgamepad</p>
+              <div class="about-tags">
+                <span class="about-tag about-tag--plain" id="about-version">--</span>
+                <span class="about-tag about-tag--warn">开发中</span>
+                <span class="about-tag about-tag--plain">Apache-2.0</span>
+              </div>
+              <p class="about-footer-note">主打巅峰鉴宝全链路自动化 · 仅供技术研究 / 教学演示</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>技术栈</h3></div>
+          <div class="card-body">
+            <div class="tech-grid">
+              <div class="tech-item">
+                <div class="tech-icon" style="background:var(--mra-info-bg);color:var(--mra-info);">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/></svg>
+                </div>
+                <div style="min-width:0;">
+                  <div class="tech-name">MAA Framework</div>
+                  <div class="tech-sub">5.11.1 · 流程编排</div>
+                </div>
+              </div>
+              <div class="tech-item">
+                <div class="tech-icon" style="background:rgba(139,92,246,0.1);color:#8B5CF6;">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/></svg>
+                </div>
+                <div style="min-width:0;">
+                  <div class="tech-name">YOLOv8 + ONNX Runtime</div>
+                  <div class="tech-sub">目标检测</div>
+                </div>
+              </div>
+              <div class="tech-item">
+                <div class="tech-icon" style="background:var(--mra-success-bg);color:var(--mra-success);">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" x2="10" y1="11" y2="11"/><line x1="8" x2="15" y1="12" y2="18"/><line x1="15" x2="22" y1="8" y2="8"/><path d="M12 22v-2"/><path d="M4 12H2"/><path d="M6 6l-1-1"/><path d="M10 4l1-1"/><path d="M14 4l-1-1"/><path d="M18 6l1-1"/><path d="M20 12h2"/><path d="M17 10l1 1"/><path d="M17 14l-1 1"/><circle cx="4" cy="18" r="2"/><circle cx="20" cy="18" r="2"/></svg>
+                </div>
+                <div style="min-width:0;">
+                  <div class="tech-name">vgamepad</div>
+                  <div class="tech-sub">0.1.1 · 虚拟手柄</div>
+                </div>
+              </div>
+              <div class="tech-item">
+                <div class="tech-icon" style="background:var(--mra-danger-bg);color:var(--mra-danger);">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
+                </div>
+                <div style="min-width:0;">
+                  <div class="tech-name">OpenCV</div>
+                  <div class="tech-sub">图像处理</div>
+                </div>
+              </div>
+              <div class="tech-item">
+                <div class="tech-icon" style="background:var(--mra-warning-bg);color:var(--mra-warning);">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+                </div>
+                <div style="min-width:0;">
+                  <div class="tech-name">WinUI 3 + WebView2</div>
+                  <div class="tech-sub">原生窗口 + HTML 前端</div>
+                </div>
+              </div>
+              <div class="tech-item">
+                <div class="tech-icon" style="background:rgba(20,184,166,0.1);color:#14B8A6;">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                </div>
+                <div style="min-width:0;">
+                  <div class="tech-name">Python 3.11+</div>
+                  <div class="tech-sub">运行环境</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>使用说明</h3></div>
+          <div class="card-body">
+            <div class="usage-steps">
+              <div class="usage-step"><div class="usage-num">1</div><p class="usage-text">需以<strong>管理员权限</strong>运行（窗口截图要求）</p></div>
+              <div class="usage-step"><div class="usage-num">2</div><p class="usage-text">游戏窗口分辨率设置为 <strong>1280×720</strong></p></div>
+              <div class="usage-step"><div class="usage-num">3</div><p class="usage-text">运行前请<strong>断开所有物理手柄</strong></p></div>
+              <div class="usage-step"><div class="usage-num">4</div><p class="usage-text">推荐使用<strong>独立显卡</strong>加速 YOLO 推理</p></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="about-links">
+          <button class="mra-btn" style="width:auto;padding:0 16px;height:36px;background:var(--mra-surface);border:1px solid var(--mra-border);color:var(--mra-foreground-secondary);" data-link="home">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/></svg>
+            项目主页
+          </button>
+          <button class="mra-btn" style="width:auto;padding:0 16px;height:36px;background:var(--mra-surface);border:1px solid var(--mra-border);color:var(--mra-foreground-secondary);" data-link="issue">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;"><path d="m8 2 1.88 1.88"/><path d="M14.12 3.88 16 2"/><path d="M9 7.13v-1a3.003 3.003 0 1 1 6 0v1"/><path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6"/><path d="M12 20v-9"/><path d="M6.53 9C4.6 8.8 3 7.1 3 5"/><path d="M6 13H2"/><path d="M3 21c0-2.1 1.7-3.9 3.8-4"/><path d="M20.97 5c0 2.1-1.6 3.8-3.5 4"/><path d="M22 13h-4"/><path d="M17.2 17c2.1.1 3.8 1.9 3.8 4"/></svg>
+            报告问题
+          </button>
+          <button class="mra-btn" style="width:auto;padding:0 16px;height:36px;background:var(--mra-surface);border:1px solid var(--mra-border);color:var(--mra-foreground-secondary);" data-link="docs">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+            使用文档
+          </button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ===== 底部操作栏 ===== -->
+  <footer>
+    <div class="status">
+      <div class="mra-status-dot" id="status-dot"></div>
+      <span class="status-text" id="status-text">系统就绪</span>
+    </div>
+    <div class="spacer"></div>
+    <button class="mra-btn" id="btn-stop" disabled>
+      <svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><rect width="14" height="14" x="5" y="5" rx="2"/></svg>
+      停止
+    </button>
+    <button class="mra-btn" id="btn-start">
+      <svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+      开始运行
+    </button>
+  </footer>
+
+  <div id="error-toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>

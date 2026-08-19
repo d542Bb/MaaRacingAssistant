@@ -1,0 +1,38 @@
+# =============================================================================
+# CI 自动化单测 — push 与 PR 时运行
+# 只安装测试必要依赖（pytest），不拉重量级依赖（maa/opencv/onnxruntime 等）
+# 避免拉满 requirements.txt 拖慢 CI；单测仅覆盖纯逻辑模块（bid_strategy）
+# =============================================================================
+name: Test
+
+on:
+  push:
+    branches:
+      - master
+      - 'release/**'
+  pull_request:
+
+jobs:
+  test:
+    name: 单元测试 (pytest)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11']
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: 安装 pytest
+        run: |
+          python -m pip install --upgrade pip
+          pip install "pytest>=7.0"
+
+      - name: 运行单元测试
+        run: python -m pytest tests -v

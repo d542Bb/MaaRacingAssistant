@@ -1,0 +1,213 @@
+# =============================================================================
+# Release CI/CD — 推送 Git Tag 时自动创建 GitHub Release
+# Tag 版本号遵循 SemVer 2.0.0 规范（X.Y.Z），tag 格式 vX.Y.Z
+# =============================================================================
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  # 发布前置 gate：打 tag 发布的代码必须先过单元测试，正式版不发布未测试代码
+  test:
+    name: 发布前单测 (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装 pytest
+        run: |
+          python -m pip install --upgrade pip
+          pip install "pytest>=7.0"
+
+      - name: 运行单元测试
+        run: python -m pytest tests -v
+
+  release:
+    name: 创建 Release
+    runs-on: ubuntu-latest
+    needs: test  # 测试通过后才会执行发布
+    permissions:
+      contents: write
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 需要完整历史以生成 changelog
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 提取版本号
+        id: version
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: 校验 SemVer 格式
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          echo "校验版本号: $VERSION"
+          if ! echo "$VERSION" | grep -qP '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$'; then
+            echo "❌ 版本号 '$VERSION' 不符合 SemVer 2.0.0 规范！"
+            echo "正确格式: X.Y.Z 或 X.Y.Z-pre.id+build"
+            exit 1
+          fi
+          echo "✅ SemVer 格式校验通过"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install build setuptools-scm packaging
+
+      - name: 验证包构建
+        run: |
+          # 验证 setuptools-scm 能从当前 tag 正确读取版本
+          # 注意：setuptools-scm 输出 PEP 440 格式（如 0.13.0.dev3），tag 是 SemVer 格式（如 0.13.0-dev.3）
+          # 两者语义等价，但字符串不同，所以用 packaging.version 做版本比较而非字符串全等
+          python -c "
+          from setuptools_scm import get_version
+          from packaging.version import Version
+          v = get_version(root='.')
+          tag_v = '${{ steps.version.outputs.version }}'
+          print(f'setuptools-scm 解析版本（PEP 440）: {v}')
+          print(f'tag 原始版本（SemVer）:       {tag_v}')
+          assert Version(v) == Version(tag_v), f'版本语义不一致: setuptools-scm={v}, tag={tag_v}'
+          print('✅ 版本语义一致性验证通过')
+          "
+
+      - name: 生成 Changelog
+        id: changelog
+        run: |
+          PREV_TAG=$(git tag --sort=-v:refname | head -n 2 | tail -n 1 || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            LOG=$(git log --oneline --no-decorate "$PREV_TAG".."${{ steps.version.outputs.tag }}" 2>/dev/null | head -50)
+          else
+            LOG=$(git log --oneline --no-decorate --max-count=50 2>/dev/null)
+          fi
+          echo "log<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$LOG" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: 构建分发包
+        run: |
+          python -m build
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: v${{ steps.version.outputs.version }}
+          body: |
+            ## v${{ steps.version.outputs.version }}
+
+            ### 变更记录
+            ${{ steps.changelog.outputs.log }}
+
+            ---
+            > 版本号遵循 [SemVer 2.0.0](https://semver.org/lang/zh-CN/) 规范
+          files: |
+            dist/*.tar.gz
+            dist/*.whl
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+
+  # 解压即用的 Windows 可执行包：embedded Python3.11 runtime + 预装依赖 + dotnet publish GUI，
+  # 组装成 MaaRacingAssistant-<ver>-win-x64.zip 并补传同一 Release（见 build/release/assemble.ps1）。
+  # 在 release job 之后顺序执行，避免与「创建 Release」竞态。
+  win-build:
+    name: 构建解压即用 Windows 包
+    runs-on: windows-latest
+    needs: release  # 等 Release 先创建，再向其补传 zip 资产
+    permissions:
+      contents: write
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 完整历史（版本/README 语义）；模型非 LFS，快照自带
+          lfs: true       # 防患：仓库将来若接 LFS 模型，避免打到指针文件
+
+      - name: 设置 Python 3.11（装 runtime 依赖，必须 cp311 以匹配 embedded）
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'  # 缓存 pip 下载缓存，作为 runtime-cache 之外的第二层兜底
+
+      - name: 设置 .NET SDK（编译 WinUI GUI）
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: 缓存 NuGet 包（Microsoft.WindowsAppSDK 等，避免每次重下）
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('apps/mra_shell/mra_shell.csproj', 'apps/mra_shell/NuGet.Config') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: 缓存 runtime 依赖（embedded Python + pip 包，避免每次重下几百MB）
+        uses: actions/cache@v4
+        with:
+          path: build/runtime-cache
+          key: ${{ runner.os }}-rtcache-${{ hashFiles('scripts/release/requirements-runtime-lock.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-rtcache-
+
+      - name: 提取版本号
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $ver = $tag.TrimStart('v')
+          "VER=$ver" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+          "TAGNAME=$tag" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+
+      - name: 网络连通性自检（多源/镜像，提前暴露网络问题）
+        shell: pwsh
+        run: |
+          $urls = 'https://pypi.org/simple/','https://files.pythonhosted.org/','https://pypi.tuna.tsinghua.edu.cn/simple/','https://mirrors.aliyun.com/pypi/simple/'
+          foreach ($u in $urls) {
+            try {
+              $r = Invoke-WebRequest -Uri $u -Method Head -TimeoutSec 15 -UseBasicParsing
+              Write-Host "OK  $u  $($r.StatusCode)"
+            } catch {
+              Write-Host "ERR $u  $($_.Exception.Message)"
+            }
+          }
+
+      - name: 组装解压即用包（runtime + publish + 白名单 + 自检 + zip + sha256）
+        shell: pwsh
+        run: |
+          & "${{ github.workspace }}\scripts\release\assemble.ps1" `
+            -Version "$env:VER" `
+            -RepoRoot "${{ github.workspace }}" `
+            -OutRoot "${{ github.workspace }}\build\release"
+
+      - name: 校验产物存在
+        shell: pwsh
+        run: |
+          $zip = "${{ github.workspace }}\build\release\MaaRacingAssistant-$env:VER-win-x64.zip"
+          if (-not (Test-Path $zip)) { throw "zip 未生成: $zip" }
+          Get-Item $zip | Select-Object Name, Length
+
+      - name: 补传 zip 到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAGNAME }}
+          files: |
+            ${{ github.workspace }}/build/release/MaaRacingAssistant-${{ env.VER }}-win-x64.zip
+            ${{ github.workspace }}/build/release/MaaRacingAssistant-${{ env.VER }}-win-x64.zip.sha256

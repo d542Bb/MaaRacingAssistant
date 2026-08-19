@@ -1,0 +1,58 @@
+name: 💡 功能建议
+description: 提出一个新的功能或改进想法
+title: "[Feature] 简短的标题"
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你的建议！请描述清楚使用场景，这能帮助我们判断优先级。
+        提交前请先在 [Issues](https://github.com/d542Bb/MaaRacingAssistant/issues) 搜索是否已有重复提案。
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: 建议范围
+      description: 这个建议属于哪一部分？
+      options:
+        - 巅峰鉴宝模块
+        - 极速狂飙模块（开发中）
+        - 平台能力 / 能力接口
+        - 图形界面（GUI）
+        - 文档 / 教程
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解决的问题 / 使用场景
+      description: 你想达成什么目标？现在卡在哪里？
+      placeholder: "例如：鉴宝活动期间希望能自动化 XXXX，因为每天手动做太重复……"
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: 期望的方案
+      description: 你理想中的实现方式 / 交互是什么样？（可写思路，不要求是最终方案）
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 备选方案
+      description: 你还考虑过其他做法吗？
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充说明
+      description: 参考过的类似实现、链接等
+    validations:
+      required: false
