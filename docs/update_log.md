@@ -4,6 +4,21 @@
 
 ## 2026-08-20
 
+### v0.15.0-dev.8 README 演示视频原生播放 + 爱发电徽章修复 + 发布流水线两处修复 + 多尺寸图标 🎬
+- **版本号：** `v0.15.0-dev.8`（预发布；0.x 系列 tag 全部为 pre-release，基于 v0.15.0-dev.7）
+- **③ README 演示视频原生播放（GitHub user-attachments）：** GitHub README 渲染器会剥离普通仓库文件路径的 `<video>` 标签（实测确认），必须用 GitHub 官方 user-attachments 机制——经 issue 上传 ≤10MB MP4 获得稳定 URL，`<video src="https://github.com/user-attachments/assets/9bf47361-2773-447c-9900-bdf70d4b2af0">` 内联播放（带控件）。已通过 issue #1（演示素材托管）上传压缩版（5.77MB）落地
+- **④ 爱发电徽章修复：** 原 `api.swo.moe/stats/afdian/MaaRacingAssistant` 返回 `count:"**"`（第三方服务获取不到真实粉丝数），改为静态 shields.io 徽章「爱发电 赞助」链接到主页，已验证返回正常 SVG
+- **① sdist/wheel 版本号回退 0.0.0（历史 bug）：** `release.yml` 的 `python -m build` 在**隔离 venv** 构建时，setuptools-scm 读不到 git tag → sdist/wheel 版本号回退 `0.0.0`（自 v0.13.0 起一直存在，win-x64.zip 不受影响，故未暴露）
+  - **修复：** 构建分发包前用 tag 版本转换 PEP 440 格式注入 `SETUPTOOLS_SCM_PRETEND_VERSION`（值仍来自 Git Tag，符合「Tag 是唯一信源」）
+- **② Release 变更记录为空（公开仓单 tag 场景）：** changelog 逻辑 `head -n 2 | tail -n 1` 在**只有一个 tag** 时会误取当前 tag 自身，导致 `git log tag..tag` 空范围 → 变更记录为空
+  - **修复：** 用 `grep -v` 排除当前 tag 再取最新一个，为空则回退列出最近 50 条提交
+- **⑤ 应用图标改多尺寸合并 ICO：** `assets/icon.ico` 由单尺寸改为 16/32/48/64/128/256 六尺寸合并（32bpp），窗口/任务栏/高 DPI 各场景均清晰；`ApplicationIcon`（csproj）与 `AppWindow.SetIcon`（运行期）均验证兼容
+- **验证方法：** 打 tag 后确认 ① whl/tar.gz 版本号为对应版本（如 `0.15.0.dev8`）② Release body 变更记录非空 ③ README 演示区视频可播放 ④ exe 图标多尺寸清晰
+
+---
+
+## 2026-08-20
+
 ### v0.15.0-dev.6 README 发布物料就绪 + 开发文档防上传 📦
 - **版本号：** `v0.15.0-dev.6`（预发布；0.x 系列 tag 全部为 pre-release）
 - **发布物料就绪（面向 v1.0.0 鉴宝单模块主打）：**
