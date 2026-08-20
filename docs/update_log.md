@@ -4,6 +4,14 @@
 
 ## 2026-08-20
 
+### 未发版变更：开源就绪完善（下载即用引导 / Python 版本统一 / CI 注释澄清）📦
+- **性质：** 未发版变更（docs+ci 为主，不含运行时模块代码）；master 直接提交、不 tag，触发 release 的时机另行决定
+- **README 增加「下载即用包」引导：** 普通用户从 GitHub Releases 下载 `MaaRacingAssistant-<版本>-win-x64.zip` → 解压 → 双击 `mra_shell.exe`（自带 embedded Python/依赖，无需编译）；快速开始按「下载即用 / 从源码构建」两类入口分流，并标注当前为开发阶段 pre-release
+- **启动引导改指编译产物：** README / CONTRIBUTING 原引导「双击 MaaRacingAssistant.lnk」（被 .gitignore 排除，clone 后并不存在），改为 `apps\mra_shell\bin\x64\Debug\net8.0-windows10.0.19041.0\win-x64\mra_shell.exe`
+- **Python 版本统一：** `pyproject.toml` `requires-python` 由 `>=3.9` 改为 `>=3.10`，与 README / CONTRIBUTING 的 3.10+ 一致（代码已使用 `int | None` 等 3.10+ 语法）
+- **CI 依赖关系澄清：** 给 `[test]` extra 与 test.yml / release.yml 补注释，说明 CI 不采用 `.[test]` 的原因（会连带安装 onnxruntime-directml / windows-capture 等仅 Windows 有 wheel 的主依赖，Linux runner 装不上）
+- **开源隐私红线扫描：** 确认当前快照无绝对路径 / 密钥 / 真实 IP / 真实作者信息，可安全开源
+
 ### v0.16.0-dev.2 鉴宝结算弹窗回退修复（感知锚点补齐）🐛
 - **版本号：** `v0.16.0-dev.2`（预发布；基于 v0.16.0-dev.1 顺延）
 - **根因：** v0.16.0-dev.1 引入 active_rois 阶段感知裁剪后，`_GLOBAL_ANCHORS` 只含游戏大厅锚点 `hall_peak_appraise_card`，缺「鉴宝大厅(选择场次)」识别 ROI `hall_session_cards`。结算弹窗点关闭后画面已回鉴宝大厅，但检测器只扫弹窗 ROI + 游戏大厅卡片，永远看不到 `hall_session_cards` → 阶段冻结在「结算弹窗」，无法触发 `_accept_stage` 的弹窗链回退（`POPUP_LOOPBACK_STABLE_FRAMES` 连续帧确认）。
