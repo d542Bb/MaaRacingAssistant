@@ -31,6 +31,7 @@ from maaracing_assistant.controller import MaaRacingAssistantController
 from maaracing_assistant.logger import logger
 from maaracing_assistant.modules.registry import MODULE_REGISTRY, get_module_info
 from maaracing_assistant.modules.treasure_module import TreasureModule
+from maaracing_assistant.paths import user_data_dir
 from maaracing_assistant.window_utils import ensure_dpi_aware, has_physical_controller
 
 # 协议转移用 stderr：_StdoutGuard 把误写 stdout 的第三方 print 转移到这里。
@@ -372,13 +373,12 @@ class SidecarService:
         库不存在/读取失败时 summary=None、games=[]（不抛错，前端显示空看板）。
         """
         from datetime import datetime, timedelta
-        from pathlib import Path
         import sqlite3
 
         now = datetime.now()
         day = now.date() if now.hour >= 5 else now.date() - timedelta(days=1)
         bucket = day.isoformat()
-        db_path = Path(__file__).resolve().parent.parent / "data" / "treasure" / "treasure.db"
+        db_path = user_data_dir() / "treasure" / "treasure.db"
         if not db_path.exists():
             return (True, {"bucket": bucket, "summary": None, "games": []}, None)
         try:

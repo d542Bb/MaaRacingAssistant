@@ -21,9 +21,11 @@ from maaracing_assistant.debug import NavigationDebugger
 from maaracing_assistant.vgamepad_lazy import gamepad_available as _vgamepad_available
 from maaracing_assistant.vgamepad_lazy import vg
 from maaracing_assistant.window_utils import (
+    activate_window,
     count_pressed_keys,
     ensure_dpi_aware,
     find_game_hwnd,
+    is_window_on_screen,
 )
 from maaracing_assistant.logger import logger
 from maaracing_assistant.modules.base import ActivityContext, ModuleDependencyError
@@ -235,6 +237,22 @@ class MaaRacingAssistantController:
 
         self._hwnd = hwnd
         logger.log(f"已连接窗口 (hWnd={hwnd})")
+
+        # 按下开始后的窗口准备：切换到游戏窗口前台（用户明确操作，区别于运行中点击的"不抢前台"策略）
+        # 切前台失败仅 WARNING 提示（不终止）：逻辑继续运行，点击时若游戏非前台会被前台校验取消
+        if not activate_window(hwnd):
+            logger.log("切换到游戏窗口前台失败（Windows 前台锁定）——逻辑继续运行，点击需游戏在前台", "WARNING")
+
+        # 窗口屏幕内校验：窗口完全不可见（被最小化且无法自动还原 / 被拖出屏幕）→ 无法点击 → 报错并终止模块
+        if not is_window_on_screen(hwnd):
+            logger.log(
+                "游戏窗口不在任何屏幕的可视范围内（被最小化且无法自动还原，或被拖出屏幕），无法点击。"
+                "模块已终止，请将窗口还原并移回屏幕后重新开始", "ERROR",
+            )
+            self.controller = None
+            self._hwnd = 0
+            return False
+
         return True
 
     # ---------- 手柄管理 ----------

@@ -682,6 +682,8 @@ sidecar.py（mra_shell 托管）
 1. connect(record_mode)
    ├─ find_game_hwnd() → Win32Controller(hWnd=hwnd)
    ├─ controller.post_connection().wait()
+   ├─ 窗口准备：activate_window(hwnd) 切前台（还原最小化 + F13 注入解除锁定 + SetForegroundWindow）；
+   │   is_window_on_screen(hwnd) 校验窗口完整可见（四角均在显示器内），部分/完全拖出 → ERROR 报错退出
    ├─ Tasker() + Resource()
    ├─ RacingLoop(model_path, debug, record_mode)
    ├─ resource.register_custom_action("RacingLoop", racing_loop)

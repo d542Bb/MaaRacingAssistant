@@ -15,7 +15,8 @@ from maaracing_assistant.logger import logger
 
 # ---- Win32 常量 ----
 _UD = ctypes.windll.user32
-_SHCORE = ctypes.windll.shcore
+_SHcore = ctypes.windll.shcore
+_K32 = ctypes.windll.kernel32
 
 _GWL_STYLE = -16
 _GWL_EXSTYLE = -20
@@ -35,10 +36,14 @@ _UD.GetForegroundWindow.restype = wintypes.HWND
 _UD.GetAsyncKeyState.argtypes = [ctypes.c_int]
 _UD.GetAsyncKeyState.restype = ctypes.c_short
 
-# SendInput（INPUT/MOUSEINPUT 结构，dwExtraInfo 为 ULONG_PTR=指针宽）
+# SendInput（INPUT/MOUSEINPUT + KEYBDINPUT 结构，dwExtraInfo 为 ULONG_PTR=指针宽）
 INPUT_MOUSE = 0
+INPUT_KEYBOARD = 1
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
+KEYEVENTF_KEYUP = 0x0002
+# F13：标准键盘不存在该键，无任何系统/应用组合键副作用，用于解除前台锁定的安全注入键
+VK_F13 = 0x7C
 SWP_NOMOVE = 0x0002
 SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
@@ -57,8 +62,18 @@ class _MOUSEINPUT(ctypes.Structure):
     ]
 
 
+class _KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", wintypes.WORD),
+        ("wScan", wintypes.WORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_size_t),  # ULONG_PTR（64 位下 8 字节）
+    ]
+
+
 class _INPUTUNION(ctypes.Union):
-    _fields_ = [("mi", _MOUSEINPUT)]
+    _fields_ = [("mi", _MOUSEINPUT), ("ki", _KEYBDINPUT)]
 
 
 class _INPUT(ctypes.Structure):
@@ -67,6 +82,32 @@ class _INPUT(ctypes.Structure):
 
 _UD.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(_INPUT), ctypes.c_int]
 _UD.SendInput.restype = wintypes.UINT
+
+# 前台激活 / 显示器枚举（窗口切前台 + 屏幕内校验）
+_UD.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+_UD.GetWindowRect.restype = wintypes.BOOL
+_UD.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+_UD.GetWindowThreadProcessId.restype = wintypes.DWORD
+_K32.GetCurrentThreadId.restype = wintypes.DWORD
+_UD.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+_UD.AttachThreadInput.restype = wintypes.BOOL
+_UD.SetForegroundWindow.argtypes = [wintypes.HWND]
+_UD.SetForegroundWindow.restype = wintypes.BOOL
+_UD.BringWindowToTop.argtypes = [wintypes.HWND]
+_UD.BringWindowToTop.restype = wintypes.BOOL
+_UD.SetFocus.argtypes = [wintypes.HWND]
+_UD.SetFocus.restype = wintypes.HWND
+_UD.IsIconic.argtypes = [wintypes.HWND]
+_UD.IsIconic.restype = wintypes.BOOL
+_UD.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+_UD.ShowWindow.restype = wintypes.BOOL
+_UD.EnumDisplayMonitors.argtypes = [
+    wintypes.HDC, ctypes.POINTER(wintypes.RECT),
+    ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
+                       ctypes.POINTER(wintypes.RECT), wintypes.LPARAM),
+    wintypes.LPARAM,
+]
+_UD.EnumDisplayMonitors.restype = wintypes.BOOL
 
 
 # =====================================================================
@@ -175,6 +216,98 @@ def is_foreground(hwnd: int) -> bool:
     return _UD.GetForegroundWindow() == hwnd
 
 
+def _send_key(vk: int, keyup: bool = False) -> bool:
+    """注入一次键盘按键（SendInput）。用于让 Windows 把当前进程标记为「最近收到输入」，解除前台锁定。"""
+    inp = _INPUT()
+    inp.type = INPUT_KEYBOARD
+    inp.u.ki.wVk = vk
+    inp.u.ki.wScan = 0
+    inp.u.ki.dwFlags = KEYEVENTF_KEYUP if keyup else 0
+    inp.u.ki.time = 0
+    inp.u.ki.dwExtraInfo = 0
+    return _UD.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT)) == 1
+
+
+def activate_window(hwnd: int) -> bool:
+    """把窗口切到前台（开始按钮后的用户明确操作；运行中点击不调用此函数）。
+
+    组合：还原最小化 → 注入一次 F13（让系统认为本进程最近收到输入，解除前台锁定）
+    → SetForegroundWindow → BringWindowToTop → SetFocus。
+    F13 是标准键盘不存在的键，不触发任何系统/应用组合键，安全无副作用。
+    返回是否已成为前台（仍可能被前台锁定拒绝，仅告警不阻断）。
+    """
+    if not hwnd:
+        return False
+    try:
+        if _UD.IsIconic(hwnd):
+            _UD.ShowWindow(hwnd, 9)  # SW_RESTORE
+        # 注入一次 F13 按键：让 Windows 把本进程标记为「最近收到输入」，从而解除前台锁定
+        _send_key(VK_F13)
+        _send_key(VK_F13, keyup=True)
+        fg = _UD.GetForegroundWindow()
+        fg_tid = _UD.GetWindowThreadProcessId(fg, None)
+        cur_tid = _K32.GetCurrentThreadId()
+        attached = False
+        if fg and fg != hwnd and fg_tid != cur_tid:
+            attached = bool(_UD.AttachThreadInput(cur_tid, fg_tid, True))
+        try:
+            _UD.SetForegroundWindow(hwnd)
+            _UD.BringWindowToTop(hwnd)
+            _UD.SetFocus(hwnd)
+        finally:
+            if attached:
+                _UD.AttachThreadInput(cur_tid, fg_tid, False)
+        # 前台切换是异步的：轮询等待确认（最多 ~300ms），避免切换未完成就误判失败
+        deadline = time.time() + 0.3
+        while time.time() < deadline:
+            if _UD.GetForegroundWindow() == hwnd:
+                return True
+            time.sleep(0.02)
+        return False
+    except Exception:
+        return False
+
+
+def is_window_on_screen(hwnd: int) -> bool:
+    """窗口是否完整落在显示器可视范围内（任一角超出屏幕 → False）。
+
+    启动校验用：窗口部分拖出屏幕时，点击目标坐标（归一化→全屏）可能落在屏外导致点击落空、流程卡死，
+    故要求窗口四个角都位于某块显示器内（跨屏分屏窗口同样通过；只有真的伸出屏幕才拦截）。
+    """
+    rect = wintypes.RECT()
+    if not hwnd or not _UD.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return False
+    if rect.right <= rect.left or rect.bottom <= rect.top:
+        return False
+
+    monitors: list[tuple[int, int, int, int]] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
+                        ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
+    def _cb(_hmon, _hdc, lprc, _lparam):
+        m = lprc.contents
+        monitors.append((m.left, m.top, m.right, m.bottom))
+        return True
+
+    try:
+        _UD.EnumDisplayMonitors(None, None, _cb, 0)
+    except Exception:
+        return True  # 无法枚举显示器时不误杀，放行
+    if not monitors:
+        return True
+
+    def _inside(x: int, y: int) -> bool:
+        return any(mleft <= x < mright and mtop <= y < mbottom for mleft, mtop, mright, mbottom in monitors)
+
+    return all(
+        _inside(cx, cy)
+        for cx, cy in (
+            (rect.left, rect.top), (rect.right - 1, rect.top),
+            (rect.left, rect.bottom - 1), (rect.right - 1, rect.bottom - 1),
+        )
+    )
+
+
 def count_pressed_keys() -> int:
     """统计当前同时按下的键盘按键数（GetAsyncKeyState，系统级）。
 
@@ -279,12 +412,7 @@ def find_game_hwnd() -> int:
 
     windows = Toolkit.find_desktop_windows()
 
-    for win in windows:
-        if win.class_name == "UnrealWindow":
-            hwnd = int(win.hwnd)
-            logger.log(f"找到窗口(类名): hWnd={hwnd}, title={win.window_name}")
-            return hwnd
-
+    # 按窗口标题关键词匹配（跨设备稳定；不按类名 UnrealWindow——多 UE 窗口场景会歧义连错）
     keywords = ["巅峰极速", "g112", "Racing Master"]
     for win in windows:
         for kw in keywords:

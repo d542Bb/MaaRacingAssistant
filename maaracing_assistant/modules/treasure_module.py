@@ -46,6 +46,7 @@ from maaracing_assistant.modules.treasure_detector import TreasureStageDetector
 from maaracing_assistant.modules.treasure_eggs import EggRewardRecognizer
 from maaracing_assistant.modules.treasure_ocr import TreasureOcr
 from maaracing_assistant.modules.treasure_renderer import TreasureDebugRenderer
+from maaracing_assistant.paths import user_data_dir
 from maaracing_assistant.window_utils import (
     ensure_game_window_min,
     is_foreground,
@@ -657,9 +658,9 @@ class TreasureModule(ActivityModule):
         # data = recognize() 返回值 | None（识别异常）。复用 OCR worker 线程执行（task="egg"），
         # 主线程零阻塞；结果仅记录用途，超时兜底在 _decide_action（EGG_OCR_TIMEOUT_FRAMES）。
         self._egg_result: dict | None = None
-        # --------- 结构化落盘（data/treasure/treasure.db，凌晨5点日界）----------
+        # --------- 结构化落盘（%APPDATA%/MaaRacingAssistant/treasure/treasure.db，凌晨5点日界）----------
         self._db_conn = None                          # sqlite3 连接（start 时初始化，主线程写，stop 关闭）
-        self._data_dir: Path | None = None            # data/treasure/（start 时按 ctx.proj 初始化）
+        self._data_dir: Path | None = None            # 用户数据目录 treasure/（start 时初始化）
         # --------- 真实点击（v0.4）：边沿触发指纹锁 + 限速 ---------
         # 指纹 = (key, state, 归一化中心四舍五入[, 输入位锚点])；点击成功后才更新，
         # 相同意图持续存在时只点一次；数字键带输入位锚点区分连续相同数字（如 11 的第二个 1）。
@@ -806,8 +807,9 @@ class TreasureModule(ActivityModule):
         # 不会卡流程（与检测器同样的"缺失即降级"约定）。
         self._egg_recognizer = EggRewardRecognizer(self.ctx.proj, ocr=self._ocr)
 
-        # 2.53 结构化落盘：data/treasure/treasure.db（games 明细 + daily_summary 汇总，SQLite 标准库零依赖）
-        self._data_dir = self.ctx.proj / "data" / "treasure"
+        # 2.53 结构化落盘：%APPDATA%/MaaRacingAssistant/treasure/treasure.db
+        # （games 明细 + daily_summary 汇总，SQLite 标准库零依赖；用户数据目录与安装目录解耦，更新不丢数据）
+        self._data_dir = user_data_dir() / "treasure"
         self._ensure_db()
 
         # 2.55 加载动作按钮（准星模式用）：JSON rect → 归一化中心点

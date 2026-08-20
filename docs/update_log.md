@@ -4,6 +4,18 @@
 
 ## 2026-08-20
 
+### 未发版工作区改动：数据目录迁移 + 窗口匹配调整 + 窗口准备机制
+
+- **数据存储迁移（与安装目录解耦）：** 鉴宝落盘库从 `<项目根>/data/treasure/treasure.db` 迁到 `%APPDATA%/MaaRacingAssistant/treasure/treasure.db`，更新/覆盖安装不再影响历史数据
+  - 新增 `maaracing_assistant/paths.py`：`user_data_dir()` 统一解析用户数据根目录（无 APPDATA 时回退包根 `data/`，兼容源码运行）
+  - `treasure_module.py` 落盘与 `sidecar.py` 今日看板读取走同一函数，读写路径一致
+  - 不做旧 data 目录迁移（项目早期，无痛感）
+- **窗口匹配调整：** `find_game_hwnd()` 改为标题关键词（巅峰极速/g112/Racing Master）子串匹配第一优先，去掉 UnrealWindow 类名匹配（多 UE 窗口场景会歧义连错）
+- **窗口准备机制（按下开始后）：** `controller.connect()` 连接成功后 ① `activate_window(hwnd)` 把游戏窗口切到前台（还原最小化 + SendInput 注入 F13 解除前台锁定 + AttachThreadInput + SetForegroundWindow + 轮询确认异步切换）；② `is_window_on_screen(hwnd)` 校验窗口完整可见（四角均在显示器内），部分/完全拖出屏幕 → ERROR 报错并终止模块
+  - 切前台失败仅 WARNING 提示（逻辑继续运行）；运行中点击仍保持「不抢前台」安全策略不变
+
+---
+
 ### v0.15.0-dev.8 README 演示视频原生播放 + 爱发电徽章修复 + 发布流水线两处修复 + 多尺寸图标 🎬
 - **版本号：** `v0.15.0-dev.8`（预发布；0.x 系列 tag 全部为 pre-release，基于 v0.15.0-dev.7）
 - **③ README 演示视频原生播放（GitHub user-attachments）：** GitHub README 渲染器会剥离普通仓库文件路径的 `<video>` 标签（实测确认），必须用 GitHub 官方 user-attachments 机制——经 issue 上传 ≤10MB MP4 获得稳定 URL，`<video src="https://github.com/user-attachments/assets/9bf47361-2773-447c-9900-bdf70d4b2af0">` 内联播放（带控件）。已通过 issue #1（演示素材托管）上传压缩版（5.77MB）落地
