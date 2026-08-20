@@ -25,6 +25,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from queue import Empty, Full, Queue
 
 import cv2
 import numpy as np
@@ -48,7 +49,7 @@ from maaracing_assistant.modules.treasure_ocr import TreasureOcr
 from maaracing_assistant.modules.treasure_renderer import TreasureDebugRenderer
 from maaracing_assistant.paths import user_data_dir
 from maaracing_assistant.window_utils import (
-    ensure_game_window_min,
+    check_game_window_aspect,
     is_foreground,
     norm_to_screen,
     send_left_click,
@@ -281,6 +282,118 @@ def _load_session_panel(
 # 注意与主界面底部「出价」按钮（bid_main_red_btn，走 OCR 文字判状态）是两回事。
 _SMART_BID_KEY = "smart_bid_btn"
 
+# 智能出价按钮匹配阈值（面板开 S3 强信号）：优先读 JSON stage.smart_bid_btn.threshold
+# （调试台可校准），缺省回退本值。注意不可复用 _SESSION_MATCH_THRESHOLD（0.90 是「开始匹配」
+# 按钮的）——智能出价按钮小、模糊/非标准窗口下匹配分偏低（实测 0.686），0.90 会永远判
+# 「面板未开」→ 卡 S2 反复点主出价按钮、不点智能出价。阶段感知裁剪后该 ROI 只在出价阶段
+# 参与匹配，放宽阈值不会误识别其它阶段的背景。
+_SMART_BID_MATCH_THRESHOLD = 0.72
+
+# ==================================================================
+#  阶段感知清单（动态激活）
+#  ------------------------------------------------------------------
+#  背景：非标准窗口（DPI 缩放/分辨率变化）下画面模糊 → 单点模板匹配分
+#  不稳定（如 smart_bid_btn 多尺度最优仅 0.686 < 0.90 → 面板判未开 →
+#  不点智能出价）。全局高阈值防误识别，但小目标按钮够不到阈值。
+#  方案：按阶段只激活「当前画面必然出现/相关的 ROI」，把「放宽阈值」
+#  和「防误识别」解耦 —— 其它阶段的背景元素根本不参与匹配。
+#
+#  使用规则（改这里前必读）：
+#   - 键：STAGE_ORDER 中的阶段名；值：该阶段要激活的 stage ROI 键
+#     （来自 treasure_detector._ROI_STAGE，不含模块独立匹配的
+#     appraiser_selected_check / session_start_match_btn / 鉴宝师模板）。
+#   - 值只写「本阶段画面会出现/需要感知」的 ROI；全局锚点（_GLOBAL_ANCHORS）
+#     运行时自动并入，不必重复写。
+#   - 转移信号必须包含：本阶段画面里可能出现的「下一阶段/结算」信号，
+#     否则阶段切换会漏检（如出价阶段必须含 settle_title/result_banner）。
+#   - 新阶段忘了登记 → 运行时回退全量检测（安全兜底，不会静默卡死）。
+# ==================================================================
+# 全局锚点：任何阶段都可能异常掉回游戏大厅 → 大厅卡片始终全量匹配。
+_GLOBAL_ANCHORS: frozenset[str] = frozenset({
+    "hall_peak_appraise_card",
+})
+
+# 回合出价阶段共用的激活集合（第1~5回合一致）。
+_ROUND_PERCEPTION_ROIS: frozenset[str] = frozenset({
+    "round_big_banner",   # 回合横幅：回合号权威来源 + 下一回合转移信号
+    "smart_bid_btn",      # 智能出价按钮：面板开（S3）强信号
+    "settle_title",       # 结算转移锚点：出价结束 → 领取分红
+    "result_banner",      # 结算结果锚点：出价结束 → 中标结算
+})
+
+# 出价面板 OCR keys（worker 第二段按阶段裁剪）。
+_BID_OCR_KEYS: frozenset[str] = frozenset({
+    "bid_result_amount_box",  # H 值（输入框当前值，智能出价填入）
+    "bid_player1", "bid_player2", "bid_player3", "bid_player4",  # 公开报价（快照）
+    "player_name1", "player_name2", "player_name3", "player_name4",  # 玩家名（槽位定位）
+    "round_label_area",       # 回合小字（附加回合兜底）
+})
+# 结算/分红 OCR keys。
+_SETTLE_OCR_KEYS: frozenset[str] = frozenset({
+    "settle_final_price", "settle_total_price", "settle_profit", "settle_my_income",
+})
+
+_STAGE_PERCEPTION: dict[str, frozenset[str]] = {
+    "游戏大厅": frozenset({
+        "hall_peak_appraise_card",  # 大厅卡片（点击进活动页/鉴宝大厅）
+        "goto_appraise_btn",        # 活动页「前往鉴宝」（若已切到活动页）
+        "hall_session_cards",       # 鉴宝大厅场次卡片（若已切到大厅）
+    }),
+    "活动页面": frozenset({
+        "goto_appraise_btn",        # 「前往鉴宝」按钮（点击进鉴宝大厅）
+        "hall_session_cards",       # 已进鉴宝大厅的转移信号
+    }),
+    "鉴宝大厅(选择场次)": frozenset({
+        "hall_session_cards",       # 场次卡片区（「开始匹配」为模块独立匹配，不走 detect）
+        "is_matching_btn",          # 点「开始匹配」后 → 匹配中 的转移信号（缺失会卡死在大厅反复点 badge）
+    }),
+    "匹配中": frozenset({
+        "is_matching_btn",          # 匹配中按钮
+        "appraiser_title",          # 匹配完成 → 选择鉴宝师 的转移信号
+    }),
+    "选择鉴宝师": frozenset({
+        "appraiser_title",          # 选师页标题
+        "round_big_banner",         # 确认后进回合的强信号（immediate 切换）
+        "is_matching_btn",          # 仍处匹配中的转移信号
+        # 对勾 / 鉴宝师模板为模块独立匹配，不走 detect
+    }),
+    "第1回合出价": _ROUND_PERCEPTION_ROIS,
+    "第2回合出价": _ROUND_PERCEPTION_ROIS,
+    "第3回合出价": _ROUND_PERCEPTION_ROIS,
+    "第4回合出价": _ROUND_PERCEPTION_ROIS,
+    "第5回合出价": _ROUND_PERCEPTION_ROIS,
+    "中标结算": frozenset({
+        "result_banner",            # 竞拍结果横幅（win/fail）
+        "settle_title",             # 点领取后 → 领取分红 的转移信号
+        "daily_high_banner",        # 弹窗链入口（今日最高）
+        "egg_reward_title",         # 弹窗链入口（彩蛋）
+    }),
+    "领取分红": frozenset({
+        "settle_title",             # 结算页标题
+        "result_banner",            # 结算结果（若结果横幅仍在）
+        "daily_high_banner",        # 弹窗链入口
+        "egg_reward_title",         # 弹窗链入口
+    }),
+    "结算弹窗": frozenset({
+        "daily_high_banner",        # 今日最高积分弹窗
+        "egg_reward_title",         # 彩蛋弹窗
+        "settle_title",             # 弹窗链未命中时结算页兜底
+        "result_banner",            # 弹窗链未命中时结果横幅兜底
+    }),
+}
+
+# OCR 感知清单：阶段 → 需要投递识别的 OCR keys（worker 第二段按此裁剪；None=全量）。
+# 仅列出走异步 worker 的阶段；鉴宝大厅/结算弹窗走同步单 ROI，不在此表。
+_STAGE_OCR_KEYS: dict[str, frozenset[str]] = {
+    "第1回合出价": _BID_OCR_KEYS,
+    "第2回合出价": _BID_OCR_KEYS,
+    "第3回合出价": _BID_OCR_KEYS,
+    "第4回合出价": _BID_OCR_KEYS,
+    "第5回合出价": _BID_OCR_KEYS,
+    "中标结算": _SETTLE_OCR_KEYS,
+    "领取分红": _SETTLE_OCR_KEYS,
+}
+
 
 def _load_smart_bid_btn(
     proj: Path,
@@ -350,6 +463,9 @@ class TreasureModule(ActivityModule):
 
     # --------- 可调参数 ---------
     FRAME_INTERVAL_MS     = 300    # 截图周期（毫秒）：主循环 ~3.3Hz，满足「≥3 次/秒」画面采集
+    WAIT_RESULT_FAST_MS   = 150    # wait_result 阶段帧间隔（用户拍板「帧率翻倍真双通道」）：
+                                   # 报价读取频率 ×2，配合动态 keys 剔除已固化槽 → 未固化槽（尤其 P4）
+                                   # 刷新率翻倍。仅报价等待阶段加速，不影响其他阶段。
     DEBUG_LOG_INTERVAL    = 1      # 验证期全量日志：每帧打一条 DEBUG 心跳（含阶段/H/出价/OCR指标）。
                                    # 验证完 OCR 尖峰修复后再考虑瘦身（如恢复 20 帧一次）
     CHANGE_PIXEL_THRESH   = 40     # 画面变化判定：平均像素差 > 该值 → 认为有显著变化（原25→40）
@@ -454,9 +570,28 @@ class TreasureModule(ActivityModule):
     # worker 先单独识别「最小高优先级集」，再跑全量。窗口期（偶发系统级慢）单 ROI 识别
     # 即使慢 15 倍也仅 ~200ms，age 仍在阈值内；全量 18 ROI 累加会超龄被丢弃。
     # 集取最小：bid_result_amount_box 驱动出价策略（R1 H 丢失元凶），必须保住；
+    # bid_player4 = P4 双通道：报价从 P1→P4 逐条展示，P4 最晚出现、完整值稳定窗口最短
+    #   （实测 486,70→486,700 仅隔 1 帧），必须最高刷新率——与 H 同走关键通道先落地。
     # 结算/分红金额属观测验证类，丢了影响小，不占关键通道。
-    OCR_CRITICAL_KEYS: tuple[str, ...] = ("bid_result_amount_box",)
+    OCR_CRITICAL_KEYS: tuple[str, ...] = (
+        "bid_result_amount_box",  # H 值（智能出价填入输入框）
+        "bid_player4",            # P4 双通道（见上）
+    )
+    # 关键通道 ROI 集合（供 worker 第二段剔除，避免同帧 H/P4 被全量重复识别 + 覆盖关键结果）。
+    _OCR_CRITICAL_SET: frozenset[str] = frozenset(OCR_CRITICAL_KEYS)
+    # debug 落盘 IO worker 有界队列容量：IO 线程渲染+写盘 ~70-100ms/帧，主循环 wait_result
+    # ~150ms/帧 → 队列几乎不积压；maxsize=8 足够缓冲瞬时尖峰。满则丢新任务（观测降密度）。
+    IO_QUEUE_MAX = 8
     OCR_MAX_AGE_MS = 800.0   # 结果时效阈值：age = consume_time - frame_capture_time 超限即丢弃
+    # 报价槽级固化（wait_result 阶段读 4 槽报价）：
+    #   报价从上往下逐条展示（P1→P4），且所有人同时出价 → 报价数字会先显示「已出价」，
+    #   再逐位刷新到完整值（实测 P4 从 486,70 → 486,700 只隔 1 帧，完整值稳定窗口仅 2 帧）。
+    #   旧实现「读到值即写槽、四槽齐即固化」会把刷新动画的中间态（486,70）当最终报价固化。
+    #   现改为「槽级固化」：每槽连续 BID_SLOT_STABLE_FRAMES 次读取一致 + 前置槽已有数据才
+    #   固化该槽；已固化槽停止识别（OCR 资源集中给未固化槽，尤其最后展示的 P4）。
+    #   未固化槽连续 BID_SLOT_MISS_LIMIT 次无输出 → 清空重读（防误读残留，-1 未读不激活）。
+    BID_SLOT_STABLE_FRAMES = 3   # 槽固化：连续 N 次读取一致
+    BID_SLOT_MISS_LIMIT = 3      # 槽清空：未固化连续 N 次无输出（已有值才计数）
     # 金额下限允许为 0 的字段：bid_result_amount_box 点击✖后输入框显示"0"是合法清空值，
     # settle_my_income / settle_profit = 0 也是合法值（0 分红 / 0 盈亏）
     # 默认 _extract_amount 的 MIN_AMOUNT=1万 会把 "0" 误滤成 None → 渲染显示 "-"
@@ -513,6 +648,10 @@ class TreasureModule(ActivityModule):
         # (frame_id, round_no, frame, captured_ts)，frame 为副本，captured_ts=投递时刻≈帧捕获时刻
         self._ocr_frame_id = 0                # 单调递增投递序号（仅主线程写）
         # --- 结果槽（worker 写 / 主线程消费）---
+        # 双槽：关键通道（_ocr_result_critical，第一段 H+P4）与全量通道（_ocr_result，第二段
+        # 其余 ROI）独立发布、独立消费。修复 P4 双通道覆盖 bug：第一段结果不再被第二段整体覆盖，
+        # P4 每帧由关键通道独立识别、优先落地（docs/P4_DUAL_CHANNEL_ANALYSIS.md §3 困难二）。
+        self._ocr_result_critical: dict | None = None  # {frame_id, round_no, captured_ts, ..., data}
         self._ocr_result: dict | None = None  # {frame_id, round_no, captured_ts, completed_ts, duration_ms, data}
         # --- 可观测指标（worker 写 / 主线程 DEBUG 读）---
         self._ocr_total_runs = 0
@@ -520,6 +659,14 @@ class TreasureModule(ActivityModule):
         self._ocr_duration_ms = 0.0           # 最近一次识别耗时
         self._ocr_source_frame_id = 0         # 最近一次应用结果的来源帧
         self._ocr_result_age_ms = 0.0         # 最近一次应用结果时的时效（丢帧/延迟观测）
+
+        # --- debug 落盘 IO worker（生产-消费者，渲染+imwrite 移出主线程）---
+        # 目标：wait_result 段主循环帧间隔真正逼近 WAIT_RESULT_FAST_MS（渲染 ~30ms +
+        # webp 存盘 ~63ms 曾把实际帧率拖回 ~240ms，见 docs/P4_DUAL_CHANNEL_ANALYSIS.md §3 困难一）。
+        # 主线程只打包 (frame copy + 当帧 state 快照) 入队，渲染/写盘全部在 IO 线程执行。
+        self._io_queue: Queue | None = None   # 有界队列；满则丢新任务（观测降密度，不阻塞主循环）
+        self._io_stop = threading.Event()
+        self._io_thread: threading.Thread | None = None
 
         # --------- debug 目录 & 元数据 ---------
         self._debug_root: Path | None = None         # debug/treasure/
@@ -630,6 +777,14 @@ class TreasureModule(ActivityModule):
         # （出价区切换有动画，动画期会误读，硬门槛会误拒正常提交）。
         self._bid_player_submitted: dict[int, bool] = {}
         self._wait_result_frames: int = 0     # 进入 wait_result 后的累计帧数（动画期缓冲用）
+        # 报价槽级固化状态（wait_result 读 4 槽报价）：pid → {val, stable, locked, miss,
+        # consumed, output, hits}
+        #   val=-1 未读；stable=连续一致帧数；locked=已固化（停止该槽 OCR）；
+        #   miss=连续无输出帧数（未固化+已读值 才计数，≥BID_SLOT_MISS_LIMIT 清空重读）；
+        #   consumed/output/hits = 本回合该槽「消费/输出/命中」三口径（debug 图显示，见 _reset_bid_slots）。
+        # 每回合首次消费时由 _consume_ocr_result 重置（对比 _bid_slots_round）。
+        self._bid_slots: dict[int, dict] = {}
+        self._bid_slots_round: int | None = None   # _bid_slots 对应的回合号（回合变化即重置）
         # 输入子状态：进入输入流程后的推进（clear → 逐位输入 → 确认）
         self._bid_input_progress: int = 0
         # 输入框当前值（bid_result_amount_box 最新读值，不锁定；供输入子状态机对比目标价 T）
@@ -787,9 +942,14 @@ class TreasureModule(ActivityModule):
             logger.log("[鉴宝] 窗口连接失败，模块终止", "ERROR")
             return
 
-        # 1.05 强制窗口最小尺寸：客户区 <1280×720 时调大（越大越清晰，MAA 只回 720p 采样）；
-        #     ≥1280×720 则不动，尊重用户当前窗口布局。
-        ensure_game_window_min(self.ctx.hwnd)
+        # 1.05 只校验比例、不调整窗口/分辨率：客户区应大致 16:9（模板与 ROI 均按
+        #     720p(16:9) 归一化，其他比例如 16:10 / 21:9 / 4:3 会识别错位）→ 不符报错退出
+        if not check_game_window_aspect(self.ctx.hwnd):
+            logger.log(
+                "游戏窗口不是 16:9 比例（模板与识别区域均按 720p(16:9) 设计，其他比例会识别错位）。"
+                "请将游戏窗口调整为 16:9 后重新开始，模块已终止", "ERROR",
+            )
+            return
 
         # 2. 安装调试渲染器（生命周期由 Context 的 ExitStack 接管）
         self.ctx.enter_context(
@@ -821,7 +981,7 @@ class TreasureModule(ActivityModule):
         self._appr_tpls = _load_appraiser_templates(self.ctx.proj)
         if self._appr_tpls:
             names = ", ".join(f"P{p}={k}" for p, k, _, _, _ in self._appr_tpls)
-            logger.log(f"[鉴宝] 已加载鉴宝师模板: {names}")
+            logger.log(f"[鉴宝] 已加载鉴宝师模板: {names}", "DEBUG")
         else:
             logger.log("[鉴宝] 未加载任何鉴宝师头像模板（选择鉴宝师阶段将用点中心兜底）", "WARNING")
 
@@ -829,7 +989,7 @@ class TreasureModule(ActivityModule):
         _ck = _load_selected_check(self.ctx.proj)
         if _ck is not None:
             self._check_tpl, self._check_rect = _ck
-            logger.log(f"[鉴宝] 已加载「已选中」对勾模板（扫描 rect={self._check_rect}）")
+            logger.log(f"[鉴宝] 已加载「已选中」对勾模板（扫描 rect={self._check_rect}）", "DEBUG")
         else:
             self._check_tpl, self._check_rect = None, None
             logger.log("[鉴宝] 未加载「已选中」对勾模板（选中判定禁用，仅指向目标头像）", "DEBUG")
@@ -839,7 +999,7 @@ class TreasureModule(ActivityModule):
         self._session_panel = _load_session_panel(self.ctx.proj)
         if self._session_panel:
             names = ", ".join(f"P{p}={k}" for p, k, _, _ in self._session_panel)
-            logger.log(f"[鉴宝] 已加载「开始匹配」按钮模板: {names}")
+            logger.log(f"[鉴宝] 已加载「开始匹配」按钮模板: {names}", "DEBUG")
         else:
             logger.log("[鉴宝] 未加载「开始匹配」按钮模板（降级：始终先点目标场次 badge，再点开始匹配位置）", "WARNING")
 
@@ -847,7 +1007,7 @@ class TreasureModule(ActivityModule):
         _sb = _load_smart_bid_btn(self.ctx.proj)
         if _sb is not None:
             self._bid_smart_tpl, self._bid_smart_rect = _sb
-            logger.log(f"[鉴宝] 已加载智能出价按钮模板（扫描 rect={self._bid_smart_rect}）")
+            logger.log(f"[鉴宝] 已加载智能出价按钮模板（扫描 rect={self._bid_smart_rect}）", "DEBUG")
         else:
             self._bid_smart_tpl, self._bid_smart_rect = None, None
             logger.log("[鉴宝] 未加载智能出价按钮模板（面板已开判定降级：依赖主按钮 OCR 兜底）", "WARNING")
@@ -864,6 +1024,7 @@ class TreasureModule(ActivityModule):
             f"(VAL_COEF={self._strategy.VAL_COEF:.2f}, 利润线={self._strategy._profit_floor():.2f}, "
             f"兜底上限={self._strategy.risk_cap:,}, 模式={self._strategy.mode})；"
             f"每日循环上限={self._effective_daily_loop_limit()}场",
+            "DEBUG",
         )
 
         # 2.6 启动异步 OCR worker
@@ -871,6 +1032,11 @@ class TreasureModule(ActivityModule):
 
         # 3. 建立本次会话调试目录
         self._prepare_debug_dirs()
+
+        # 3.1 启动 debug 落盘 IO worker（仅 debug/peep 开启时有任务；全关不启动空转线程）。
+        #     渲染 + raw/rendered 写盘移出主线程，wait_result 段帧率不再被存盘拖慢。
+        if self.ctx.debug.enabled or self.ctx.debug.peep_enabled:
+            self._start_io_worker()
 
         # 4. 解析断点
         if start_from and start_from in self.STAGE_ORDER:
@@ -887,7 +1053,7 @@ class TreasureModule(ActivityModule):
 
         logger.log("[鉴宝] 模块启动：截图 + 记录 + 选鉴宝师自动化（其余阶段不操作）")
         if self._session_dir:
-            logger.log(f"[鉴宝] 调试截图目录: {self._session_dir}")
+            logger.log(f"[鉴宝] 调试截图目录: {self._session_dir}", "DEBUG")
         else:
             logger.log("[鉴宝] 调试模式未开启（可在GUI打开Debug开关），仅运行日志 + PEEP（如果开启）", "DEBUG")
 
@@ -909,11 +1075,12 @@ class TreasureModule(ActivityModule):
                             "ERROR",
                         )
                         raise
-                    self.ctx.lifecycle.sleep(self.FRAME_INTERVAL_MS / 1000.0)
+                    self.ctx.lifecycle.sleep(self._frame_interval_s)
                     continue
                 self._main_crash_frames = 0
-                self.ctx.lifecycle.sleep(self.FRAME_INTERVAL_MS / 1000.0)
+                self.ctx.lifecycle.sleep(self._frame_interval_s)
         finally:
+            self._stop_io_worker()     # 先停 IO 落盘 worker（排空队列，保证最后几帧落盘）
             self._stop_ocr_worker()
             self._close_db()  # 提交未完成事务并关闭落盘连接
             self._log_session_summary()
@@ -1631,7 +1798,8 @@ class TreasureModule(ActivityModule):
         """在 stage.smart_bid_btn 的 rect 内匹配出价面板「智能出价」按钮模板。
 
         面板打开 → 该按钮出现 → 模板命中 = 面板已开（S3 强信号）。
-        多尺度 0.70~1.30×，阈值 0.72，取最高分；返回 (score, cxn, cyn) | None。
+        多尺度 0.70~1.30×，阈值优先读 JSON stage.smart_bid_btn.threshold（调试台可校准），
+        缺省回退 _SMART_BID_MATCH_THRESHOLD（0.72）；取最高分；返回 (score, cxn, cyn) | None。
         """
         if self._bid_smart_tpl is None or self._bid_smart_rect is None:
             return None
@@ -1676,7 +1844,14 @@ class TreasureModule(ActivityModule):
         if best is None:
             return None
         score = best[0]
-        if score < _SESSION_MATCH_THRESHOLD:
+        # 阈值：优先 JSON stage.smart_bid_btn.threshold（调试台校准，与 detect() 同源），
+        # 缺省回退 _SMART_BID_MATCH_THRESHOLD。不可复用 _SESSION_MATCH_THRESHOLD(0.90)。
+        threshold: float = _SMART_BID_MATCH_THRESHOLD
+        if self._detector is not None and self._detector.roi_thresholds:
+            roi_th = self._detector.roi_thresholds.get(_SMART_BID_KEY)
+            if isinstance(roi_th, float):
+                threshold = roi_th
+        if score < threshold:
             return None
         _, _, mx_roi, my_roi, sth, stw = best
         cx_px = x1 + mx_roi + stw // 2
@@ -1788,10 +1963,20 @@ class TreasureModule(ActivityModule):
                 }
                 return
             # 假下降沿判定（4 槽不齐"已出价"时才走到这里）：
-            # 缓冲期（出价区切换动画 + OCR 异步延迟）过后，我方槽仍被 OCR 明确读到"出价中"
+            # 缓冲期（出区切换动画 + OCR 异步延迟）过后，我方槽仍被 OCR 明确读到"出价中"
             # → 真·未提交（面板误开误关 / 网卡提交失败），回退 wait_first 放行重新报价。
             # 三态化保证：网卡/动画残缺的空读取不写键（保持上次状态），不会把"没读到"当"出价中"误判。
-            if (self._wait_result_frames > self.SUBMIT_ANIMATION_BUFFER_FRAMES
+            # 用户拍板「读到报价即禁用」：本回合任意槽已读到过报价（固化 或 hits>0）即证明
+            # 报价已开始展示、我方必已提交 → 禁用假下降沿，避免"读不到已出价状态"误判重报。
+            # 缓冲帧数按 wait_result 帧率翻倍(150ms)补偿：保持 ≈1.5s 的动画缓冲时间。
+            any_bid_read = any(
+                s.get("locked") or s.get("hits", 0) > 0 for s in self._bid_slots.values()
+            )
+            buffer_frames = self.SUBMIT_ANIMATION_BUFFER_FRAMES * (
+                2 if self._bid_phase == "wait_result" else 1
+            )
+            if (not any_bid_read
+                    and self._wait_result_frames > buffer_frames
                     and self._my_rank is not None
                     and self._bid_player_submitted.get(self._my_rank) is False):
                 self._bid_phase = "wait_first"
@@ -1916,9 +2101,9 @@ class TreasureModule(ActivityModule):
         )
 
     def _maybe_build_snapshot(self) -> None:
-        """wait_result 阶段：OCR 4 槽（我方 + 3 对手）全部读完整后构建上一轮快照。
+        """wait_result 阶段：OCR 4 槽（我方 + 3 对手）全部「固化」后构建上一轮快照。
 
-        - 只有 4 槽全成功才替换 _last_round_snapshot（不发布半成品）
+        - 只有 4 槽全部 locked 才替换 _last_round_snapshot（不发布半成品）
         - 构建成功才放行下一 epoch（phase → wait_next）
         """
         if self._bid_phase != "wait_result":
@@ -1927,19 +2112,25 @@ class TreasureModule(ActivityModule):
             return
         r = self._round_no
         my_slot = self._my_rank
-        missing: list[int] = []
-        for pid in (1, 2, 3, 4):
-            lst = self._player_bids.get(f"玩家{pid}")
-            if not lst or len(lst) < r or lst[r - 1] < 0:  # -1=未读；0（掉线）也算已读
-                missing.append(pid)
+        missing: list[int] = [
+            pid for pid in (1, 2, 3, 4)
+            if not self._bid_slots.get(pid, {}).get("locked")
+        ]
         if missing:
-            # 任一槽未读完整 → 保留旧快照（DEBUG 级别，帮助定位卡在哪个槽）
+            # 任一槽未固化 → 保留旧快照（DEBUG 级别，带每槽状态帮助定位卡在哪个槽）
+            def _slot_desc(pid: int) -> str:
+                s = self._bid_slots.get(pid, {})
+                if s.get("locked"):
+                    return f"✓{s.get('val', -1):,}"
+                st = "读中" if s.get("val", -1) != -1 else "未读"
+                return f"{st}(稳{s.get('stable', 0)}/漏{s.get('miss', 0)}, {s.get('consumed', 0)}/{s.get('output', 0)}/{s.get('hits', 0)})"
             logger.log(
-                f"[鉴宝] 快照构建等待: 槽{missing} 第{r}回合报价未读完整（epoch#{self._bid_epoch}）",
+                f"[鉴宝] 快照构建等待: 槽{missing} 第{r}回合未固化（epoch#{self._bid_epoch}）: "
+                + " ".join(f"P{pid}={_slot_desc(pid)}" for pid in (1, 2, 3, 4)),
                 "DEBUG",
             )
             return
-        slot_bids = {pid: self._player_bids[f"玩家{pid}"][r - 1] for pid in (1, 2, 3, 4)}
+        slot_bids = {pid: self._bid_slots[pid]["val"] for pid in (1, 2, 3, 4)}
         h = self._current_h
         if not h:
             return
@@ -2531,7 +2722,7 @@ class TreasureModule(ActivityModule):
         self.record_event("real_click", extra_msg=f"state={state} key={key} 屏幕=({sx},{sy})")
         logger.log(
             f"[鉴宝点击] {state} key={key} 目标=({sx},{sy}) 归一化=({center[0]:.3f},{center[1]:.3f})",
-            "INFO",
+            "DEBUG",
         )
 
     def _maybe_retry_stage_click(self, key: str) -> None:
@@ -2623,6 +2814,9 @@ class TreasureModule(ActivityModule):
             # 增强 debug 图新增字段
             treasure_h_history=h_hist,
             treasure_player_bids=dict(self._player_bids),  # {"玩家1": [R1,R2,R3,R4,R5]}
+            # 报价槽级固化状态（每槽 {val, stable, locked, miss, consumed, output, hits}），
+            # debug 图玩家表徽标 + OCR 卡三口径统计用。
+            treasure_bid_slots={pid: dict(s) for pid, s in self._bid_slots.items()},
             treasure_frame_index=int(self._saved_frames),  # raw 帧号（全局累计）
             treasure_debug_index=int(self._debug_saved),   # rendered(debug 图) 编号
             treasure_stage_order=list(self.STAGE_ORDER),   # 底部阶段进度条参考
@@ -2641,52 +2835,157 @@ class TreasureModule(ActivityModule):
 
     def record_event(self, name: str, extra_msg: str | None = None) -> Path | None:
         """
-        记录一个「事件」：仅打 INFO 日志（不再单独截图）。
+        记录一个「事件」：仅打 DEBUG 日志（不再单独截图）。
         raw 与 rendered（debug 图）均已全量存盘，无需 event 子目录截图。
         返回 None（兼容旧调用方）。
+
+        事件（stage_change / real_click）属诊断细节：与「进入阶段」「点击意图」重复，
+        降为 DEBUG 仅进文件，保持 GUI 故事线干净。
         """
         msg = f"[鉴宝] 事件: {name}"
         if extra_msg:
             msg += f" — {extra_msg}"
-        logger.log(msg, "INFO")
+        logger.log(msg, "DEBUG")
         return None
 
     # ==================================================================
-    #  内部：Debug 目录
+    #  内部：Debug 落盘 IO worker（生产-消费者，异步渲染+写盘）
     # ==================================================================
 
-    def _render_session_frame(self, frame_rgb: np.ndarray, label: str) -> np.ndarray:
-        """复用当前调试渲染器，把一帧 RGB 绘制成带 HUD 的 BGR 图。
-
-        渲染器未安装时退回原始 BGR 图（不崩溃）。
-        """
-        assert self.ctx is not None  # 仅运行态调用
-        img_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
-        renderer = self.ctx.debug_renderer.current()
-        if renderer is not None:
-            from maaracing_assistant.debug import DebugState
-            state = DebugState(
-                label=label,
-                **self._treasure_kwargs(),
+    def _debug_enqueue_frame(self, frame_rgb: np.ndarray, *, idx: int, didx: int,
+                              label: str = "鉴宝观察", extra_note: str = "") -> None:
+        """主线程→IO worker 入队：debug 全量存盘帧（raw + rendered）。
+        有界队列满时静默丢帧（观测降密度，不阻塞主循环）。"""
+        if self._io_queue is None:
+            return
+        kwargs = self._treasure_kwargs(extra_note=extra_note)
+        frame_copy = frame_rgb.copy()
+        try:
+            self._io_queue.put_nowait(
+                ("frame", frame_copy, idx, didx, label, kwargs)
             )
-            img_bgr = renderer.render_full(img_bgr, state)
-        return img_bgr
+        except Full:
+            pass  # 队列满 → 丢帧（观测降密度）
+
+    def _debug_enqueue_peep(self, frame_rgb: np.ndarray, *,
+                             label: str = "鉴宝观察", extra_note: str = "") -> None:
+        """主线程→IO worker 入队：仅 PEEP 预览（无落盘）。
+        主线程不阻塞，PEEP 预览帧由 IO 线程渲染更新。"""
+        if self._io_queue is None:
+            return
+        kwargs = self._treasure_kwargs(extra_note=extra_note)
+        frame_copy = frame_rgb.copy()
+        try:
+            self._io_queue.put_nowait(
+                ("peep", frame_copy, 0, 0, label, kwargs)
+            )
+        except Full:
+            pass
+
+    def _start_io_worker(self) -> None:
+        """启动 debug 落盘 IO worker（daemon 线程）。"""
+        if self._io_thread is not None and self._io_thread.is_alive():
+            return
+        self._io_queue = Queue(maxsize=self.IO_QUEUE_MAX)
+        self._io_stop.clear()
+        self._io_thread = threading.Thread(
+            target=self._io_worker_loop, name="treasure-io-worker", daemon=True
+        )
+        self._io_thread.start()
+        logger.log("[鉴宝] IO worker（落盘）已启动", "DEBUG")
+
+    def _stop_io_worker(self) -> None:
+        """停止 IO worker：set 停止信号 + 排空队列 + join。"""
+        if self._io_thread is None:
+            return
+        self._io_stop.set()
+        # 排空剩余任务（保证最后几帧落盘）
+        self._drain_io_queue()
+        self._io_thread.join(timeout=3.0)
+        if self._io_thread.is_alive():
+            logger.log("[鉴宝] IO worker 3s 内未退出", "WARNING")
+        self._io_thread = None
+        self._io_queue = None
+
+    def _drain_io_queue(self) -> None:
+        """排空 IO 队列直到空或超时（停止时调用，保证最后几帧不丢）。"""
+        if self._io_queue is None:
+            return
+        deadline = time.time() + 3.0
+        while time.time() < deadline and not self._io_queue.empty():
+            try:
+                self._process_io_task(self._io_queue.get(timeout=0.5))
+            except Empty:
+                break
+
+    def _io_worker_loop(self) -> None:
+        """IO worker 主循环：取任务 → 渲染 → 写盘 / 更新 PEEP。
+        顶层 try/except：单次任务异常不杀死 daemon，计数后继续。"""
+        while not self._io_stop.is_set():
+            try:
+                try:
+                    task = self._io_queue.get(timeout=0.5)
+                except Empty:
+                    continue
+                self._process_io_task(task)
+            except Exception as e:
+                logger.log(f"[鉴宝] IO worker 异常: {e}", "WARNING")
+
+    def _process_io_task(self, task: tuple) -> None:
+        """处理单帧 IO 任务：渲染 → 写盘（raw + rendered webp）或 PEEP 更新。"""
+        cmd, frame_rgb, idx, didx, label, kwargs = task
+        img_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        if cmd == "frame":
+            # raw JPG 存盘
+            cv2.imwrite(
+                str(self._raw_dir / f"{idx:04d}_raw.jpg"),
+                img_bgr,
+                [cv2.IMWRITE_JPEG_QUALITY, 95],
+            )
+            # rendered webp 存盘
+            renderer = self.ctx.debug_renderer.current() if self.ctx else None
+            if renderer is not None:
+                from maaracing_assistant.debug import DebugState
+                state = DebugState(label=label, **kwargs)
+                full_img = renderer.render_full(img_bgr.copy(), state)
+            else:
+                full_img = img_bgr
+            cv2.imwrite(
+                str(self._session_dir / f"{didx:04d}.webp"),
+                full_img,
+                [cv2.IMWRITE_WEBP_QUALITY, 95],
+            )
+            # debug 开启 + peep 也开：同帧同时维护 PEEP 预览（与 save_frame 行为一致）
+            if renderer is not None and getattr(self.ctx.debug, "peep_enabled", False):
+                peep_img = renderer.render_peep(img_bgr.copy(), state)
+                with self.ctx.debug._frame_lock:
+                    self.ctx.debug._latest_frame = peep_img
+        elif cmd == "peep":
+            # 仅 PEEP 预览：渲染精简视图并更新 _latest_frame（与 get_peep_jpeg 同锁保护）
+            renderer = self.ctx.debug_renderer.current() if self.ctx else None
+            if renderer is not None:
+                from maaracing_assistant.debug import DebugState
+                state = DebugState(label=label, **kwargs)
+                peep_img = renderer.render_peep(img_bgr, state)
+                with self.ctx.debug._frame_lock:
+                    self.ctx.debug._latest_frame = peep_img
 
     def _prepare_debug_dirs(self):
-        """创建 debug/treasure/<ts>/ 目录结构（包含 raw/ + event/）"""
+        """创建 debug/treasure/<ts>/ 目录结构（含 raw/）。
+
+        仅当 debug 存图开启（ctx.debug.enabled）时建立；未开启则 _session_dir/_raw_dir 置 None，
+        对应 tick 不存盘、会话总结不显示「保存帧数/调试目录」。
+        """
         assert self.ctx is not None  # 仅运行态调用
-        proj = self.ctx.proj
-        self._debug_root = proj / "debug" / "treasure"
-        if not self.ctx.debug.enabled:
-            # 即便 GUI 的 debug 开关没开，我们也至少把 treasure 的专属记录目录建好
-            # （用户明确说要 debug 截图和日志，所以这里不依赖开关，直接建立）
-            pass
-        self._debug_root.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self._session_dir = self._debug_root / ts
-        self._raw_dir     = self._session_dir / "raw"
-        self._session_dir.mkdir(parents=True, exist_ok=True)
-        self._raw_dir.mkdir(parents=True, exist_ok=True)
+        self._debug_root = self.ctx.proj / "debug" / "treasure"
+        self._session_dir = None
+        self._raw_dir = None
+        if self.ctx.debug.enabled:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self._session_dir = self._debug_root / ts
+            self._raw_dir = self._session_dir / "raw"
+            self._session_dir.mkdir(parents=True, exist_ok=True)
+            self._raw_dir.mkdir(parents=True, exist_ok=True)
         self._saved_frames = 0
         self._debug_saved = 0
 
@@ -2751,39 +3050,27 @@ class TreasureModule(ActivityModule):
         # --------- 1. 画面变化检测 ---------
         significant_change = self._detect_change(frame_rgb)
 
-        # --------- 2. 调用统一 save_frame（渲染 HUD + ROI + 存盘 + PEEP）---------
-        # 返回值 = 全量渲染结果（full_img），复用到 3b 的 treasure 存盘，
-        # 避免同一帧被 render_full 二次渲染（CPU 竞争是 OCR 推理被拖慢的主因之一）。
-        full_img = self.ctx.debug.save_frame(
-            frame_rgb,
-            label="鉴宝观察",
-            **self._treasure_kwargs(extra_note=("画面变化" if significant_change else "")),
-        )
-
-        # --------- 3. treasure 专属：调试存盘（raw 全量 + rendered 全量）---------
+        # --------- 2+3. 调试存盘：渲染 + raw/rendered 落盘全部异步到 IO worker ---------
+        # 主线程只做：分配帧号 + 打包 (frame copy + 当帧 state 快照) 入队，不等落盘完成。
+        # 渲染（HUD/ROI/PEEP ~20-40ms）+ raw JPG + rendered WebP（~63ms）由 IO 线程执行，
+        # 主循环帧间隔不再被存盘拖慢（docs/P4_DUAL_CHANNEL_ANALYSIS.md §3 困难一）。
+        # debug 开启 → raw 全量 + rendered 全量；debug 关 + peep 开 → 仅维护 PEEP 预览。
         if self._session_dir is not None and self._raw_dir is not None:
-            # 3a. raw：全量存（每帧一张原始帧，回溯用）
-            # JPG q95：原始截图信息量低，无损无需求；编码 ~3.5ms / ~172KB，
-            # 相比 PNG 58ms/540KB 快 16 倍小 3 倍（OCR 用内存数组，不依赖文件格式）
             self._saved_frames += 1
-            idx = self._saved_frames
-            cv2.imwrite(
-                str(self._raw_dir / f"{idx:04d}_raw.jpg"),
-                cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR),
-                [cv2.IMWRITE_JPEG_QUALITY, 95],
-            )
-
-            # 3b. rendered（debug 图）：全量存（每帧一张，与 raw 帧号一一对应，便于逐帧回溯）
-            # WebP q95：相比 PNG 58ms/540KB → 63ms/89KB，体积小 6 倍编码速度相当；
-            # 渲染产物含 HUD 文字/表格，q95 下无可见劣化。
-            # full_img 为 None（save_frame 提前 return：debug 与 peep 均关闭）时兜底渲染一次。
             self._debug_saved += 1
-            if full_img is None:
-                full_img = self._render_session_frame(frame_rgb, "鉴宝观察")
-            cv2.imwrite(
-                str(self._session_dir / f"{self._debug_saved:04d}.webp"),
-                full_img,
-                [cv2.IMWRITE_WEBP_QUALITY, 95],
+            self._debug_enqueue_frame(
+                frame_rgb,
+                idx=self._saved_frames,
+                didx=self._debug_saved,
+                label="鉴宝观察",
+                extra_note=("画面变化" if significant_change else ""),
+            )
+        elif getattr(self.ctx.debug, "peep_enabled", False):
+            # peep-only：save_frame 走 IO 线程渲染并更新 _latest_frame，主循环不阻塞。
+            self._debug_enqueue_peep(
+                frame_rgb,
+                label="鉴宝观察",
+                extra_note=("画面变化" if significant_change else ""),
             )
 
         # --------- 4. 画面显著变化 → 事件日志（不再单独截图，raw 已全量覆盖）---------
@@ -2810,9 +3097,23 @@ class TreasureModule(ActivityModule):
                 )
             else:
                 bids_str = ""
+            # 槽级固化状态概览：P{pid}:{徽标}{消费}/{输出}/{命中}（仅 wait_result 有数据时）
+            slot_str = ""
+            if self._bid_slots:
+                parts = []
+                for pid in sorted(self._bid_slots):
+                    s = self._bid_slots[pid]
+                    if s["locked"]:
+                        badge = f"✓{s['val']:,}"
+                    elif s["val"] != -1:
+                        badge = f"读中{s['val']:,}稳{s['stable']}"
+                    else:
+                        badge = "未读"
+                    parts.append(f"P{pid}:{badge} {s['consumed']}/{s['output']}/{s['hits']}")
+                slot_str = " | 槽 " + " ".join(parts)
             logger.log(
                 f"[鉴宝] 心跳 #{self._frame_counter}: 阶段={self._current_stage}"
-                f"{h_str}{rank_str} | 已存 {self._saved_frames} 帧{ocr_str}{bids_str}",
+                f"{h_str}{rank_str} | 已存 {self._saved_frames} 帧{ocr_str}{bids_str}{slot_str}",
                 "DEBUG",
             )
 
@@ -2827,11 +3128,19 @@ class TreasureModule(ActivityModule):
 
     def _run_stage_detection(self, frame_rgb: np.ndarray) -> None:
         """运行 TreasureStageDetector，套用过滤层（回合单调 + 防抖 + 强特征立即切），
-        再把结果同步到 set_stage()，让 HUD / 日志 / 状态机推进到真实游戏阶段。"""
+        再把结果同步到 set_stage()，让 HUD / 日志 / 状态机推进到真实游戏阶段。
+
+        动态感知裁剪：按当前阶段只匹配感知清单 ∪ 全局锚点；当前阶段未登记清单
+        （或尚未进入任何阶段）时回退全量检测（安全兜底，不会静默漏检）。"""
         if self._detector is None:
             return
+        # 阶段感知裁剪：active = 阶段清单 ∪ 全局锚点；未登记阶段 → None（全量）
+        perception = _STAGE_PERCEPTION.get(self._current_stage) if self._current_stage else None
+        active_rois = None
+        if perception is not None:
+            active_rois = set(perception) | set(_GLOBAL_ANCHORS)
         try:
-            raw_stage, raw_r = self._detector.detect(frame_rgb)
+            raw_stage, raw_r = self._detector.detect(frame_rgb, active_rois)
         except Exception:
             return
         # 记录 detector 原始结果（未经过滤层），供选师/场次准星判断"是否真的在该阶段"
@@ -2960,6 +3269,15 @@ class TreasureModule(ActivityModule):
                 f"（最优命中 {len(eggs)} 张卡: {detail}）", "INFO",
             )
 
+    @property
+    def _frame_interval_s(self) -> float:
+        """主循环帧间隔（秒）。wait_result 阶段报价读取需要高频——用户拍板「帧率翻倍真双通道」：
+        帧间隔从 300ms 降到 150ms，未固化槽（尤其 P4）的 OCR 投递频率 ×2；
+        其余阶段维持 FRAME_INTERVAL_MS。"""
+        if self._bid_phase == "wait_result":
+            return self.WAIT_RESULT_FAST_MS / 1000.0
+        return self.FRAME_INTERVAL_MS / 1000.0
+
     def _run_ocr(self, frame_rgb: np.ndarray) -> None:
         """主线程先消费上一轮 worker 结果应用业务状态，再投递最新帧给 worker。
         识别在 worker 线程进行，本方法 O(1) 不阻塞主循环。
@@ -2997,7 +3315,7 @@ class TreasureModule(ActivityModule):
             # 等级提升弹窗（无 ROI，hit_key is None 且非彩蛋识别中）→ 无数据要读，直接盲点跳过
             return
         if s == "中标结算" or s == "领取分红":
-            self._ocr_push(frame_rgb)
+            self._ocr_push(frame_rgb, keys=_STAGE_OCR_KEYS.get(s))
             return
         if not (s.startswith("第") and "回合" in s):
             return
@@ -3005,7 +3323,16 @@ class TreasureModule(ActivityModule):
         # 才投递 OCR。S1/S2 面板未开不投递（输入框区域是别的 UI，投了浪费且可能误判 H）。
         dec = self._bidding_last_decision
         if (dec and dec.get("state", "").startswith("S3")) or self._bid_phase == "wait_result":
-            self._ocr_push(frame_rgb)
+            base_keys = _STAGE_OCR_KEYS.get(s)
+            if self._bid_phase == "wait_result":
+                # wait_result 阶段：动态剔除已固化槽 → OCR 资源集中给未固化槽，
+                # 尤其是最后展示的 P4（配合 P4 双通道，未固化槽刷新率自动提升≈两倍）。
+                dynamic_keys = self._bid_dynamic_ocr_keys() if base_keys is _BID_OCR_KEYS else base_keys
+                self._ocr_push(frame_rgb, keys=dynamic_keys)
+            else:
+                # bidding 阶段只有 H 需要识别，报价槽不投递，用原 base_keys。
+                self._ocr_push(frame_rgb, keys=base_keys)
+
 
     # ==================================================================
     #  内部：OCR 异步 worker（latest-only + provenance + 原子结果槽）
@@ -3035,7 +3362,7 @@ class TreasureModule(ActivityModule):
         self._ocr_thread = None
 
     def _ocr_worker_loop(self) -> None:
-        """worker 主循环：latest-only 取帧 → 关键 ROI 优先识别发布 → 全量识别发布。
+        """worker 主循环：latest-only 取帧 → 关键 ROI 优先识别发布 → 阶段感知识别发布。
         顶层 try/except：单次识别异常不杀死 daemon，计数后继续。"""
         while not self._ocr_stop.is_set():
             try:
@@ -3045,7 +3372,7 @@ class TreasureModule(ActivityModule):
                     self._ocr_wakeup.wait(timeout=0.5)
                     self._ocr_wakeup.clear()
                     continue
-                frame_id, round_no, frame, captured_ts, task = item
+                frame_id, round_no, frame, captured_ts, task, ocr_keys = item
                 # 彩蛋识别任务：复用本 worker 线程串行执行（避免两个线程并发调同一 OCR 引擎）。
                 # 识别器内部已含模板匹配+颜色+OCR，耗时几十 ms~百 ms 级，放后台不阻塞主循环。
                 if task == "egg":
@@ -3057,24 +3384,32 @@ class TreasureModule(ActivityModule):
                             egg_res = None
                         self._egg_publish_result(egg_res, frame_id, captured_ts, t0)
                     continue
-                # 第一段：关键 ROI（bid_result_amount_box）单独识别、立即发布。
+                # 第一段：关键 ROI（bid_result_amount_box + bid_player4 双通道）单独识别、立即发布。
                 # 窗口期（偶发系统级慢）单 ROI 即使慢 15 倍也仅 ~200ms，age 仍低于
                 # OCR_MAX_AGE_MS，保证 H 等关键数值先于全量结果落地，不被 18 ROI 长循环拖死。
                 # bid_result_amount_box 必须允许 0：用户点✖清空后画面显示"¥0"，若 MIN_AMOUNT
                 # 默认>0 把 0 滤成 None → _bid_input_latest 不更新 → 输入子状态机反复点✖死循环。
+                # bid_player4 允许 0：掉线玩家的报价框显示 0 合法。
+                # critical=True → 写独立关键槽，不被第二段全量覆盖（P4 双通道覆盖 bug 修复）。
                 t0 = time.time()
                 if self._ocr is not None:
                     res_crit = self._ocr.recognize_amounts(
                         frame, keys=self.OCR_CRITICAL_KEYS,
-                        min_amounts={"bid_result_amount_box": 0},
+                        min_amounts={"bid_result_amount_box": 0, "bid_player4": 0},
                     )
-                    self._ocr_publish_result(res_crit, frame_id, round_no, t0, captured_ts)
-                # 第二段：全量 18 ROI（尽力而为）。窗口期超龄的结果会被主线程丢弃，
-                # 此时关键 ROI 结果已由第一段保住。结算收入/利润允许 0 值。
+                    self._ocr_publish_result(res_crit, frame_id, round_no, t0, captured_ts,
+                                             critical=True)
+                # 第二段：阶段感知 keys（投递时按阶段裁剪；None=全量，尽力而为）。
+                # 窗口期超龄的结果会被主线程丢弃，此时关键 ROI 结果已由第一段保住。
+                # 结算收入/利润允许 0 值。
+                # 剔除关键通道 ROI（H/P4）：同帧 H/P4 已由第一段识别发布，第二段不再重复
+                # 识别（省 ~20ms/帧），也不会覆盖关键槽结果。
                 t0 = time.time()
+                second_keys = (ocr_keys - self._OCR_CRITICAL_SET) if ocr_keys else None
                 if self._ocr is not None:
                     res_full = self._ocr.recognize_amounts(
-                        frame, min_amounts={k: 0 for k in self.OCR_ZERO_ALLOWED_KEYS}
+                        frame, keys=second_keys,
+                        min_amounts={k: 0 for k in self.OCR_ZERO_ALLOWED_KEYS}
                     )
                 else:
                     res_full = {}
@@ -3085,14 +3420,16 @@ class TreasureModule(ActivityModule):
                 self._ocr_failures += 1
                 logger.log(f"[鉴宝] OCR worker 异常: {e}", "WARNING")
 
-    def _ocr_push(self, frame_rgb: np.ndarray, task: str = "ocr") -> None:
+    def _ocr_push(self, frame_rgb: np.ndarray, task: str = "ocr",
+                  keys: frozenset[str] | None = None) -> None:
         """主线程投递最新帧（latest-only：覆盖旧帧，worker 慢时丢中间帧）。
         captured_ts = 投递时刻 ≈ 帧捕获时刻（同 tick 内 screencap 后立即投递），
         供时效老化 age = consume_time - captured_ts。
         frame 所有权：立即 copy，worker 与主线程不共享 buffer（不依赖 screencap
         返回新数组的隐含约束）。1280×720 RGB copy ~1ms，远小于 OCR 开销。
         task：任务类型。"ocr"=常规 ROI 识别；"egg"=彩蛋识别（复用同一 worker 线程，
-        彩蛋阶段与其他 OCR 阶段互斥，同刻 pending 槽只会有一种任务）。"""
+        彩蛋阶段与其他 OCR 阶段互斥，同刻 pending 槽只会有一种任务）。
+        keys：第二段识别的 OCR keys（阶段感知裁剪，见 _STAGE_OCR_KEYS）；None=全量。"""
         with self._ocr_lock:
             self._ocr_frame_id += 1
             self._ocr_pending = (
@@ -3101,10 +3438,11 @@ class TreasureModule(ActivityModule):
                 frame_rgb.copy(),
                 time.time(),
                 task,
+                keys,
             )
         self._ocr_wakeup.set()  # 唤醒 worker 立即处理（无 queue，不积压）
 
-    def _ocr_pop_latest(self) -> tuple[int, int | None, np.ndarray, float, str] | None:
+    def _ocr_pop_latest(self) -> tuple[int, int | None, np.ndarray, float, str, frozenset[str] | None] | None:
         """worker 取走最新帧并清槽（latest-only）。"""
         with self._ocr_lock:
             item = self._ocr_pending
@@ -3112,12 +3450,15 @@ class TreasureModule(ActivityModule):
             return item
 
     def _ocr_publish_result(
-        self, res: dict, frame_id: int, round_no: int | None, t0: float, captured_ts: float
+        self, res: dict, frame_id: int, round_no: int | None, t0: float, captured_ts: float,
+        critical: bool = False,
     ) -> None:
         """worker 写结果槽：完整新 dict 替换，不原地修改已发布对象。
-        captured_ts = 帧捕获时刻（_ocr_push 记录），供主线程时效老化。"""
+        captured_ts = 帧捕获时刻（_ocr_push 记录），供主线程时效老化。
+        critical=True → 写关键通道槽（第一段 H+P4，独立于全量槽，不被第二段覆盖）；
+        critical=False → 写全量槽（第二段其余 ROI）。"""
         with self._ocr_lock:
-            self._ocr_result = {
+            payload = {
                 "frame_id": frame_id,
                 "round_no": round_no,
                 "captured_ts": captured_ts,
@@ -3125,48 +3466,67 @@ class TreasureModule(ActivityModule):
                 "duration_ms": (time.time() - t0) * 1000,
                 "data": res,
             }
+            if critical:
+                self._ocr_result_critical = payload
+            else:
+                self._ocr_result = payload
 
-    def _ocr_take_result(self) -> dict | None:
+    def _ocr_take_result(self, critical: bool = False) -> dict | None:
         """主线程消费结果槽（取走即清空，避免重复应用）。"""
         with self._ocr_lock:
-            res = self._ocr_result
-            self._ocr_result = None
+            if critical:
+                res = self._ocr_result_critical
+                self._ocr_result_critical = None
+            else:
+                res = self._ocr_result
+                self._ocr_result = None
             return res
 
     def _apply_ocr_result(self) -> None:
-        """消费 worker 结果槽并应用业务状态。两道闸门，通过后委托给 _consume_ocr_result：
+        """消费 worker 双结果槽并应用业务状态。两道闸门，通过后委托给 _consume_ocr_result：
         ① provenance：round_no 与当前回合不匹配 → 丢弃（防旧回合结果串写新回合）；
         ② 时效老化：age = consume_time - captured_ts 超 OCR_MAX_AGE_MS → 丢弃
-          （尖峰窗口期算出的陈旧帧不被当作当前状态；此时关键 ROI 已由优先通道保住）。"""
-        result = self._ocr_take_result()
-        if not result:
-            return
-        self._ocr_source_frame_id = result["frame_id"]
-        # 时效 = 捕获时刻 → 消费时刻（captured_ts 在投递时记录，≈帧捕获时刻）
-        self._ocr_result_age_ms = (time.time() - result["captured_ts"]) * 1000
+          （尖峰窗口期算出的陈旧帧不被当作当前状态；此时关键 ROI 已由优先通道保住）。
 
-        if result["round_no"] != self._round_no:
-            if self._round_no is None:
-                pass
-            else:
+        双槽合并（P4 双通道覆盖 bug 修复）：关键槽（第一段 H+P4）与全量槽（第二段其余）
+        各自独立过闸门，通过后合并成一份 res 再消费——H/P4 恒来自关键通道（时效最低、
+        不被全量覆盖），P1~P3/玩家名等来自全量通道。帧元信息优先取关键槽。"""
+        results: list[dict] = []
+        for critical in (True, False):
+            result = self._ocr_take_result(critical)
+            if not result:
+                continue
+            self._ocr_source_frame_id = result["frame_id"]
+            # 时效 = 捕获时刻 → 消费时刻（captured_ts 在投递时记录，≈帧捕获时刻）
+            self._ocr_result_age_ms = (time.time() - result["captured_ts"]) * 1000
+            if result["round_no"] != self._round_no:
+                if self._round_no is None:
+                    pass
+                else:
+                    logger.log(
+                        f"[鉴宝] OCR 结果过期丢弃(结果R{result['round_no']}≠当前R{self._round_no}, "
+                        f"耗时{result['duration_ms']:.0f}ms, 时效{self._ocr_result_age_ms:.0f}ms)",
+                        "DEBUG",
+                    )
+                continue
+            # 时效老化：陈旧帧不当作当前状态（窗口期全量 18 ROI 结果常在此被拦）
+            if self._ocr_result_age_ms > self.OCR_MAX_AGE_MS:
                 logger.log(
-                    f"[鉴宝] OCR 结果过期丢弃(结果R{result['round_no']}≠当前R{self._round_no}, "
-                    f"耗时{result['duration_ms']:.0f}ms, 时效{self._ocr_result_age_ms:.0f}ms)",
+                    f"[鉴宝] OCR 结果超龄丢弃(R{result['round_no']} 帧{result['frame_id']} "
+                    f"时效{self._ocr_result_age_ms:.0f}ms>{self.OCR_MAX_AGE_MS:.0f}ms, "
+                    f"耗时{result['duration_ms']:.0f}ms)",
                     "DEBUG",
                 )
-            return
+                continue
+            results.append(result)
 
-        # 时效老化：陈旧帧不当作当前状态（窗口期全量 18 ROI 结果常在此被拦）
-        if self._ocr_result_age_ms > self.OCR_MAX_AGE_MS:
-            logger.log(
-                f"[鉴宝] OCR 结果超龄丢弃(R{result['round_no']} 帧{result['frame_id']} "
-                f"时效{self._ocr_result_age_ms:.0f}ms>{self.OCR_MAX_AGE_MS:.0f}ms, "
-                f"耗时{result['duration_ms']:.0f}ms)",
-                "DEBUG",
-            )
+        if not results:
             return
-
-        res = result["data"]
+        # 帧元信息优先取关键槽（先 take、先入列），缺失时用全量槽
+        meta = results[0]
+        res: dict = {}
+        for result in results:
+            res.update(result["data"])
         if not res:
             return
         self._consume_ocr_result(res)
@@ -3176,8 +3536,8 @@ class TreasureModule(ActivityModule):
         # 心跳日志每 DEBUG_LOG_INTERVAL 帧才打一次，尖峰（如 1900ms）会被跳过，
         # 这里每次消费都记录，保证日志能看到 debug 图显示的每一个 OCR 耗时。
         logger.log(
-            f"[鉴宝] OCR 结果 R{result['round_no']} 帧{result['frame_id']} 已应用: "
-            f"耗时{result['duration_ms']:.0f}ms, 时效{self._ocr_result_age_ms:.0f}ms, "
+            f"[鉴宝] OCR 结果 R{meta['round_no']} 帧{meta['frame_id']} 已应用: "
+            f"耗时{meta['duration_ms']:.0f}ms, 时效{self._ocr_result_age_ms:.0f}ms, "
             f"累计{self._ocr_total_runs}次",
             "DEBUG",
         )
@@ -3306,6 +3666,39 @@ class TreasureModule(ActivityModule):
         self._daily_high_score = amt
         logger.log(f"[鉴宝弹窗①] 今日最高积分上涨: {amt:,}", "INFO")
 
+    def _reset_bid_slots(self) -> None:
+        """每回合首次消费报价时重置 4 槽固化状态（由 _consume_ocr_result 对比 _bid_slots_round 触发）。
+
+        槽状态机三口径统计（debug 图显示，用户拍板「消费/输出/命中」三口径全统计）：
+          consumed = 本回合该槽被 OCR 消费过的帧数（单调上涨，判断「读了多少帧」）
+          output   = 该槽在 OCR 结果中出现过的次数（是否有输出）
+          hits     = 读到有效数字的次数（识别命中率，排除空读）
+        """
+        self._bid_slots = {
+            pid: {
+                "val": -1,          # 当前值（-1=未读；0=读到掉线/空报价 合法）
+                "stable": 0,        # 连续一致帧数（固化条件）
+                "locked": False,    # 是否固化（固化后停止该槽 OCR）
+                "miss": 0,          # 连续无输出帧数（≥ BID_SLOT_MISS_LIMIT 清空重读）
+                "consumed": 0,      # 消费次数
+                "output": 0,        # 输出次数
+                "hits": 0,          # 命中次数（读到有效数字）
+            }
+            for pid in (1, 2, 3, 4)
+        }
+
+    def _bid_dynamic_ocr_keys(self) -> frozenset[str]:
+        """出价阶段动态 OCR keys：剔除已固化槽（用户规则：固化→停止该回合该槽 OCR），
+        OCR 资源集中给未固化槽，尤其最后展示的 P4（配合 P4 双通道提升刷新率）。
+        H/玩家名/回合小字等非报价槽恒在。无固化槽时直接复用全量 _BID_OCR_KEYS（避免每帧重建 frozenset）。"""
+        locked = {pid for pid, s in self._bid_slots.items() if s.get("locked")}
+        if not locked:
+            return _BID_OCR_KEYS
+        return frozenset(
+            k for k in _BID_OCR_KEYS
+            if not (k.startswith("bid_player") and k[-1].isdigit() and int(k[-1]) in locked)
+        )
+
     def _consume_ocr_result(self, res: dict) -> None:
         """纯业务逻辑：消费 OCR 识别结果，更新 H/出价/结算/余额等状态。
         主程序通过 _apply_ocr_result（worker 异步）调用；离线脚本同步 OCR 后直接调用。
@@ -3340,49 +3733,84 @@ class TreasureModule(ActivityModule):
             if amt and self._bid_phase == "bidding" and not self._in_transition:
                 self.set_h(amt)
 
-        # 4 个玩家出价（读面积记忆）—— 仅出价阶段（r 非 None）消费
+        # 4 个玩家出价（读面积记忆）—— 仅出价阶段（r 非 None）消费。
+        # 槽级固化状态机（用户拍板规则）：
+        #   · 读到数字：同值→stable+1；异值→val=新值,stable=1（误读稳定不了没关系，反正连续3次一致才固化）
+        #   · 固化：stable≥BID_SLOT_STABLE_FRAMES 且前置槽已固化 → locked，写 _player_bids，停止该槽 OCR
+        #   · 读到过任何值(val≠-1) 且未固化，本帧无输出 → miss+1；≥BID_SLOT_MISS_LIMIT → 清空重读(val=-1)
+        #   · 三口径统计（debug 图显示）：consumed=本帧被消费 / output=有输出 / hits=命中有效数字
+        # 关键：只遍历 res 出现的 key 会让"无输出槽"永远不进循环 → miss 加不上；
+        # 必须每次消费对全部未固化槽统一做「本帧有无输出」判定（用户规则：连续3帧识别不到东西就清空该槽）。
         if r is not None:
-            for key, info in res.items():
-                if not (key.startswith("bid_player") and key[-1].isdigit()):
-                    continue
-                pid = int(key[-1])
-                amt = info.get("amount")
-                text = info.get("text", "")
-                # 三态提交判定：只有 OCR 明确读到状态（"出价中"/"已出价"/金额）才写
-                # _bid_player_submitted；空读取（text 空且无金额，网卡/动画残缺常见）不覆盖，
+            # 回合变化（或首帧）→ 重置 4 槽（每回合报价独立）
+            if self._bid_slots_round != r or not self._bid_slots:
+                self._reset_bid_slots()
+                self._bid_slots_round = r
+            for pid in (1, 2, 3, 4):
+                slot = self._bid_slots[pid]
+                if slot["locked"]:
+                    continue  # 已固化：停止识别该槽（动态 keys 已剔除，这里兜底跳过）
+                slot["consumed"] += 1  # 本帧被 OCR 消费（三口径之消费）
+                info = res.get(f"bid_player{pid}")
+                amt = info.get("amount") if isinstance(info, dict) else None
+                text = str(info.get("text") or "") if isinstance(info, dict) else ""
+                # 三态提交判定（原逻辑保留）：只有 OCR 明确读到状态（"出价中"/"已出价"/金额）
+                # 才写 _bid_player_submitted；空读取（text 空且无金额，网卡/动画残缺常见）不覆盖，
                 # 保持上次状态。这样 wait_result 的假下降沿判定不会被"空读取=未提交"误触发
                 # （网卡导致画面卡住时 OCR 连续读到空，若当成"出价中"会误判提交失败 → 丢数据）。
                 if "出价中" in text or "已出价" in text or (amt is not None and amt > 0):
-                    submitted = ("已出价" in text) or (amt is not None and amt > 0)
-                    self._bid_player_submitted[pid] = submitted
-                # 只有「真没读到」才跳过（空读=None，保持 -1 哨兵）；读到数字 0 也要落盘，
+                    self._bid_player_submitted[pid] = ("已出价" in text) or (amt is not None and amt > 0)
+                # 本帧无输出（识别不到东西）：未固化 + 已读到过值 → miss+1，连续超限清空重读。
+                if not (text or amt is not None):
+                    if slot["val"] != -1:
+                        slot["miss"] += 1
+                        if slot["miss"] >= self.BID_SLOT_MISS_LIMIT:
+                            logger.log(
+                                f"[鉴宝] 槽{pid} 连续 {self.BID_SLOT_MISS_LIMIT} 次无输出，"
+                                f"清空重读（旧值 {slot['val']:,}，"
+                                f"消费{slot['consumed']}/输出{slot['output']}/命中{slot['hits']}）",
+                                "DEBUG",
+                            )
+                            slot["val"] = -1
+                            slot["stable"] = 0
+                            slot["miss"] = 0
+                    continue
+                slot["output"] += 1  # 有输出（三口径之输出）
+                slot["miss"] = 0
+                # 只有「真没读到数字」才跳过（空读=None，保持 -1 哨兵）；读到数字 0 也要落盘，
                 # 否则玩家掉线报价=0 会被当成未读，快照 4 槽永远凑不齐 → 整场锁死（2026-08-19）。
-                if not amt and amt != 0:
+                if amt is None or (not amt and amt != 0):
                     continue
-                # 历史上出现过"先读到缺最后一位的 5 位数 → 再读到完整 6 位数"的识别事件
-                # （根因：原出价框 ROI 右边界仅 0~1px 余量，轻微尺寸抖动就会裁掉最后一位；
-                #  现已在 treasure_rois.json 把 4 个 bid_player ROI 左右外扩 ~8px，余量 >5px）。
-                # 即便如此，保留覆盖逻辑仍然合理：同回合的出价只可能被更完整/更新的值覆盖，
-                # 且只有「真实变化」才记日志（prev>0 记覆盖旧值；prev=-1 记新增）。
-                lst = self._player_bids.setdefault(f"玩家{pid}", [-1] * 5)  # -1=未读；0=读到(掉线)合法
-                if not (1 <= r <= len(lst)):
+                slot["hits"] += 1  # 命中有效数字（三口径之命中）
+                # 前置槽约束（用户规则「前一槽位有数据」）：前置槽读到过任何值（val≠-1）
+                # 才放行本槽推进。不要求前置槽已固化——报价逐条展示，前置槽开始显示即代表
+                # 轮到本槽；若要求前置 locked，前置槽误读不稳定会拖死后续槽（用户确认
+                # 「误读稳定不了没关系」，每槽独立 3 次一致才固化）。
+                prev_pid = pid - 1
+                if prev_pid >= 1 and self._bid_slots[prev_pid]["val"] == -1:
                     continue
-                # 回合切换转场期：新回合前 SWITCH_CONFIRM_FRAMES 帧不写当前回合槽。
-                # R3→R4 等切换瞬间，画面旧数字从两侧向中心收缩淡出，会短暂识别出
-                # "末尾缺0"的残缺值（如 209,500→20,950），此时写入会污染当前回合槽。
-                # 延迟到动画稳定后再写，残缺值自然被滤掉。
+                # 回合切换转场期：SWITCH_CONFIRM_FRAMES 帧内不推进稳定计数。
+                # R3→R4 等切换瞬间画面旧数字收缩淡出，会短暂识别出"末尾缺0"残缺值
+                # （如 209,500→20,950）；残缺值不干扰固化，动画稳定后再正常累积。
                 if self._in_transition:
                     continue
-                prev = lst[r - 1]
-                if prev == amt:
-                    continue
-                lst[r - 1] = amt
-                reason = f"覆盖旧值{prev:,}" if prev > 0 else ""
-                logger.log(
-                    f"[鉴宝] OCR 竞猜玩家{pid} 第{r}回合出价 = {amt:,}"
-                    + (f"（{reason}）" if reason else ""),
-                    "DEBUG",
-                )
+                # 稳定计数：同值累积；异值重置为1（误读稳定不了没关系，连续3次一致才固化）
+                if slot["val"] == amt:
+                    slot["stable"] += 1
+                    if slot["stable"] >= self.BID_SLOT_STABLE_FRAMES:
+                        slot["locked"] = True
+                        lst = self._player_bids.setdefault(f"玩家{pid}", [-1] * 5)  # -1=未读；0=掉线合法
+                        if 1 <= r <= len(lst):
+                            lst[r - 1] = amt
+                        logger.log(
+                            f"[鉴宝] 槽{pid} 固化第{r}回合出价 = {amt:,}"
+                            f"（连续{slot['stable']}次一致，"
+                            f"消费{slot['consumed']}/输出{slot['output']}/命中{slot['hits']}）",
+                            "INFO",
+                        )
+                else:
+                    slot["val"] = amt
+                    slot["stable"] = 1
 
             # bid_history1~4 已于 2026-08 删除：历史回合出价在各自回合由 bid_playerX 实时写入
             # _player_bids（累积表），bid_history 仅提供稳定补全/锁定，删掉省 4 个 ROI 识别。
@@ -3868,10 +4296,8 @@ class TreasureModule(ActivityModule):
             logger.log(f"[鉴宝落盘] 写入失败: {e}", "WARNING")
 
     def _log_session_summary(self):
-        lines: list[str] = []
-        lines.append("=" * 52)
-        lines.append("  鉴宝观察会话总结")
-        lines.append("=" * 52)
+        """会话总结：逐行输出，首行「鉴宝观察会话总结」被前端识别为区块卡片头（可展开分组）。"""
+        lines: list[str] = ["鉴宝观察会话总结"]
         lines.append(f"  阶段记录     : {self._current_stage or '-'}（结束时）")
         if self._round_no is not None:
             lines.append(f"  结束回合     : {self._round_no}")
@@ -3894,8 +4320,8 @@ class TreasureModule(ActivityModule):
             )
         if self._daily_high_score is not None:
             lines.append(f"  今日最高积分 : {self._daily_high_score:,}")
-        lines.append(f"  保存帧数     : {self._saved_frames} (raw 全量) / {self._debug_saved} (debug 图)")
         if self._session_dir:
+            lines.append(f"  保存帧数     : {self._saved_frames} (raw 全量) / {self._debug_saved} (debug 图)")
             lines.append(f"  调试目录     : {self._session_dir}")
-        lines.append("=" * 52)
-        logger.log("\n".join(lines), "INFO")
+        for _ln in lines:
+            logger.log(_ln, "INFO")

@@ -97,6 +97,29 @@ def _bid_color(bid: int, h_max: int):
     return (60, 60, 220)         # 🟥 橙红：出价 < 0.6Hmax → 显著偏低
 
 
+def _slot_badge(slot: dict | None):
+    """报价槽固化状态徽标（玩家表内嵌 + OCR 卡复用）。四态：
+      未读=灰 / 读中=黄(稳N) / 固化=绿(✓值) / 清空预警=橙(漏N)。
+    返回 (文本, BGR色)；无槽数据 → 未读灰。"""
+    if not slot:
+        return ("未读", (140, 140, 140))
+    if slot.get("locked"):
+        val = slot.get("val", 0) or 0
+        if val >= 1_000_000:
+            txt = f"✓{val/1_000_000:.1f}M"
+        elif val >= 1_000:
+            txt = f"✓{val/1_000:.1f}K"
+        else:
+            txt = f"✓{val:,}"
+        return (txt, (120, 200, 120))   # 绿：已固化
+    if slot.get("val", -1) != -1:
+        miss = slot.get("miss", 0)
+        if miss > 0:
+            return (f"漏{miss}", (80, 140, 255))   # 橙：连续无输出预警（清空重读前）
+        return (f"稳{slot.get('stable', 0)}", (120, 220, 255))  # 黄：读中（稳定计数）
+    return ("未读", (140, 140, 140))   # 灰：未读到任何值
+
+
 # =============================================================
 #  ROI 参考框（浅色虚线）
 # =============================================================
@@ -122,7 +145,8 @@ def _draw_roi_refs(frame_bgr):
 # =============================================================
 
 def _draw_hud_top_left(canvas, frame_idx, debug_idx, label, stage, round_no, h_price,
-                        sysmax_13, val_lo, val_hi, vhat, bids_ours, rank, note, balance=None):
+                        sysmax_13, val_lo, val_hi, vhat, bids_ours, rank, note, balance=None,
+                        h_max=None):
     H, W = canvas.shape[:2]
     hud_w, hud_h = int(min(640, W * 0.42)), 278
     x0, y0 = 10, 10
@@ -143,9 +167,11 @@ def _draw_hud_top_left(canvas, frame_idx, debug_idx, label, stage, round_no, h_p
     _put(canvas, round_txt, x + 300, y, scale=0.52, color=(255, 255, 200))
     y += lg
 
-    # 系统报价 H
+    # 系统报价 H（当前）+ Hmax（全部历史最大值，与 H 并排）
     h_str = f"{h_price:,}" if h_price else "-"
+    hm_str = f"{h_max:,}" if h_max else "-"
     _put(canvas, f"系统报价 H : {h_str}", x, y, scale=0.52, color=(180, 255, 180))
+    _put(canvas, f"Hmax : {hm_str}", x + 300, y, scale=0.52, color=(120, 200, 120))
     y += lg
 
     # 估值：优先显示决策实际用的 V̂（VAL_COEF×sysmax，与 BidStrategy 同口径），区间作补充
@@ -273,7 +299,7 @@ def _draw_h_chart(canvas, h_hist, current_h):
 #  左下：玩家出价表（4×5 单元格 + 🔒 标记 + 当前回合列框）
 # =============================================================
 
-def _draw_player_bid_table(canvas, player_bids, current_round, h_max, my_rank=None):
+def _draw_player_bid_table(canvas, player_bids, current_round, h_max, my_rank=None, bid_slots=None):
     H, W = canvas.shape[:2]
     # 放在左下，宽度 ~ 屏幕左半 48%
     tw = int(W * 0.48)
@@ -336,6 +362,7 @@ def _draw_player_bid_table(canvas, player_bids, current_round, h_max, my_rank=No
 
     rows = [(f"玩家{i}", f"P{i}") for i in range(1, 5)]
     for ri, (p_name, p_key) in enumerate(rows):
+        pid = int(p_key[-1])
         cy = y0 + pad_y + ri * row_h
         # 玩家名列：我方槽位（my_rank，OCR 从「（我）」标记识别）标绿高亮，
         # 不能硬编码"玩家3"（不然换位后 debug 图仍标错）。
@@ -343,6 +370,15 @@ def _draw_player_bid_table(canvas, player_bids, current_round, h_max, my_rank=No
         _grid_cell(canvas, x0 + 4, cy - 2, pad_x - 8, row_h - 4,
                    fill_color=(38, 38, 46))
         _put(canvas, p_name, x0 + 12, cy + 20, scale=0.48, color=name_color)
+        # 玩家名下方第二行：槽固化状态徽标（灰/黄/绿/橙四态，一眼看出读得怎么样）。
+        # 深色底块 + 徽标色边框 + 彩字，保证小字在深色 cell 上清晰可辨。
+        slot = (bid_slots or {}).get(pid)
+        badge_text, badge_color = _slot_badge(slot)
+        if badge_text:
+            (bw, bh), _ = cv2.getTextSize(badge_text, cv2.FONT_HERSHEY_SIMPLEX, 0.40, 1)
+            _rect(canvas, x0 + 10, cy + 26, x0 + 14 + bw + 4, cy + 26 + bh + 8, (15, 15, 20))
+            _rect(canvas, x0 + 10, cy + 26, x0 + 14 + bw + 4, cy + 26 + bh + 8, badge_color, 1)
+            _put(canvas, badge_text, x0 + 12, cy + 34, scale=0.40, color=badge_color)
 
         lst = (player_bids or {}).get(p_name, [0] * 5)
         while len(lst) < 5:
@@ -366,16 +402,12 @@ def _draw_player_bid_table(canvas, player_bids, current_round, h_max, my_rank=No
                 _put(canvas, f"{bid:,}", gx + col_w // 2, cy + 36,
                      scale=0.30, color=(30, 30, 30), align="center")
 
-    # 底部：Hmax 参考值
-    hmax_str = f"{h_max:,}" if h_max else "-"
-    _put(canvas, f"Hmax={hmax_str}", x0 + 14, y0 + th - 20, scale=0.42, color=(180, 255, 180))
-
 
 # =============================================================
 #  右下：OCR 指标卡
 # =============================================================
 
-def _draw_ocr_stats(canvas, ocr_stats, player_bids):
+def _draw_ocr_stats(canvas, ocr_stats, player_bids, bid_slots=None):
     H, W = canvas.shape[:2]
     # 放在右下；左边是玩家出价表（宽约 48%），所以从 x = W*0.51 起
     x0 = int(W * 0.51)
@@ -409,15 +441,20 @@ def _draw_ocr_stats(canvas, ocr_stats, player_bids):
         _put(canvas, "OCR 还未运行", x, y, scale=0.45, color=(160, 160, 160))
         y += lg * 2
 
-    # 玩家出价完整原始值（一列排，数字用 , 分隔）
-    _put(canvas, "玩家出价原文 (5 回合槽位):", x, y, scale=0.42, color=(220, 220, 220))
+    # 每槽识别统计：消费/输出/命中（用户拍板三口径全统计，显示如 100/12/8）
+    _put(canvas, "槽 消费/输出/命中  状态", x, y, scale=0.42, color=(200, 200, 230))
     y += 18
     for pi in range(1, 5):
-        name = f"玩家{pi}"
-        lst = (player_bids or {}).get(name, [])
-        line = "[" + ",".join(f"{v:,}" if v else "0" for v in (lst + [0] * 5)[:5]) + "]"
-        color = (160, 255, 160) if pi == 3 else (230, 230, 230)
-        _put(canvas, f"  P{pi}: {line}", x, y, scale=0.40, color=color)
+        slot = (bid_slots or {}).get(pi)
+        if slot:
+            line = f"P{pi}: {slot.get('consumed', 0)}/{slot.get('output', 0)}/{slot.get('hits', 0)}"
+            badge_text, badge_color = _slot_badge(slot)
+        else:
+            line = f"P{pi}: -/-/-"
+            badge_text, badge_color = "未读", (140, 140, 140)
+        _put(canvas, line, x, y, scale=0.40, color=(230, 230, 230))
+        if badge_text:
+            _put(canvas, badge_text, x + 150, y, scale=0.36, color=badge_color)
         y += 18
 
 
@@ -549,6 +586,7 @@ class TreasureDebugRenderer:
 
         h_hist       = kw.get("treasure_h_history", [0, 0, 0, 0, 0])
         player_bids  = kw.get("treasure_player_bids", {})
+        bid_slots    = kw.get("treasure_bid_slots", {})  # 每槽 {val,stable,locked,miss,consumed,output,hits}
         frame_idx    = int(kw.get("treasure_frame_index", 0) or 0)
         debug_idx    = int(kw.get("treasure_debug_index", 0) or 0)
         stage_order  = kw.get("treasure_stage_order", [])
@@ -568,19 +606,22 @@ class TreasureDebugRenderer:
         if roi:
             _draw_roi_refs(canvas)
 
+        # h_max = 所有已读 H 的最大值，玩家出价全按 h_max 比例着色（用户规则：对比 Hmax，
+        # 因为 H 只取每回合第一次智能报价）；左上 HUD 与 H 并排显示。
+        h_max = max([h for h in h_hist if h > 0], default=0)
+
         # --- 左上 HUD 永远画（信息基础）---
         _draw_hud_top_left(canvas, frame_idx, debug_idx, label, stage, round_no,
-                           h_price, sysmax_13, val_lo, val_hi, vhat, our_bid, rank, note, balance)
+                           h_price, sysmax_13, val_lo, val_hi, vhat, our_bid, rank, note,
+                           balance, h_max=h_max)
         if small:
             # 小图：其他增强面板省略，保证至少 HUD 可看
             return canvas
 
         # --- 增强面板：H 走势 / 玩家出价表 / OCR 指标 / 阶段进度条 ---
-        # h_max = 所有已读 H 的最大值，玩家出价全按 h_max 比例着色（用户规则：对比 Hmax，因为 H 只取每回合第一次智能报价）
-        h_max = max([h for h in h_hist if h > 0], default=0)
         _draw_h_chart(canvas, h_hist, h_price)
-        _draw_player_bid_table(canvas, player_bids, round_no, h_max, my_rank=rank)
-        _draw_ocr_stats(canvas, ocr_stats, player_bids)
+        _draw_player_bid_table(canvas, player_bids, round_no, h_max, my_rank=rank, bid_slots=bid_slots)
+        _draw_ocr_stats(canvas, ocr_stats, player_bids, bid_slots=bid_slots)
         # 结算结果卡：仅「领取分红」阶段显示。结算数据在中标结算阶段就可能被识别到，
         # 过早显示会与真实结算结果混淆（用户要求：只在此阶段激活）
         if stage == "领取分红":

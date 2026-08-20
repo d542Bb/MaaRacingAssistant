@@ -32,6 +32,14 @@ from maaracing_assistant.logger import logger
 
 MATCH_THRESHOLD = 0.75  # TM_CCOEFF_NORMED
 
+# 多尺度匹配缩放档（0.70×~1.30×，步长 0.05）。
+# 必须与调试台 tools/treasure_debug_studio/server.py 的 MATCH_SCALES、
+# treasure_module 的 _APPRAISER_MATCH_SCALES 保持完全一致——调试台校准的分数/阈值
+# 要能原样复现于运行时，画面/ROI/模板/算法四者必须同口径（牵一发而动全身原则）。
+MATCH_SCALES: tuple[float, ...] = (
+    0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30,
+)
+
 # ============================================================
 # 搜索 ROI：从 assets/resource/image/treasure/treasure_rois.json 读取
 # （调试台 tools/treasure_debug_studio 负责可视化校准并保存该文件）。
@@ -73,11 +81,11 @@ def _load_rois(proj: Path) -> dict:
     if not rois:
         logger.log("[鉴宝检测器] JSON 里没有可用 stage ROI，阶段检测将跳过", "WARNING")
         return {}
-    logger.log(f"[鉴宝检测器] 已从 {path.name} 加载 {len(rois)} 个 ROI: {', '.join(rois)}", "INFO")
+    logger.log(f"[鉴宝检测器] 已从 {path.name} 加载 {len(rois)} 个 ROI: {', '.join(rois)}", "DEBUG")
     custom = [k for k, v in _roi_thresholds.items() if v is not None]
     if custom:
         logger.log(f"[鉴宝检测器] 以下 ROI 使用自定义阈值: " +
-                   ", ".join(f"{k}={_roi_thresholds[k]:.3f}" for k in custom), "INFO")
+                   ", ".join(f"{k}={_roi_thresholds[k]:.3f}" for k in custom), "DEBUG")
     return rois
 
 
@@ -175,6 +183,9 @@ class TreasureStageDetector:
         self.ROI = _load_rois(proj)       # ← 从调试台 JSON 读取 ROI 区域（仅 stage 运行时）
         self.ROI_TPL = _load_roi_templates(proj)  # ← 从调试台 JSON 读取每个 stage ROI 的模板列表
         self.schema = _load_schema(proj)  # 完整 v2（或旧）schema，供回合小字等扩展读取
+        # ROI 级自定义阈值（{roi_key: float|None}）：引用模块级 _roi_thresholds（_load_rois
+        # 刚填充），供外部（如 treasure_module._match_bid_smart_btn）与 detect() 同源取阈值。
+        self.roi_thresholds = _roi_thresholds
         self._weak_alert_ts: dict[str, float] = {}
         # 回合小字 OCR：识别不到回合号（横幅未命中）时激活一次，用 OCR 读「第N回合」
         # 文字提取回合数。引擎懒加载、失败自动降级，detector 自身不持有也不初始化引擎。
@@ -193,12 +204,25 @@ class TreasureStageDetector:
         self._last_hit_roi_key: str | None = None
 
     # ---------------- 对外主接口 ----------------
-    def detect(self, frame_rgb: np.ndarray) -> tuple[str | None, int | None]:
+    def detect(
+        self,
+        frame_rgb: np.ndarray,
+        active_rois: set[str] | None = None,
+    ) -> tuple[str | None, int | None]:
+        """阶段检测（动态感知裁剪）。
+
+        active_rois：本帧只匹配这些 stage ROI 键；None = 全量匹配（调试台/断点/测试用）。
+        未命中的 ROI 不参与扫描 → 非当前阶段的背景元素不会干扰判定（配合阶段感知清单），
+        也让阶段内阈值可以放宽而不担心跨阶段误识别。
+        """
         H, W = frame_rgb.shape[:2]
         gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
 
-        # 按优先级从高到低扫描每个 stage ROI；同一 ROI 内所有模板一起匹配取最高分
+        # 按优先级从高到低扫描每个 stage ROI；同一 ROI 内所有模板一起匹配取最高分。
+        # active_rois 提供时只扫描交集，优先级排序与命中短路逻辑不受影响。
         for roi_key in sorted(_ROI_STAGE, key=lambda k: -_ROI_STAGE[k]["priority"]):
+            if active_rois is not None and roi_key not in active_rois:
+                continue
             rect = self.ROI.get(roi_key)
             if not rect:
                 continue
@@ -392,28 +416,53 @@ class TreasureStageDetector:
 
     @classmethod
     def _match_local(cls, gray_big, gray_tpl, x1n, y1n, x2n, y2n, W, H) -> float:
+        """ROI 内多尺度模板匹配，返回所有尺度下的最高命中分（0~1）。
+
+        与调试台 server.match_local 同一算法：模板在 MATCH_SCALES（0.70×~1.30×）
+        逐档缩放取最优分。非标准窗口/DPI 下画面内容会被重采样缩放，模板渲染尺寸
+        可能偏离 1.0×，单尺度匹配会漏检（分数被拉低、横幅互斥区分度消失）；
+        多尺度把实际渲染尺寸对应的最优档找出来，保证运行时分数与调试台校准口径一致。
+        """
         crop = cls._crop(gray_big, x1n, y1n, x2n, y2n, W, H)
         if crop is None:
             return 0.0
-        th, tw = gray_tpl.shape[:2]
+        th0, tw0 = gray_tpl.shape[:2]
         ch, cw = crop.shape[:2]
-        if th > ch or tw > cw:
+        best = 0.0
+        attempted = False
+        for s in MATCH_SCALES:
+            nw = max(4, int(round(tw0 * s)))
+            nh = max(4, int(round(th0 * s)))
+            if nh > ch or nw > cw:
+                continue  # 该尺度放不下，跳过（与调试台一致）
+            attempted = True
+            if nw == tw0 and nh == th0:
+                tpl_s = gray_tpl
+            else:
+                try:
+                    # 缩小时用 AREA（避免锯齿），放大时用 CUBIC
+                    interp = cv2.INTER_AREA if s < 1.0 else cv2.INTER_CUBIC
+                    tpl_s = cv2.resize(gray_tpl, (nw, nh), interpolation=interp)
+                except Exception:
+                    continue
+            try:
+                res = cv2.matchTemplate(crop, tpl_s, cv2.TM_CCOEFF_NORMED)
+                _, max_val, _, _ = cv2.minMaxLoc(res)
+            except cv2.error:
+                continue
+            if float(max_val) > best:
+                best = float(max_val)
+        if not attempted:
+            # 模板即使缩到最小档 0.70× 仍超出 ROI → 该 ROI 永远无法命中
             now = time.time()
             if now - getattr(cls, "_last_size_warn", 0.0) > 10.0:
                 cls._last_size_warn = now
                 logger.log(
-                    f"[鉴宝检测器] ROI 尺寸不足 (crop {cw}×{ch} < tpl {tw}×{th})，"
+                    f"[鉴宝检测器] ROI 尺寸不足 (crop {cw}×{ch} < tpl {tw0}×{th0}×0.70)，"
                     f"该 ROI 永远无法命中，请用调试台调大",
                     "WARNING",
                 )
-            return 0.0
-        try:
-            res = cv2.matchTemplate(crop, gray_tpl, cv2.TM_CCOEFF_NORMED)
-            _, max_val, _, _ = cv2.minMaxLoc(res)
-            return float(max_val)
-        except cv2.error as e:
-            logger.log(f"[鉴宝检测器] matchTemplate 失败: {e}", "WARNING")
-            return 0.0
+        return best
 
     def _detect_round_full(self, frame_rgb, W, H) -> int | None:
         """识别不到回合（横幅未命中）时激活一次：OCR 读回合小字区域 → 提取回合号。

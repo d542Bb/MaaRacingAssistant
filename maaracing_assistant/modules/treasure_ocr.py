@@ -76,7 +76,7 @@ def _pin_to_p_cores() -> None:
         n = psutil.cpu_count(logical=True)
         if n and max(PIN_P_CORE_AFFINITY) < n:
             psutil.Process().cpu_affinity(PIN_P_CORE_AFFINITY)
-            logger.log(f"[鉴宝OCR] 已绑定进程 CPU 亲和性到 P-core {PIN_P_CORE_AFFINITY}", "INFO")
+            logger.log(f"[鉴宝OCR] 已绑定进程 CPU 亲和性到 P-core {PIN_P_CORE_AFFINITY}", "DEBUG")
     except Exception as e:
         logger.log(f"[鉴宝OCR] CPU 亲和性绑定失败({e})，忽略", "DEBUG")
     _p_affinity_pinned = True
@@ -231,7 +231,7 @@ class TreasureOcr:
             if isinstance(val, dict) and isinstance(val.get("rect"), list) and len(val["rect"]) == 4:
                 r4 = val["rect"]
                 regions[key] = (float(r4[0]), float(r4[1]), float(r4[2]), float(r4[3]))
-        logger.log(f"[鉴宝OCR] 已加载 {len(regions)} 个识别区: {', '.join(regions)}", "INFO")
+        logger.log(f"[鉴宝OCR] 已加载 {len(regions)} 个识别区: {', '.join(regions)}", "DEBUG")
         return regions
 
     # ---------------- 引擎（懒加载） ----------------
@@ -256,7 +256,7 @@ class TreasureOcr:
                 })
                 logger.log(
                     f"[鉴宝OCR] RapidOCR 引擎已加载(use_det={USE_DET}, use_cls={USE_CLS}, "
-                    f"intra_op={OCR_INTRA_OP_THREADS})", "INFO")
+                    f"intra_op={OCR_INTRA_OP_THREADS})", "DEBUG")
             except Exception as e:
                 self._engine_failed = True
                 logger.log(f"[鉴宝OCR] RapidOCR 加载失败({e})，OCR 已禁用", "WARNING")
@@ -315,7 +315,7 @@ class TreasureOcr:
     def recognize_amounts(
         self,
         frame_rgb: np.ndarray,
-        keys: list[str] | tuple[str, ...] | None = None,
+        keys: list[str] | tuple[str, ...] | frozenset[str] | None = None,
         *,
         min_amounts: dict[str, int] | None = None,
     ) -> dict[str, dict]:

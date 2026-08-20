@@ -4,6 +4,15 @@
 
 ## 2026-08-20
 
+### v0.16.0-dev.1 鉴宝报价双通道修复 + debug 落盘异步化 🚀
+- **版本号：** `v0.16.0-dev.1`（预发布；基于 v0.15.0-dev.8 新开 minor 系列）
+- **P4 双通道覆盖 bug 修复：** 结果槽拆双槽（关键通道 H+P4 / 全量通道其余），worker 第二段剔除 H/P4 不再同帧重复识别+覆盖关键结果；主线程每帧合并双槽消费 → P4 独立识别、时效最低
+- **debug 落盘 IO worker（异步化）：** 渲染 HUD/ROI/PEEP + raw JPG + WebP 写盘移出主线程（生产-消费者，有界队列满丢帧不阻塞）→ wait_result 段帧率不再被 ~67-100ms 同步存盘拖慢，真正逼近 150ms
+- **报价槽级固化：** 连续 3 帧一致 + 前置槽约束才固化；未固化槽连续 3 帧无输出清空重读；wait_result 帧率翻倍 + 假下降沿修复（读到报价即禁用重报）
+- **窗口比例校验：** `ensure_game_window_min`（自动调窗）改为 `check_game_window_aspect`（只读校验 16:9，不符报错终止）
+- **日志优化：** OCR 初始化日志降 DEBUG；GUI 会话总结日志分类
+- **文档：** CODE_WIKI_TREASURE 同步双结果槽/IO worker；删除 docs/PRESENTATION.md
+
 ### 未发版工作区改动：数据目录迁移 + 窗口匹配调整 + 窗口准备机制
 
 - **数据存储迁移（与安装目录解耦）：** 鉴宝落盘库从 `<项目根>/data/treasure/treasure.db` 迁到 `%APPDATA%/MaaRacingAssistant/treasure/treasure.db`，更新/覆盖安装不再影响历史数据

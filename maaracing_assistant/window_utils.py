@@ -325,41 +325,30 @@ def count_pressed_keys() -> int:
 
 
 # =====================================================================
-#  窗口尺寸调整（客户区 < 1280×720 时调大，≥ 则不动）
+#  窗口比例校验（只读：不调整窗口/分辨率，仅检查客户区宽高比 ≈ 16:9）
 # =====================================================================
 
-def ensure_game_window_min(hwnd: int, min_w: int = 1280, min_h: int = 720) -> bool:
-    """客户区小于 min_w×min_h 时，用 AdjustWindowRectEx + SetWindowPos 把窗口调大。
+def check_game_window_aspect(hwnd: int, tol: float = 0.05) -> bool:
+    """校验游戏窗口客户区宽高比是否大致 16:9（只读，不改窗口尺寸/分辨率）。
 
-    返回是否执行过调整；窗口无效 / 已是 ≥ 最小尺寸 → False 且不动。
+    模板与 ROI 均按 720p(16:9) 归一化，客户区非 16:9（16:10 / 21:9 / 4:3 全屏等）
+    会识别错位，故启动时校验：不符返回 False，由调用方报错终止。
+    容差 tol=±5%（≈1.69~1.87），覆盖边框/DPI 缩放等微小偏差。
+    获取客户区失败（窗口无效）同样返回 False。
     """
     size = window_client_size(hwnd)
-    if size is None:
-        logger.log("[坐标] 获取客户区尺寸失败，跳过窗口调整", "WARNING")
+    if size is None or size[0] <= 0 or size[1] <= 0:
+        logger.log("[坐标] 获取游戏窗口客户区尺寸失败，无法校验 16:9 比例", "DEBUG")
         return False
     cw, ch = size
-    if cw >= min_w and ch >= min_h:
-        return False
-
-    style = _UD.GetWindowLongW(hwnd, _GWL_STYLE)
-    ex_style = _UD.GetWindowLongW(hwnd, _GWL_EXSTYLE)
-    rect = wintypes.RECT(0, 0, min_w, min_h)
-    if not _UD.AdjustWindowRectEx(ctypes.byref(rect), style, False, ex_style):
-        rect = wintypes.RECT(0, 0, min_w, min_h)
-    win_w = rect.right - rect.left
-    win_h = rect.bottom - rect.top
-
-    ok = bool(_UD.SetWindowPos(
-        hwnd, None, 0, 0, win_w, win_h,
-        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-    ))
-    if ok:
+    target = 16 / 9
+    aspect = cw / ch
+    ok = abs(aspect - target) <= target * tol
+    if not ok:
         logger.log(
-            f"[坐标] 游戏客户区 {cw}x{ch} < 1280x720 → 已调窗口到客户区 ≥{min_w}x{min_h}"
-            f"（窗口外框 {win_w}x{win_h}）", "INFO",
+            f"[坐标] 游戏窗口客户区 {cw}x{ch}（比例 {aspect:.3f}）不是 16:9（目标 {target:.3f}）",
+            "DEBUG",
         )
-    else:
-        logger.log("[坐标] 调整游戏窗口大小失败（SetWindowPos 返回 False）", "WARNING")
     return ok
 
 

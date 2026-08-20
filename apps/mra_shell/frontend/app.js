@@ -568,6 +568,7 @@
     { re: /^\[鉴宝\] 从断点开始/, type: 'session' },
     { re: /^\[鉴宝循环\] 完成 \d+ 场/, type: 'loop' },
     { re: /^\[鉴宝循环\] 已到每日循环上限/, type: 'loop' },
+    { re: /^鉴宝观察会话总结/, type: 'loop' },
     { re: /^已连接窗口 \(hWnd=/, type: 'session' },
     { re: /^断点模式\s*:/, type: 'session' },
     { re: /^紧急停止/, type: 'session' },

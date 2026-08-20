@@ -59,10 +59,22 @@
 - `_load_action_centers` 同时扫 stage+actions，`smart_bid_btn`（stage）与 `bid_main_red_btn`（actions）自动进 center 表
 
 **OCR worker（异步，`_ocr_worker_loop`）**：
-- 两段式：先识别 `OCR_CRITICAL_KEYS=('bid_result_amount_box',)` 关键 ROI 立即发布（保 H 不丢），再全量 18 ROI
+- 两段式 + **双结果槽**（P4 双通道覆盖 bug 已修，2026-08-20）：第一段关键 ROI `OCR_CRITICAL_KEYS=('bid_result_amount_box','bid_player4')` 识别 → `_ocr_publish_result(..., critical=True)` 写**关键槽** `_ocr_result_critical`（H+P4 独立、不被覆盖）；第二段识别 `阶段keys − _OCR_CRITICAL_SET`（**剔除 H/P4**，同帧不重复识别）→ 写全量槽 `_ocr_result`。主线程 `_apply_ocr_result` 每帧 take 关键槽+全量槽、各自过 provenance/时效闸门后**合并成一份 res 消费**——H/P4 恒来自关键通道（时效最低），P1~P3/玩家名来自全量通道
+- **wait_result 帧率翻倍（真双通道，用户拍板）**：主循环帧间隔 `WAIT_RESULT_FAST_MS=150`（正常 `FRAME_INTERVAL_MS=300`）——仅报价等待阶段 OCR 投递频率×2，配合动态 keys 剔除已固化槽 → 未固化槽（尤其 P4）读取频率真正翻倍。⚠️ 注意：双通道（第一段）**不改变投递频率**（主线程每帧投递一帧、worker latest-only），只保证 P4 时效最低、不被全量超龄拖死、消除同帧重复识别；「P4 相对其他槽 2× 采样」在 latest-only 单帧架构下物理不可达（报价刷新是时间函数），采样密度提升靠帧率翻倍 + IO 异步化（见下）
+- **debug 落盘 IO worker（`_io_worker_loop`，2026-08-20）**：渲染 HUD/ROI/PEEP + raw JPG + rendered WebP 全部移出主线程（生产-消费者，`_debug_enqueue_frame`/`_debug_enqueue_peep` 入队，有界队列满丢帧不阻塞）。原每帧 ~67-100ms 同步存盘曾把 wait_result 实际帧率从 150ms 拖回 ~240ms；异步化后主循环只剩截图+检测+OCR 消费+心跳
 - **投递时机**：出价阶段仅面板已开（S3，识别到智能出价按钮）才投递——H 就是输入框当前值（智能出价填入），面板未开（S1/S2）输入框区域是别的 UI，投递既浪费又误判
 - 时效老化：`age = consume_time - captured_ts`，超 `OCR_MAX_AGE_MS=800` 丢弃
-- 结果槽 `_ocr_result` 完整 dict 替换，不原地修改
+- 结果槽双槽（关键/全量）各自完整 dict 替换，不原地修改
+
+**报价槽级固化（wait_result 读 4 槽，`_bid_slots` 状态机）**：
+- 每槽 `{val, stable, locked, miss, consumed, output, hits}`：val=-1 未读；stable=连续一致帧数；locked=已固化（停止该槽 OCR）；miss=连续无输出帧数
+- 固化：读数字同值→stable+1，异值→val=新值,stable=1（误读稳定不了没关系，反正连续 3 次一致才固化，`BID_SLOT_STABLE_FRAMES=3`）；**前置槽约束**=`前置槽读到过任何值（val≠-1）`放行本槽推进（不要求前置 locked，否则前置槽误读不稳定会拖死后续槽）
+- 清空重读：未固化 + 已读值 + 连续 3 帧无输出（`BID_SLOT_MISS_LIMIT=3`）→ val 回 -1 重读。关键实现点：**必须对全部未固化槽统一做「本帧有无输出」判定**（只遍历 res 出现的 key 会让无输出槽 miss 永远加不上）
+- 已固化槽停止识别：`_bid_dynamic_ocr_keys()` 剔除 locked 槽（固化→停止该回合该槽 OCR）
+- 三口径统计：consumed=本帧被消费 / output=有输出 / hits=命中有效数字，debug 图 OCR 卡显示 `消费/输出/命中`（如 100/12/8）
+- 快照构建：**4 槽全部 locked** 才替换 `_last_round_snapshot` 并放行 wait_next（不发布半成品）
+- 回合变化（`_bid_slots_round != r`）→ `_reset_bid_slots()` 重置
+- **假下降沿误判坑（已修，用户拍板「读到报价即禁用」）**：wait_result 后报价展示前（实测 ~7s），我方槽 OCR 读到"出价中"（submitted=False）→ 原逻辑判"未提交"回退 wait_first 重报，每回合浪费 ~30 帧且压缩报价读取窗口。修复：本回合任意槽读到过报价（locked 或 hits>0）即证明我方已提交 → 禁用假下降沿判定；缓冲帧数按 wait_result 帧率翻倍补偿（×2 保持 ~1.5s 动画缓冲时间）
 
 **关键配置**：`FRAME_INTERVAL_MS=300`（主循环 ~3.3Hz）、`OCR_ZERO_ALLOWED_KEYS=('settle_my_income','settle_profit')`（0 值合法）
 
@@ -76,7 +88,7 @@
 - 纯函数：`trigger_bid(k, opp_max)`（k≈1.0 → `opp_max+TICK`；k>1.0 → `ceil(k×opp_max)`）/ `sanitize_bid`（只验证域，非法返回 None → 降级 decision，绝不 clamp 后保留原 decision）
 - `BidStrategy.decide`：R1~R2 observe（出 H）；R3 风格分流（`_pick_lure_target` 找最高且激进者 r>1.5 建基线，无则 normal=V̂÷1.3）；R4 `_try_lure`（退却换目标→跟随+1000，上限 min(余额, 1.3×V̂, 1.1×opp_max-1)）→ 失败转 win（ceil(1.1×opp_max)）→ 再失败 target_second；R5 及附加回合清空 lure → win（opp_max+TICK）→ target_second → observe
 - 第二名策略 `_try_target_second`：第二高独立价 `second_unique` + 开区间夹层（+TICK，价差不足 +1）；三对手全并列 → `opp_max-TICK`；夹层不存在 → None（降级 observe）
-- **phase 门控**（`_bid_phase`：wait_first/wait_next/bidding/wait_result）：面板「关→开」上升沿只在等待相位有效才建新 bidding epoch，防模板抖动制造假 epoch；提交后 wait_result，OCR 4 槽全读成功才构建快照并放行 wait_next
+- **phase 门控**（`_bid_phase`：wait_first/wait_next/bidding/wait_result）：面板「关→开」上升沿只在等待相位有效才建新 bidding epoch，防模板抖动制造假 epoch；提交后 wait_result，OCR 4 槽全部「固化」（见上槽级固化）才构建快照并放行 wait_next
 - **输入子状态机**（`_run_bidding_execute`，画面驱动）：输入框当前值 B（OCR `bid_result_amount_box` 实时读）对比目标价 T——B==T 点 `bid_confirm_red_btn`；B==0 或前缀不匹配点 `bid_numpad_clear`；前缀匹配输下一位 `bid_numpad_{d}`。不依赖「我点过了」内部标记，用户任何遗漏/改价都能自动纠正
 - **附加回合**：`_extract_round_from_stage` 正则提取任意「第N回合」，`set_stage` clamp 到 5（附加回合数据统一写进第5回合槽），用原始数字判断回合切换以正确重置转场期
 - `_bid_input_latest` 无条件更新：OCR 读到无数字（已清空/占位）→ 0，避免输入子状态机反复点✖死循环
@@ -186,13 +198,13 @@
 
 ## 8. 鉴宝模板清单
 
-配置源 `treasure_rois.json`（三段：stage / actions / ocr），匹配阈值：stage 段默认 0.75，鉴宝师/场次 0.72：
+配置源 `treasure_rois.json`（三段：stage / actions / ocr），匹配阈值：stage 段默认 0.75，鉴宝师模板默认 0.72、对勾默认 0.62、智能出价按钮默认 0.72（均可用 JSON 逐项覆盖）：
 
 | ROI 键 | 模板文件 | 阶段/用途 | 阈值 |
 |--------|----------|----------|------|
 | `settle_title` | settle_final_price_title.png | 结算页标题 | 0.75 |
 | `result_banner` | result_auction_fail/win_banner.png | 中标结算横幅（自定义 0.90） | **0.90** |
-| `smart_bid_btn` | bid_smart_btn.png | 智能出价按钮 | 0.75 |
+| `smart_bid_btn` | bid_smart_btn.png | 智能出价按钮（面板开强信号，JSON 可覆盖/回退 0.72） | **0.72** |
 | `round_big_banner` | round1~5_banner.png | 回合大横幅（文件名解析回合号） | 0.75 |
 | `appraiser_title` | select_appraiser_title.png | 选择鉴宝师页标题 | 0.75 |
 | `hall_peak_appraise_card` | hall_peak_appraise_card.png | 游戏大厅「巅峰鉴宝」入口卡片 | 0.75 |
@@ -200,11 +212,13 @@
 | `hall_session_cards` | hall_session_cards.png | 鉴宝大厅场次卡片区 | 0.75 |
 | `is_matching_btn` | is_matching_btn.png | 匹配中按钮（自定义 0.90） | **0.90** |
 | `session_start_match_btn` | session_start_match_btn.png | 「开始匹配」按钮（详情卡出现判定，自定义 0.90） | **0.90** |
-| `appraiser_selected_check` | appraiser_selected_check.png | 已选中黄色√（对勾判定） | 0.72 |
+| `appraiser_selected_check` | appraiser_selected_check.png | 已选中黄色√（对勾判定） | 0.62 |
 | —（actions 段） | — | session_master_badge / session_start_match_btn / confirm_red_btn 等纯 rect 中心按钮，**不挂模板** | — |
-| —（鉴宝师模板） | appraiser_p1_caroline.png / appraiser_p2_shotaro.png | 选择鉴宝师顺位匹配（全屏多尺度） | 0.72 |
+| —（鉴宝师模板） | appraiser_p1_caroline.png / appraiser_p2_shotaro.png | 选择鉴宝师顺位匹配（全屏多尺度，JSON 可逐项覆盖） | 0.80¹ |
 
 > 注：`hall_session_cards` 曾名 `hall_start_match_btn`；`hall_peak_appraise_card` 曾名 `hall_participation_card`（v0.13.0-dev.3/4 语义化改名）。已删除 `round_label_*.png`（回合小字改 OCR）。
+>
+> ¹ `appraisers.threshold` 已在 `treasure_rois.json` 校准为 0.80（代码回退默认 `_APPRAISER_MATCH_THRESHOLD=0.72`，调试台「偏好鉴宝师」分类可逐项覆盖）。
 
 ---
 
@@ -214,7 +228,8 @@
 |------|------|
 | 准星意图模式 | 当前全部逻辑只算「程序想点击的位置」，经 `_decide_action → _resolve_action_target → _treasure_kwargs → debug.save_frame` 渲染 PEEP 准星，**不执行真实点击**（已删除 `_click_norm`） |
 | 模板 ROI 分类语义 | `treasure_rois.json` 分三段：**stage = 模板匹配做阶段/状态判定**（如 `session_start_match_btn` 判详情卡出现、`is_matching_btn` 判匹配中）；**actions = 纯 rect 中心点击按钮**（准星直接用中心，不挂模板，如 `session_master_badge`/`session_expert_badge`/`session_intern_badge`/`session_start_match_btn`/`confirm_red_btn`）；**ocr = RapidOCR 识别区**。按钮位置固定就别放 stage 段挂模板 |
-| 鉴宝师/场次多尺度匹配 | 0.70~1.30× 共 13 档（步长 0.05），缩小时 `INTER_AREA`/放大 `INTER_CUBIC`；中心/右边界用**缩放后模板尺寸**计算（不是原始尺寸）；阈值 0.72 |
+| 鉴宝师/场次多尺度匹配 | 0.70~1.30× 共 13 档（步长 0.05），缩小时 `INTER_AREA`/放大 `INTER_CUBIC`；中心/右边界用**缩放后模板尺寸**计算（不是原始尺寸）；鉴宝师代码默认 0.72，JSON 逐项覆盖为 0.80；对勾默认 0.62 |
+| 阶段感知动态激活 | 非标准窗口（DPI 缩放）下画面模糊 → 单点匹配分不稳定（如 smart_bid_btn 多尺度仅 0.686，达不到 `_SESSION_MATCH_THRESHOLD` 0.90 → 面板判未开 → 不点智能出价）。`treasure_module._STAGE_PERCEPTION` 按阶段只激活「当前画面必然出现/相关」的 stage ROI，`detect(active_rois)` 只扫交集；全局锚点 `_GLOBAL_ANCHORS`（`hall_peak_appraise_card` 掉回大厅兜底）始终全量并入。阶段未登记 → 回退全量（安全兜底）。OCR 同理按 `_STAGE_OCR_KEYS` 裁剪 worker 第二段 keys。**新阶段必须登记感知清单**（含转移信号，如出价阶段必须含 settle_title/result_banner），否则只跑锚点 → 永不切换。smart_bid_btn 阈值已解耦：读 JSON `stage.smart_bid_btn.threshold`，缺省回退 `_SMART_BID_MATCH_THRESHOLD=0.72`（不可复用 0.90） |
 | 「已选中」对勾判定 | `stage.appraiser_selected_check` 是横向长条 rect（覆盖三卡右上角对勾高度带），扫描黄色√；判定对勾中心 X ≈ 目标卡片命中框右边界（容差 0.09） |
 | 鉴宝师搜索区 | `_APPRAISER_SEARCH_ROI=(0.03,0.18,0.97,0.92)` 全屏范围（三卡位置/尺寸不固定），顺位 P1 卡洛琳→P2 章太郎，均未命中→准星指屏幕中心 |
 | 回合出价状态机 | `_run_bidding_choice`：S0 转场期/S1 等待/S2 点主出价按钮/S3 面板内智能出价→确认出价；「等待/出价」用 OCR 文字判（`ocr.bid_main_btn_label`），面板是否打开用 `stage.smart_bid_btn` 模板判；等待状态 `key=None` → `_resolve_action_target` 返回 None 不出准星 |
