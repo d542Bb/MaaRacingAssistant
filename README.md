@@ -173,6 +173,28 @@
 
 ## 快速开始
 
+分两类入口，按你的目的二选一即可：
+
+- **只想直接使用**（不写代码）→ 跳到下方「下载即用包」一节
+- **要改代码 / 参与开发** → 继续往下，走「从源码构建」四步
+
+> 当前处于**开发阶段**：GitHub [Releases](https://github.com/d542Bb/MaaRacingAssistant/releases) 上已提供 pre-release 打包，正式 v1.0.0 尚未发布。
+
+### 下载即用包（普通用户，无需编译）
+
+已打包好解压即用的 Windows 包，无需安装 Python、无需编译，开箱即用。
+
+1. 到 GitHub [Releases](https://github.com/d542Bb/MaaRacingAssistant/releases) 下载最新 **`MaaRacingAssistant-<版本>-win-x64.zip`**。
+2. 用资源管理器把它**解压到任意本地目录**，会自动得到一个 `MaaRacingAssistant-<版本>-win-x64` 文件夹。
+3. 打开该文件夹，**双击 `mra_shell.exe`** 启动（已自带 Python 运行时与全部依赖，exe manifest 会自动弹出 UAC 提权）。
+4. 若使用**极速狂飙**模块，需先安装 [ViGEmBus 虚拟手柄驱动](https://github.com/nefarius/ViGEmBus/releases)；其余模块不需要。
+
+> 成功标志：GUI 窗口出现，左上角版本号显示当前 `v*`，且「巅峰鉴宝」模块与 12 阶段列表正常加载（后端已连接）。
+
+---
+
+以下是**从源码构建**方式（面向开发者 / 贡献者）。
+
 从零到跑通，按下面四步走；每步都有明确的「成功标志」与「失败自查」入口。完整清单见 [docs/SELF_CHECK.md](docs/SELF_CHECK.md)。
 
 ### 0. 准备
@@ -218,7 +240,7 @@ pip install -r requirements.txt
 dotnet build apps\mra_shell\mra_shell.csproj -c Debug
 ```
 
-编译成功后，双击根目录 **`MaaRacingAssistant.lnk`** 启动 GUI（exe manifest `requireAdministrator` 会自动弹出 UAC 提权）。
+编译成功后，运行编译产物 **`apps\mra_shell\bin\x64\Debug\net8.0-windows10.0.19041.0\win-x64\mra_shell.exe`** 启动 GUI（exe manifest `requireAdministrator` 会自动弹出 UAC 提权）。
 
 > 成功标志：GUI 窗口出现，左上角版本号显示当前 `v*`，且「巅峰鉴宝」模块与 12 阶段列表正常加载（后端已连接）。
 

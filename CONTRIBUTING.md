@@ -43,7 +43,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-- 启动 GUI：双击根目录 `MaaRacingAssistant.lnk`（exe 自身 manifest 自动 UAC 提权）
+- 启动 GUI：运行编译产物 `apps\mra_shell\bin\x64\Debug\net8.0-windows10.0.19041.0\win-x64\mra_shell.exe`（exe 自身 manifest 自动 UAC 提权）
 - 独立调试 sidecar（不经 GUI）：`python -m maaracing_assistant`
 - 调试工具位于 `tools/`（训练 / 分析 / 调试分类）
 

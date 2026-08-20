@@ -18,6 +18,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# CI（test.yml / release.yml）不直接采用本 extra：安装 [test] 会连带安装主依赖，
+# 其中 onnxruntime-directml / windows-capture 仅 Windows 有 wheel，Linux runner 装不上，
+# 故 CI 只 `pip install pytest`。此处 extra 保留，便于本地 `pip install -e .[test]`。
 test = [
     "pytest>=7.0",
 ]
