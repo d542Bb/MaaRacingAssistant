@@ -4,6 +4,11 @@
 
 ## 2026-08-20
 
+### v0.16.0-dev.2 鉴宝结算弹窗回退修复（感知锚点补齐）🐛
+- **版本号：** `v0.16.0-dev.2`（预发布；基于 v0.16.0-dev.1 顺延）
+- **根因：** v0.16.0-dev.1 引入 active_rois 阶段感知裁剪后，`_GLOBAL_ANCHORS` 只含游戏大厅锚点 `hall_peak_appraise_card`，缺「鉴宝大厅(选择场次)」识别 ROI `hall_session_cards`。结算弹窗点关闭后画面已回鉴宝大厅，但检测器只扫弹窗 ROI + 游戏大厅卡片，永远看不到 `hall_session_cards` → 阶段冻结在「结算弹窗」，无法触发 `_accept_stage` 的弹窗链回退（`POPUP_LOOPBACK_STABLE_FRAMES` 连续帧确认）。
+- **修复：** `treasure_module.py` 把 `hall_session_cards` 并入 `_GLOBAL_ANCHORS`，任何阶段（尤其结算弹窗）都能识别回退落点的鉴宝大厅页，循环恢复正常。
+
 ### v0.16.0-dev.1 鉴宝报价双通道修复 + debug 落盘异步化 🚀
 - **版本号：** `v0.16.0-dev.1`（预发布；基于 v0.15.0-dev.8 新开 minor 系列）
 - **P4 双通道覆盖 bug 修复：** 结果槽拆双槽（关键通道 H+P4 / 全量通道其余），worker 第二段剔除 H/P4 不再同帧重复识别+覆盖关键结果；主线程每帧合并双槽消费 → P4 独立识别、时效最低
