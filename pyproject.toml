@@ -36,5 +36,5 @@ testpaths = ["tests"]
 addopts = "-ra"
 python_files = ["test_*.py", "*_test.py"]
 
-[tool.setuptools-scm]
+[tool.setuptools_scm]
 write_to = "maaracing_assistant/_version.py"
