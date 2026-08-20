@@ -8,8 +8,8 @@
 - **版本号：** `v0.15.0-dev.8`（预发布；0.x 系列 tag 全部为 pre-release，基于 v0.15.0-dev.7）
 - **③ README 演示视频原生播放（GitHub user-attachments）：** GitHub README 渲染器会剥离普通仓库文件路径的 `<video>` 标签（实测确认），必须用 GitHub 官方 user-attachments 机制——经 issue 上传 ≤10MB MP4 获得稳定 URL，`<video src="https://github.com/user-attachments/assets/9bf47361-2773-447c-9900-bdf70d4b2af0">` 内联播放（带控件）。已通过 issue #1（演示素材托管）上传压缩版（5.77MB）落地
 - **④ 爱发电徽章修复：** 原 `api.swo.moe/stats/afdian/MaaRacingAssistant` 返回 `count:"**"`（第三方服务获取不到真实粉丝数），改为静态 shields.io 徽章「爱发电 赞助」链接到主页，已验证返回正常 SVG
-- **① sdist/wheel 版本号回退 0.0.0（历史 bug）：** `release.yml` 的 `python -m build` 在**隔离 venv** 构建时，setuptools-scm git 探测失败且 `SETUPTOOLS_SCM_PRETEND_VERSION` 实测未生效 → sdist/wheel 版本号回退 `0.0.0`（自 v0.13.0 起一直存在，win-x64.zip 不受影响，故未暴露）
-  - **修复：** 构建分发包改用 `python -m build --no-isolation` 在当前环境构建，setuptools-scm 直接读 git tag（「验证包构建」步骤已证明可行）；`SETUPTOOLS_SCM_PRETEND_VERSION` 保留作兜底
+- **① sdist/wheel 版本号回退 0.0.0（历史 bug，根因在 pyproject）：** `pyproject.toml` 的 `[tool.setuptools-scm]` 用了**连字符**，但 setuptools-scm v10（vcs-versioning）解析器用下划线 `[tool.setuptools_scm]` **精确匹配** tool 段 → 段识别失败（`section_present=False`）→ 版本推断被静默跳过 → sdist/wheel 版本号回退 `0.0.0`（自 v0.13.0 起一直存在；win-x64.zip 的 `_version.py` 由 assemble.ps1 直接生成，不受影响，故未暴露）
+  - **修复：** ① `[tool.setuptools-scm]` 改 `[tool.setuptools_scm]`（根因）② 构建分发包改 `python -m build --no-isolation` 让 setuptools-scm 直读 git tag（在 tag 提交点 distance=0，验证通过），`SETUPTOOLS_SCM_PRETEND_VERSION` 保留兜底 ③ 安装依赖补 `wheel`
 - **② Release 变更记录为空（公开仓单 tag 场景）：** changelog 逻辑 `head -n 2 | tail -n 1` 在**只有一个 tag** 时会误取当前 tag 自身，导致 `git log tag..tag` 空范围 → 变更记录为空
   - **修复：** 用 `grep -v` 排除当前 tag 再取最新一个，为空则回退列出最近 50 条提交
 - **⑤ 应用图标改多尺寸合并 ICO：** `assets/icon.ico` 由单尺寸改为 16/32/48/64/128/256 六尺寸合并（32bpp），窗口/任务栏/高 DPI 各场景均清晰；`ApplicationIcon`（csproj）与 `AppWindow.SetIcon`（运行期）均验证兼容
