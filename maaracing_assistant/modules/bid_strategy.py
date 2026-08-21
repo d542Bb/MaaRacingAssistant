@@ -86,7 +86,9 @@ class RoundSnapshot:
     def is_complete(self) -> bool:
         if not (self.h > 0 and self.our_bid > 0):
             return False
-        return all(b > 0 for b in self.opponent_bids)
+        # 0 = 对手掉线/没出价（视为有效最低价，可参与捡漏/赚蛋）；
+        # 仅 -1 = 未读到才算信息缺失。构建快照时已保证 4 槽全部 locked，不会出现 -1。
+        return all(b >= 0 for b in self.opponent_bids)
 
 
 @dataclass(frozen=True)

@@ -1264,10 +1264,20 @@
   });
 
   // ---------- 运行控制 ----------
-  $('btn-start').onclick = async () => {
-    if (state.is_running) return;
-    const stage = state.stages[state.selected_index];
-    const startFrom = stage && stage !== state.stages[0] ? stage : null;
+  let _startCountdownTimer = null;
+  let _startCountdownSec = 0;
+  const _startBtnOriginHTML = $('btn-start').innerHTML; // 备份原始按钮内容（图标+文字），倒计时结束/取消后还原
+
+  function _cancelStartCountdown() {
+    if (_startCountdownTimer) {
+      clearInterval(_startCountdownTimer);
+      _startCountdownTimer = null;
+    }
+    _startCountdownSec = 0;
+    $('btn-start').innerHTML = _startBtnOriginHTML;
+  }
+
+  async function _doStart(startFrom) {
     try {
       await mra.call('start', { start_from: startFrom });
     } catch (e) {
@@ -1279,6 +1289,30 @@
       }
       showError('启动失败: ' + e.message);
     }
+  }
+
+  $('btn-start').onclick = () => {
+    if (state.is_running) return;
+    // 倒计时进行中再次点击 = 取消
+    if (_startCountdownTimer) {
+      _cancelStartCountdown();
+      return;
+    }
+    const stage = state.stages[state.selected_index];
+    const startFrom = stage && stage !== state.stages[0] ? stage : null;
+    // 三秒倒计时：给玩家切到游戏窗口/就位的时间；倒计时中再点按钮可取消
+    const btn = $('btn-start');
+    _startCountdownSec = 3;
+    btn.textContent = _startCountdownSec + ' · 再点取消';
+    _startCountdownTimer = setInterval(() => {
+      _startCountdownSec -= 1;
+      if (_startCountdownSec > 0) {
+        btn.textContent = _startCountdownSec + ' · 再点取消';
+      } else {
+        _cancelStartCountdown(); // 恢复按钮原样
+        _doStart(startFrom);     // 倒计时结束才真正启动
+      }
+    }, 1000);
   };
 
   $('btn-stop').onclick = async () => {

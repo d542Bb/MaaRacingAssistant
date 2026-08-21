@@ -24,6 +24,7 @@ import json
 import os
 import sys
 import threading
+from pathlib import Path
 from typing import TextIO, cast
 
 from maaracing_assistant import __version__
@@ -37,6 +38,47 @@ from maaracing_assistant.window_utils import ensure_dpi_aware, has_physical_cont
 # 协议转移用 stderr：_StdoutGuard 把误写 stdout 的第三方 print 转移到这里。
 # sys.__stderr__ 类型上可为 None，但运行期解释器必有该流；cast 后复用同一引用。
 _STDERR = cast(TextIO, sys.__stderr__)
+
+# --------------------------------------------------------------------------
+# 用户偏好持久化（profile）：%APPDATA%/MaaRacingAssistant/profile.json
+# 只写/读本程序自己管理的键；文件里出现未知类/键一律忽略，绝不因此崩溃。
+# --------------------------------------------------------------------------
+_PROFILE_FILENAME = "profile.json"
+# 本程序目前持久化的模块配置键（treasure 模块）——回填时只取这些，其余忽略。
+_MODULE_CONFIG_KEYS = ("max_daily_loops", "target_session", "treasure_risk_cap", "treasure_mode")
+
+
+def _profile_path() -> Path:
+    """profile 文件路径：与数据库同目录（%APPDATA%/MaaRacingAssistant/ 下）。"""
+    return user_data_dir() / _PROFILE_FILENAME
+
+
+def _load_profile() -> dict:
+    """安全读取 profile：文件缺失/损坏/非 dict/IO 异常，一律返回空 dict，不抛异常。"""
+    try:
+        with open(_profile_path(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001 —— 容错：读不了就当作无偏好
+        return {}
+
+
+def _save_profile(partial: dict) -> None:
+    """原子写 profile：仅更新 partial 提供的段，其余段（含未知键）原样保留。
+
+    写失败不抛异常（只记警告），避免干扰主流程。
+    """
+    try:
+        merged = _load_profile()            # 先并合再写，避免覆盖其它写入的数据
+        merged.update(partial)
+        path = _profile_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(merged, f, ensure_ascii=False, indent=2)
+        tmp.replace(path)                   # 原子替换，防半写文件
+    except Exception as exc:  # noqa: BLE001
+        logger.log(f"[sidecar] 偏好落盘失败: {exc!r}", "WARNING")
 
 
 class _StdoutGuard:
@@ -73,6 +115,8 @@ class SidecarService:
             self._stages = []
         self._last_log_count = 0
         self._closed = False
+        # 启动即回填上次会话的用户偏好（模块配置缓存 + 调试开关）。
+        self._restore_profile()
 
     # ---------- 协议输出 ----------
 
@@ -123,6 +167,36 @@ class SidecarService:
                 os._exit(0)  # 响应已发出，立即退出（worker 线程中 sys.exit 无效）
 
     # ---------- 业务方法（返回 (ok, data, error)） ----------
+
+    def _restore_profile(self) -> None:
+        """启动回填上次会话偏好：只取本程序认识的键，未知/非法内容一律忽略。
+
+        - module_config → 并入 _cached_module_config（下次 start 自动注入新实例）；
+        - debug 段 → 直接恢复 controller 的调试/peep 开关状态。
+        """
+        data = _load_profile()
+        if not data:
+            return
+        # 1) 调试开关（容错：仅按 bool 值恢复，其它类型忽略）
+        dbg = data.get("debug")
+        if isinstance(dbg, dict):
+            dm = dbg.get("debug_mode")
+            if isinstance(dm, bool):
+                self._controller.set_debug_mode(dm)
+            peep = dbg.get("peep_enabled")
+            if isinstance(peep, bool):
+                debug = self._controller.debug
+                debug.enable_peep() if peep else debug.disable_peep()
+        # 2) 模块配置（flat dict，含 module_id）→ 只取本程序管理的键，其余未知键忽略
+        mc = data.get("module_config")
+        if isinstance(mc, dict):
+            cache = {k: mc[k] for k in _MODULE_CONFIG_KEYS if k in mc}
+            if cache:
+                mid = mc.get("module_id")
+                if not (isinstance(mid, str) and mid in MODULE_REGISTRY):
+                    mid = self._selected_module
+                cache["module_id"] = mid
+                self._cached_module_config = cache
 
     def get_initial_state(self, params):
         return (True, {
@@ -248,6 +322,8 @@ class SidecarService:
             return (False, None, f"写模块配置失败: {exc!r}")
         # 返回最新读值（缓存 + 若实例还能回读也可回读；简化就直接回缓存+配置合并视图）
         merged = dict(getattr(self, "_cached_module_config", None) or {"module_id": module_id})
+        # 写盘持久化（含 module_id），下次启动由 _restore_profile 回填；失败仅记警告。
+        _save_profile({"module_config": dict(self._cached_module_config)})
         return (True, merged, None)
 
     def start(self, params):
@@ -433,6 +509,10 @@ class SidecarService:
     def set_debug_mode(self, params):
         enabled = bool(params.get("enabled", False))
         self._controller.set_debug_mode(enabled)
+        cur = _load_profile().get("debug")
+        cur = cur if isinstance(cur, dict) else {}
+        cur["debug_mode"] = bool(enabled)
+        _save_profile({"debug": cur})
         logger.log(f"调试截图模式: {'开启' if enabled else '关闭'}")
         return (True, {"debug_mode": enabled}, None)
 
@@ -442,6 +522,10 @@ class SidecarService:
             self._controller.debug.enable_peep()
         else:
             self._controller.debug.disable_peep()
+        cur = _load_profile().get("debug")
+        cur = cur if isinstance(cur, dict) else {}
+        cur["peep_enabled"] = bool(enabled)
+        _save_profile({"debug": cur})
         logger.log(f"PEEP 实时预览: {'开启' if enabled else '关闭'}")
         return (True, {"peep_enabled": enabled}, None)
 
