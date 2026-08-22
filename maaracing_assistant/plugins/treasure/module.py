@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
 import threading
 import time
 from datetime import datetime, timedelta
@@ -31,6 +30,7 @@ import cv2
 import numpy as np
 
 from maaracing_assistant.core.base import ActivityContext, ActivityModule
+from maaracing_assistant.plugins.treasure.store import TreasureStore
 from maaracing_assistant.plugins.treasure.strategy import (
     BALANCE_UNKNOWN,
     BidContext,
@@ -614,6 +614,8 @@ class TreasureModule(ActivityModule):
         else:
             self.ctx = None
         self._current_stage: str | None = None
+        # 落盘子域（DB 连接管理 + 场次/汇总写入 + 会话总结）
+        self._store = TreasureStore(self)
 
         # --------- 观察状态（全部初始为 None/空，OCR 模块逐步填充）---------
         self._round_no: int | None = None            # 1~5 或 None(未进入回合)
@@ -974,7 +976,7 @@ class TreasureModule(ActivityModule):
         # 2.53 结构化落盘：%APPDATA%/MaaRacingAssistant/treasure/treasure.db
         # （games 明细 + daily_summary 汇总，SQLite 标准库零依赖；用户数据目录与安装目录解耦，更新不丢数据）
         self._data_dir = user_data_dir() / "treasure"
-        self._ensure_db()
+        self._store.ensure_db()
 
         # 2.55 加载动作按钮（准星模式用）：JSON rect → 归一化中心点
         self._action_centers = _load_action_centers(self.ctx.proj)
@@ -1086,8 +1088,8 @@ class TreasureModule(ActivityModule):
         finally:
             self._stop_io_worker()     # 先停 IO 落盘 worker（排空队列，保证最后几帧落盘）
             self._stop_ocr_worker()
-            self._close_db()  # 提交未完成事务并关闭落盘连接
-            self._log_session_summary()
+            self._store.close_db()  # 提交未完成事务并关闭落盘连接
+            self._store.log_session_summary()
 
     def stop(self) -> None:
         assert self.ctx is not None  # 仅运行态调用
@@ -1219,7 +1221,7 @@ class TreasureModule(ActivityModule):
                 )
                 # 先落盘再清空：本场结算/彩蛋/积分字段此刻仍完整（防丢数据）。
                 if finished_a_game:
-                    self._flush_game_record()
+                    self._store.flush_game_record()
                 self._reset_round_state(reason=f"进入{stage_name}")
                 self._settle_my_income = None
                 self._settle_final_price = None
@@ -4137,195 +4139,4 @@ class TreasureModule(ActivityModule):
         self._last_stage_logged = new_stage
         logger.log(f"[鉴宝] 进入阶段: {new_stage} [{reason}]", "INFO")
 
-    # ---------- 结构化落盘（data/treasure/treasure.db，凌晨 5 点日界，与 _refresh_daily_bucket 一致）----------
-    def _current_bucket_str(self, now: datetime | None = None) -> str:
-        """凌晨 5 点为界的日期桶：05:00 ~ 次日 04:59 属同一天。"""
-        now = now or datetime.now()
-        day = now.date() if now.hour >= 5 else now.date() - timedelta(days=1)
-        return day.isoformat()
 
-    def _ensure_db(self) -> None:
-        """打开落盘库并建表（幂等）。start 时调用；失败仅告警（记录功能不阻断自动化）。"""
-        if self._db_conn is not None:
-            return
-        try:
-            if self._data_dir is None:
-                return
-            self._data_dir.mkdir(parents=True, exist_ok=True)
-            self._db_conn = sqlite3.connect(str(self._data_dir / "treasure.db"))
-            self._db_conn.execute("PRAGMA journal_mode=WAL")
-            self._db_conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS games (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ts TEXT NOT NULL,
-                    bucket TEXT NOT NULL,
-                    game_seq INTEGER NOT NULL,
-                    auction_result TEXT,
-                    settle_final_price INTEGER,
-                    settle_total_price INTEGER,
-                    settle_profit INTEGER,
-                    settle_my_income INTEGER,
-                    daily_high_score INTEGER,
-                    egg_red INTEGER NOT NULL DEFAULT 0,
-                    egg_yellow INTEGER NOT NULL DEFAULT 0,
-                    egg_blue INTEGER NOT NULL DEFAULT 0,
-                    h_prices TEXT NOT NULL DEFAULT '[]',
-                    our_bids TEXT NOT NULL DEFAULT '[]',
-                    player_bids TEXT NOT NULL DEFAULT '{}',
-                    my_rank INTEGER,
-                    balance INTEGER,
-                    strategy_mode TEXT
-                );
-                CREATE INDEX IF NOT EXISTS idx_games_bucket ON games(bucket);
-                CREATE TABLE IF NOT EXISTS daily_summary (
-                    bucket TEXT PRIMARY KEY,
-                    games INTEGER NOT NULL DEFAULT 0,
-                    win INTEGER NOT NULL DEFAULT 0,
-                    fail INTEGER NOT NULL DEFAULT 0,
-                    profit_sum INTEGER NOT NULL DEFAULT 0,
-                    income_sum INTEGER NOT NULL DEFAULT 0,
-                    highest_score INTEGER NOT NULL DEFAULT 0,
-                    egg_red INTEGER NOT NULL DEFAULT 0,
-                    egg_yellow INTEGER NOT NULL DEFAULT 0,
-                    egg_blue INTEGER NOT NULL DEFAULT 0
-                );
-                """
-            )
-            # 迁移：旧库 games 表可能缺少 strategy_mode 列（CREATE TABLE IF NOT EXISTS 不会改已有表）
-            try:
-                cols = [r[1] for r in self._db_conn.execute("PRAGMA table_info(games)").fetchall()]
-                if "strategy_mode" not in cols:
-                    self._db_conn.execute("ALTER TABLE games ADD COLUMN strategy_mode TEXT")
-            except Exception as e:
-                logger.log(f"[鉴宝落盘] games 表迁移失败（strategy_mode 列缺失）: {e}", "WARNING")
-        except Exception as e:
-            self._db_conn = None
-            logger.log(f"[鉴宝落盘] SQLite 初始化失败（数据不记录，不影响自动化）: {e}", "WARNING")
-
-    def _close_db(self) -> None:
-        """提交未完成事务并关闭落盘连接（模块收尾调用）。"""
-        if self._db_conn is None:
-            return
-        try:
-            self._db_conn.commit()
-            self._db_conn.close()
-        except Exception as e:
-            logger.log(f"[鉴宝落盘] 关闭连接失败: {e}", "WARNING")
-        finally:
-            self._db_conn = None
-
-    def _flush_game_record(self) -> None:
-        """完成一场 → 写入 SQLite：games 明细一行 + daily_summary 当日累计（UPSERT）。
-
-        调用时机：回大厅且确认为「完整走完一场」，且本场字段（结算/彩蛋/积分）尚未清空。
-        失败仅告警不阻断主循环（数据记录不影响自动化决策）。
-        """
-        if self._db_conn is None:
-            return
-        try:
-            self._refresh_daily_bucket()  # 先对齐日界（跨凌晨5点重置计数），再算本场序号
-            bucket = self._current_bucket_str()
-            game_seq = self._session_daily_done_count + 1  # 落盘后 done+1，这里 +1 即本场号
-            ec = self._egg_counts or {}
-            # 本场出价策略模式：profit=赚钱 / egg=赚蛋（以策略实例实际 mode 为准，config 注入可能覆盖默认）
-            strategy_mode = getattr(self._strategy, "mode", None) or self._treasure_mode
-            conn = self._db_conn
-            conn.execute(
-                """INSERT INTO games (ts, bucket, game_seq, auction_result,
-                   settle_final_price, settle_total_price, settle_profit, settle_my_income,
-                   daily_high_score, egg_red, egg_yellow, egg_blue,
-                   h_prices, our_bids, player_bids, my_rank, balance, strategy_mode)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    bucket, game_seq,
-                    self._auction_result,                      # "win" / "fail" / null
-                    self._settle_final_price,                  # 成交价
-                    self._settle_total_price,                  # 系统估值
-                    self._settle_profit,                       # 利润（中标者盈亏，可负）
-                    self._settle_my_income,                    # 本场收入（分红）
-                    self._daily_high_score,                    # 今日最高积分
-                    int(ec.get("red") or 0), int(ec.get("yellow") or 0), int(ec.get("blue") or 0),
-                    json.dumps(self._h_prices, ensure_ascii=False),
-                    json.dumps(self._our_bids, ensure_ascii=False),
-                    json.dumps({k: list(v) for k, v in self._player_bids.items()}, ensure_ascii=False),
-                    self._my_rank, self._my_balance,
-                    strategy_mode,
-                ),
-            )
-            # 当日汇总 UPSERT：读旧行累加
-            row = conn.execute(
-                "SELECT games, win, fail, profit_sum, income_sum, highest_score,"
-                " egg_red, egg_yellow, egg_blue FROM daily_summary WHERE bucket = ?",
-                (bucket,),
-            ).fetchone()
-            g, w, fl, ps, inc, hs, er, ey, eb = row if row else (0, 0, 0, 0, 0, 0, 0, 0, 0)
-            p = int(self._settle_profit) if isinstance(self._settle_profit, (int, float)) else 0
-            inc_ = int(self._settle_my_income) if isinstance(self._settle_my_income, (int, float)) else 0
-            hs_ = int(self._daily_high_score) if isinstance(self._daily_high_score, (int, float)) else 0
-            conn.execute(
-                """INSERT INTO daily_summary (bucket, games, win, fail, profit_sum,
-                   income_sum, highest_score, egg_red, egg_yellow, egg_blue)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(bucket) DO UPDATE SET
-                     games = excluded.games,
-                     win = excluded.win,
-                     fail = excluded.fail,
-                     profit_sum = excluded.profit_sum,
-                     income_sum = excluded.income_sum,
-                     highest_score = MAX(highest_score, excluded.highest_score),
-                     egg_red = excluded.egg_red,
-                     egg_yellow = excluded.egg_yellow,
-                     egg_blue = excluded.egg_blue""",
-                (bucket, g + 1, w + (1 if self._auction_result == "win" else 0),
-                 fl + (1 if self._auction_result == "fail" else 0),
-                 ps + p, inc + inc_, max(hs, hs_),
-                 er + int(ec.get("red") or 0), ey + int(ec.get("yellow") or 0), eb + int(ec.get("blue") or 0)),
-            )
-            conn.commit()
-            logger.log(
-                f"[鉴宝落盘] 已记录第 {game_seq} 场: 策略={strategy_mode} 结果={self._auction_result or '-'} "
-                f"成交={self._settle_final_price or 0:,} 利润={self._settle_profit or 0:,} "
-                f"收入={self._settle_my_income or 0:,} 彩蛋="
-                f"红{int(ec.get('red') or 0)}黄{int(ec.get('yellow') or 0)}蓝{int(ec.get('blue') or 0)}",
-                "INFO",
-            )
-        except Exception as e:
-            try:
-                if self._db_conn is not None:
-                    self._db_conn.rollback()
-            except Exception:
-                pass
-            logger.log(f"[鉴宝落盘] 写入失败: {e}", "WARNING")
-
-    def _log_session_summary(self):
-        """会话总结：逐行输出，首行「鉴宝观察会话总结」被前端识别为区块卡片头（可展开分组）。"""
-        lines: list[str] = ["鉴宝观察会话总结"]
-        lines.append(f"  阶段记录     : {self._current_stage or '-'}（结束时）")
-        if self._round_no is not None:
-            lines.append(f"  结束回合     : {self._round_no}")
-        if self._h_prices:
-            lines.append(f"  系统 H 记录  : {self._h_prices}")
-        if self._our_bids:
-            lines.append(f"  我方出价记录 : {self._our_bids}")
-        if self._h_prices and max(self._h_prices) > 0:
-            H_max = max(x for x in self._h_prices if x > 0)
-            lines.append(f"  H_max        : {H_max:,}  → 估值区间 ≈ {int(H_max*1.33):,} ~ {int(H_max*1.44):,}")
-        if self._settle_my_income is not None or self._settle_profit is not None:
-            lines.append(
-                f"  本场结算     : 收入 {self._settle_my_income or 0:,} / 利润 {self._settle_profit or 0:,}"
-                f"（成交价 {self._settle_final_price or 0:,} / 估值 {self._settle_total_price or 0:,}）"
-            )
-        if self._egg_counts is not None:
-            lines.append(
-                f"  彩蛋数量     : 红{self._egg_counts.get('red', 0)} "
-                f"黄{self._egg_counts.get('yellow', 0)} 蓝{self._egg_counts.get('blue', 0)}"
-            )
-        if self._daily_high_score is not None:
-            lines.append(f"  今日最高积分 : {self._daily_high_score:,}")
-        if self._session_dir:
-            lines.append(f"  保存帧数     : {self._saved_frames} (raw 全量) / {self._debug_saved} (debug 图)")
-            lines.append(f"  调试目录     : {self._session_dir}")
-        for _ln in lines:
-            logger.log(_ln, "INFO")
