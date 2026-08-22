@@ -1,8 +1,8 @@
-﻿# Release package assembly for MRA Windows.
+# Release package assembly for MRA Windows.
 # Output: <OutRoot>/MaaRacingAssistant-<Version>-win-x64.zip + .sha256
 # Structure reproduces the validated local package:
 #   <name>/{ mra_shell.exe + WinUI/.NET dlls, pyproject.toml,
-#          maaracing_assistant/, assets/, config/, apps/mra_shell/frontend/,
+#          maaracing_assistant/, assets/ (含 config/), apps/mra_shell/frontend/,
 #          runtime/python/{python.exe, python311._pth, packages/, vcruntime140*.dll} }
 # Usage: powershell -File assemble.ps1 -Version 1.0.0
 #   -HostPython       host interpreter, MUST be 3.11 (cp311) to match embedded
@@ -123,7 +123,7 @@ Get-ChildItem $publishDir -Recurse -File | ForEach-Object {
 foreach ($rel in @(
     'pyproject.toml', 'LICENSE', 'THIRD_PARTY_LICENSES.md',
     'assets\model', 'assets\resource', 'assets\icon.ico',
-    'assets\mra_icon.png', 'config', 'apps\mra_shell\frontend')) {
+    'assets\mra_icon.png', 'assets\config', 'apps\mra_shell\frontend')) {
     $src = Join-Path $RepoRoot $rel
     if (Test-Path $src) {
         $dest = Join-Path $StageRoot $rel

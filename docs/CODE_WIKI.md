@@ -166,11 +166,10 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 │   │   │   └── store_popup_template.jpg      # 商店弹窗
 │   │   └── pipeline/
 │   │       └── tasks.json                    # MAA Pipeline 任务定义（备用）
+│   ├── config/
+│   │   └── maa_option.json                   # MAA 框架配置
 │   ├── icon.ico                              # 应用图标
 │   └── mra_icon.png                          # README 展示图标
-│
-├── config/
-│   └── maa_option.json                       # MAA 框架配置
 │
 ├── apps/
 │   └── mra_shell/                            # 🖥️ 正式 GUI（WinUI 3 shell + WebView2）
