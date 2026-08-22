@@ -244,16 +244,6 @@ class SidecarService:
             "selected_module": selected,
         }, None)
 
-        with self._lock:
-            worker = self._worker
-            selected = self._selected_module
-        return (True, {
-            "is_running": self._controller.module_active,
-            "current_stage": self._controller.current_stage,
-            "worker_active": worker is not None and worker.is_alive(),
-            "selected_module": selected,
-        }, None)
-
     # ---------- 活动模块配置（当前 GUI 用 treasure：每日循环上限；接口为通用 module_config 路由）----------
 
     def _route_module_config(self):
