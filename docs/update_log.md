@@ -2,6 +2,18 @@
 
 > 按时间顺序记录每次重大修改。
 
+## 2026-08-22
+
+### v0.18.0-dev.1 模块化架构分离（core/ + plugins/ 插件体系）🏗️
+- **版本号：** `v0.18.0-dev.1`（预发布；基于 v0.17.0-dev.1 新开 minor 系列）
+- **主程序抽 `core/` 包：** `controller / sidecar / registry / base / capabilities / logger / window_utils / paths / debug / wgcap / yolo_detector / vgamepad_lazy / opencv_utf8_patch / pipeline_logger` 全部迁入 `maaracing_assistant/core/`，`modules/` 包移除
+- **活动插件化：** racing / treasure 下沉 `maaracing_assistant/plugins/<id>/`（各含 `manifest.py` + 模块文件）；`core/registry.py` 自动扫描 `plugins/*/manifest.py` 注册，**删目录即剥离、丢目录即安装**，GUI 列表自动随之变化；sidecar 默认模块改 id 引用（解耦具体插件包）
+- **treasure 拆落盘子域：** 结构化落盘 / DB 连接 / 会话总结迁入 `plugins/treasure/store.py`（`TreasureStore`），`module.py` 减负为「状态机 + 编排」
+- **资源随插件：** 鉴宝模板与 `treasure_rois.json` 迁入 `plugins/treasure/resources/`，模块以 `_RES_DIR` 自引用（不依赖主程序 `assets/`）
+- **根目录收敛：** `.design/` → `docs/design/`；`config/` → `assets/config/`；`maaracing_assistant.sln` → `apps/`；`assemble.ps1` 白名单 / `.gitignore` / `CODE_WIKI` 目录树同步
+- **禁用字节码写入：** 入口 `sys.dont_write_bytecode = True`（含 pytest conftest），运行不再散落 `__pycache__`
+- **README 更新：** 项目结构节改为 `core/ + plugins/` 结构；MaaFramework 徽章版本同步；移除本地演示视频素材（README 改用 GitHub 远程 URL）
+
 ## 2026-08-21
 
 ### v0.17.0-dev.1 鉴宝偏好持久化 + 开始倒计时 + 掉线捡漏 🚀
