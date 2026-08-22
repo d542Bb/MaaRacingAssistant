@@ -17,19 +17,19 @@ import numpy as np
 from maa.controller import Win32Controller
 from maa.define import MaaWin32ScreencapMethodEnum
 
-from maaracing_assistant.debug import NavigationDebugger
-from maaracing_assistant.vgamepad_lazy import gamepad_available as _vgamepad_available
-from maaracing_assistant.vgamepad_lazy import vg
-from maaracing_assistant.window_utils import (
+from maaracing_assistant.core.debug import NavigationDebugger
+from maaracing_assistant.core.vgamepad_lazy import gamepad_available as _vgamepad_available
+from maaracing_assistant.core.vgamepad_lazy import vg
+from maaracing_assistant.core.window_utils import (
     activate_window,
     count_pressed_keys,
     ensure_dpi_aware,
     find_game_hwnd,
     is_window_on_screen,
 )
-from maaracing_assistant.logger import logger
-from maaracing_assistant.modules.base import ActivityContext, ModuleDependencyError
-from maaracing_assistant.modules.registry import create_module
+from maaracing_assistant.core.logger import logger
+from maaracing_assistant.core.base import ActivityContext, ModuleDependencyError
+from maaracing_assistant.core.registry import create_module
 
 
 class MaaRacingAssistantController:

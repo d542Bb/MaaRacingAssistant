@@ -24,7 +24,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from maaracing_assistant.logger import logger
+from maaracing_assistant.core.logger import logger
 
 
 # 数字提取：千分位格式优先（"1,234,567"），其次纯数字。

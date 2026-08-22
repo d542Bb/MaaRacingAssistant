@@ -27,7 +27,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from maaracing_assistant.logger import logger
+from maaracing_assistant.core.logger import logger
 
 
 MATCH_THRESHOLD = 0.75  # TM_CCOEFF_NORMED

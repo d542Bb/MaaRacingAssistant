@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """活动模块化框架：将导航、对局等活动拆分为可独立注册与编排的模块。"""
 
-from maaracing_assistant.modules.registry import MODULE_REGISTRY
+from maaracing_assistant.core.registry import MODULE_REGISTRY
 from maaracing_assistant.modules.racing_module import RacingModule
 from maaracing_assistant.modules.treasure_module import TreasureModule
 

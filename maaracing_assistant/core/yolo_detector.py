@@ -8,7 +8,7 @@ import numpy as np
 import cv2
 import onnxruntime as ort
 
-from maaracing_assistant.logger import logger
+from maaracing_assistant.core.logger import logger
 
 
 class YOLODetector:

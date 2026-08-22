@@ -30,7 +30,7 @@ from queue import Empty, Full, Queue
 import cv2
 import numpy as np
 
-from maaracing_assistant.modules.base import ActivityContext, ActivityModule
+from maaracing_assistant.core.base import ActivityContext, ActivityModule
 from maaracing_assistant.modules.bid_strategy import (
     BALANCE_UNKNOWN,
     BidContext,
@@ -47,8 +47,8 @@ from maaracing_assistant.modules.treasure_detector import TreasureStageDetector
 from maaracing_assistant.modules.treasure_eggs import EggRewardRecognizer
 from maaracing_assistant.modules.treasure_ocr import TreasureOcr
 from maaracing_assistant.modules.treasure_renderer import TreasureDebugRenderer
-from maaracing_assistant.paths import user_data_dir
-from maaracing_assistant.window_utils import (
+from maaracing_assistant.core.paths import user_data_dir
+from maaracing_assistant.core.window_utils import (
     check_game_window_aspect,
     is_foreground,
     norm_to_screen,
@@ -57,7 +57,7 @@ from maaracing_assistant.window_utils import (
     verify_frame_client,
     window_client_size,
 )
-from maaracing_assistant.logger import logger
+from maaracing_assistant.core.logger import logger
 
 
 def _load_action_centers(proj: Path) -> dict[str, tuple[float, float]]:
@@ -2949,7 +2949,7 @@ class TreasureModule(ActivityModule):
             # rendered webp 存盘
             renderer = self.ctx.debug_renderer.current() if self.ctx else None
             if renderer is not None:
-                from maaracing_assistant.debug import DebugState
+                from maaracing_assistant.core.debug import DebugState
                 state = DebugState(label=label, **kwargs)
                 full_img = renderer.render_full(img_bgr.copy(), state)
             else:
@@ -2968,7 +2968,7 @@ class TreasureModule(ActivityModule):
             # 仅 PEEP 预览：渲染精简视图并更新 _latest_frame（与 get_peep_jpeg 同锁保护）
             renderer = self.ctx.debug_renderer.current() if self.ctx else None
             if renderer is not None:
-                from maaracing_assistant.debug import DebugState
+                from maaracing_assistant.core.debug import DebugState
                 state = DebugState(label=label, **kwargs)
                 peep_img = renderer.render_peep(img_bgr, state)
                 with self.ctx.debug._frame_lock:

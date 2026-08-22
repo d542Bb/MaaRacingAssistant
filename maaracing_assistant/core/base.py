@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING, TypeVar
 if TYPE_CHECKING:
     from contextlib import AbstractContextManager
     # 仅类型检查用；运行时注解为字符串不求值（from __future__ import annotations）
-    from maaracing_assistant.controller import MaaRacingAssistantController as AppController
-    from maaracing_assistant.debug import NavigationDebugger
-    from maaracing_assistant.modules.capabilities import (
+    from maaracing_assistant.core.controller import MaaRacingAssistantController as AppController
+    from maaracing_assistant.core.debug import NavigationDebugger
+    from maaracing_assistant.core.capabilities import (
         CaptureCapability,
         DebugRendererCapability,
         GamepadCapability,
@@ -68,7 +68,7 @@ class ActivityContext:
     def capture(self) -> "CaptureCapability | None":
         """截图能力（可选）"""
         if self._capture is None:
-            from maaracing_assistant.modules.capabilities import CaptureAdapter
+            from maaracing_assistant.core.capabilities import CaptureAdapter
             self._capture = CaptureAdapter(self.app)
         return self._capture
 
@@ -76,7 +76,7 @@ class ActivityContext:
     def gamepad(self) -> "GamepadCapability | None":
         """虚拟手柄能力（可选）"""
         if self._gamepad is None:
-            from maaracing_assistant.modules.capabilities import GamepadAdapter
+            from maaracing_assistant.core.capabilities import GamepadAdapter
             self._gamepad = GamepadAdapter(self.app)
         return self._gamepad
 
@@ -84,14 +84,14 @@ class ActivityContext:
     def lifecycle(self) -> "Lifecycle":
         """固有能力：生命周期（所有 Context 保证存在）"""
         if self._lifecycle is None:
-            from maaracing_assistant.modules.capabilities import LifecycleAdapter
+            from maaracing_assistant.core.capabilities import LifecycleAdapter
             self._lifecycle = LifecycleAdapter(self.app)
         return self._lifecycle
 
     @property
     def debug_renderer(self) -> "DebugRendererCapability":
         """调试渲染器能力（可选）：renderer() 返回租约供 enter_context 接管"""
-        from maaracing_assistant.modules.capabilities import DebugRendererAdapter
+        from maaracing_assistant.core.capabilities import DebugRendererAdapter
         return DebugRendererAdapter(self.app.debug)
 
     @property

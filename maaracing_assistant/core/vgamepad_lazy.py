@@ -28,7 +28,7 @@ class GamepadUnavailableError(RuntimeError):
 class _LazyVg:
     """模块代理：首次访问任意属性时才真正 `import vgamepad`。
 
-    用法：`from maaracing_assistant.vgamepad_lazy import vg`，然后照常 `vg.VX360Gamepad()` /
+    用法：`from maaracing_assistant.core.vgamepad_lazy import vg`，然后照常 `vg.VX360Gamepad()` /
     `vg.XUSB_BUTTON.XUSB_GAMEPAD_A`。后台自动按需导入、失败抛 GamepadUnavailableError。
     """
 

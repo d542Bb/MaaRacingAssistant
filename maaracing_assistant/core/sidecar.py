@@ -17,7 +17,7 @@ MRA Python sidecar —— 唯一业务后端（stdin/stdout JSONL RPC）。
     get_initial_state / select_module / get_status / start / stop / fetch_logs / close / shutdown
     get_debug_state / set_debug_mode / set_peep / set_capture_backend（调试页）
 
-运行：python -u -m maaracing_assistant.sidecar
+运行：python -u -m maaracing_assistant.core.sidecar
 """
 
 import json
@@ -28,12 +28,12 @@ from pathlib import Path
 from typing import TextIO, cast
 
 from maaracing_assistant import __version__
-from maaracing_assistant.controller import MaaRacingAssistantController
-from maaracing_assistant.logger import logger
-from maaracing_assistant.modules.registry import MODULE_REGISTRY, get_module_info
+from maaracing_assistant.core.controller import MaaRacingAssistantController
+from maaracing_assistant.core.logger import logger
+from maaracing_assistant.core.registry import MODULE_REGISTRY, get_module_info
 from maaracing_assistant.modules.treasure_module import TreasureModule
-from maaracing_assistant.paths import user_data_dir
-from maaracing_assistant.window_utils import ensure_dpi_aware, has_physical_controller
+from maaracing_assistant.core.paths import user_data_dir
+from maaracing_assistant.core.window_utils import ensure_dpi_aware, has_physical_controller
 
 # 协议转移用 stderr：_StdoutGuard 把误写 stdout 的第三方 print 转移到这里。
 # sys.__stderr__ 类型上可为 None，但运行期解释器必有该流；cast 后复用同一引用。
@@ -266,7 +266,7 @@ class SidecarService:
         if instance is None:
             # 离线模式：ctx=None → create_module/ActivityModule 基类允许（见 treasure_module __init__）
             try:
-                from maaracing_assistant.modules.registry import create_module as _create
+                from maaracing_assistant.core.registry import create_module as _create
                 instance = _create(module_id, None)
             except Exception as exc:
                 logger.log(f"[sidecar] 离线建模块{module_id!r}读配置失败: {exc}", "DEBUG")

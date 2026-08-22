@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from maaracing_assistant.modules.base import ActivityContext, ActivityModule
+from maaracing_assistant.core.base import ActivityContext, ActivityModule
 
 MODULE_REGISTRY: dict[str, type[ActivityModule]] = {}
 

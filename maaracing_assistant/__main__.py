@@ -4,6 +4,6 @@
 启动 JSONL sidecar（被 mra_shell.exe 托管；独立运行时等待 stdin RPC）。
 """
 
-from maaracing_assistant.sidecar import main
+from maaracing_assistant.core.sidecar import main
 
 main()

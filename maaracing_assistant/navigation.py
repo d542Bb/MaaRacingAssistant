@@ -17,14 +17,14 @@ import cv2
 import numpy as np
 from pathlib import Path
 
-from maaracing_assistant.vgamepad_lazy import vg
+from maaracing_assistant.core.vgamepad_lazy import vg
 
 if TYPE_CHECKING:
     from contextlib import AbstractContextManager
-    from maaracing_assistant.modules.base import ActivityContext
-    from maaracing_assistant.modules.capabilities import Gamepad
+    from maaracing_assistant.core.base import ActivityContext
+    from maaracing_assistant.core.capabilities import Gamepad
 
-from maaracing_assistant.logger import logger
+from maaracing_assistant.core.logger import logger
 
 
 # ==================== 按钮配置 ====================

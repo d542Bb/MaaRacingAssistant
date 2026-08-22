@@ -19,7 +19,7 @@ import threading
 import numpy as np
 from windows_capture import WindowsCapture, Frame, InternalCaptureControl
 
-from maaracing_assistant.logger import logger
+from maaracing_assistant.core.logger import logger
 
 
 class WgcCapture:

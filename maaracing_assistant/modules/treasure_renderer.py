@@ -25,7 +25,7 @@ import numpy as np
 import cv2
 from typing import Any
 
-from maaracing_assistant.debug import _put_text
+from maaracing_assistant.core.debug import _put_text
 
 
 # ---------- 关键 ROI 标定（归一化坐标 0~1，实际像素 = ×W / ×H） ----------

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from maa.toolkit import Toolkit
 
-from maaracing_assistant.logger import logger
+from maaracing_assistant.core.logger import logger
 
 # ---- Win32 常量 ----
 _UD = ctypes.windll.user32

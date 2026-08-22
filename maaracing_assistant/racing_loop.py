@@ -14,10 +14,10 @@ import numpy as np
 from maa.custom_action import CustomAction
 from maa.context import Context
 
-from maaracing_assistant.vgamepad_lazy import vg
-from maaracing_assistant.yolo_detector import YOLODetector
-from maaracing_assistant.logger import logger
-from maaracing_assistant.wgcap import WgcCapture
+from maaracing_assistant.core.vgamepad_lazy import vg
+from maaracing_assistant.core.yolo_detector import YOLODetector
+from maaracing_assistant.core.logger import logger
+from maaracing_assistant.core.wgcap import WgcCapture
 
 
 class RacingLoop(CustomAction):
@@ -1795,7 +1795,7 @@ class RacingLoop(CustomAction):
     def run(self, context: Context, argv: dict) -> bool:  # type: ignore[override]
         """MAA Pipeline CustomAction 入口（保留兼容）"""
         # Context.controller 由 MAA 运行时动态注入，类型检查器不可见
-        from maaracing_assistant.modules.capabilities import PostScreencapCapture
+        from maaracing_assistant.core.capabilities import PostScreencapCapture
         return self._run_impl(PostScreencapCapture(getattr(context, "controller")))
 
     def run_direct(self, capture) -> bool:

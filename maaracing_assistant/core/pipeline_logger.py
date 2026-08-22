@@ -7,7 +7,7 @@ Pipeline 日志监听模块：监听 MAA pipeline 事件并输出日志
 from maa.context import ContextEventSink
 from maa.event_sink import NotificationType
 
-from maaracing_assistant.logger import logger
+from maaracing_assistant.core.logger import logger
 
 
 class PipelineLogger(ContextEventSink):
