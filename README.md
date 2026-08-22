@@ -10,7 +10,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10+-blue?logo=python" alt="Python">
-  <img src="https://img.shields.io/badge/MaaFramework-5.11.1-green" alt="MaaFramework">
+  <img src="https://img.shields.io/badge/MaaFramework-5.12.3-green" alt="MaaFramework">
   <img src="https://img.shields.io/badge/YOLOv8-ONNX-orange" alt="YOLO">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License">
   <img src="https://github.com/d542Bb/MaaRacingAssistant/actions/workflows/test.yml/badge.svg" alt="Test">
@@ -282,24 +282,24 @@ dotnet build apps\mra_shell\mra_shell.csproj -c Debug
 
 ```
 MaaRacingAssistant/
-├── MaaRacingAssistant.lnk        # 本机 GUI 启动快捷方式（.gitignore 排除，指向编译产物）
 ├── pyproject.toml                 # 项目配置（setuptools-scm 版本推导）
 ├── maaracing_assistant/           # 📦 Python 应用包
-│   ├── controller.py              # 总控编排（生命周期 + 能力门面 ActivityContext）
-│   ├── racing_loop.py             # 自动驾驶循环（YOLO + 手柄）
-│   ├── navigation.py              # 光标导航引擎
-│   ├── yolo_detector.py / wgcap.py# YOLO 推理 / WGC 截图
-│   ├── window_utils.py / debug.py # 窗口工具 / 调试可视化
-│   └── modules/                   # 🧩 活动模块（注册表 + 能力接口 + 赛车/鉴宝）
-│       ├── capabilities.py        #   能力 Protocol + 最薄 adapter
-│       ├── base.py                #   ActivityContext / ActivityModule 基类
-│       ├── registry.py            #   模块注册表
-│       ├── racing_module.py       #   极速狂飙
-│       └── treasure_module.py     #   巅峰鉴宝
-├── apps/mra_shell/                # 🖥️ WinUI 3 图形界面
-├── assets/                        # 模型 / 资源 / 模板
-├── dataset/                       # YOLO 训练数据集
+│   ├── core/                      # 主程序：应用编排 + 共享能力
+│   │   ├── controller.py          # 总控编排（生命周期 + 能力门面 ActivityContext）
+│   │   ├── sidecar.py             # JSONL RPC 业务后端
+│   │   ├── registry.py            # 插件自动扫描注册表
+│   │   ├── capabilities.py        # 能力 Protocol + adapter
+│   │   ├── base.py                # ActivityContext / ActivityModule 基类
+│   │   ├── yolo_detector.py / wgcap.py / window_utils.py / debug.py
+│   │   └── logger.py / paths.py / ...
+│   └── plugins/                   # 🧩 活动插件（一活动 = 一自包含目录）
+│       ├── racing/                # 极速狂飙（module/loop/navigation/renderer）
+│       └── treasure/              # 巅峰鉴宝（module/detector/ocr/strategy/eggs/renderer/store）
+├── apps/mra_shell/                # 🖥️ WinUI 3 图形界面（含 .sln）
+├── assets/                        # 模型 / 资源 / 模板 / 配置
 ├── tools/                         # 辅助开发工具（训练/分析/调试）
+├── tests/                         # 单元测试
+├── scripts/                       # 发布打包脚本
 └── docs/                          # 架构 / Wiki / 更新日志
 ```
 
