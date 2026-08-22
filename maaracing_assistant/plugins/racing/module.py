@@ -11,9 +11,9 @@ from maa.tasker import Tasker
 from maa.resource import Resource
 
 from maaracing_assistant.core.base import ActivityContext, ActivityModule
-from maaracing_assistant.modules.racing_renderer import RacingDebugRenderer
-from maaracing_assistant.navigation import ButtonDef, Navigation
-from maaracing_assistant.racing_loop import RacingLoop
+from maaracing_assistant.plugins.racing.renderer import RacingDebugRenderer
+from maaracing_assistant.plugins.racing.navigation import ButtonDef, Navigation
+from maaracing_assistant.plugins.racing.loop import RacingLoop
 from maaracing_assistant.core.pipeline_logger import PipelineLogger
 from maaracing_assistant.core.logger import logger
 
