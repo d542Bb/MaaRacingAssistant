@@ -370,7 +370,7 @@ def _get_ocr_instance():
             sys_path = str(PROJ)
             if sys_path not in _sys.path:
                 _sys.path.insert(0, sys_path)
-            from maaracing_assistant.modules.treasure_ocr import TreasureOcr
+            from maaracing_assistant.plugins.treasure.ocr import TreasureOcr
             _ocr_instance = TreasureOcr(PROJ)
         except Exception as e:  # noqa: BLE001
             _ocr_instance = None
@@ -779,7 +779,7 @@ class Handler(BaseHTTPRequestHandler):
                 sys_path = str(PROJ)
                 if sys_path not in _sys.path:
                     _sys.path.insert(0, sys_path)
-                from maaracing_assistant.modules.treasure_eggs import EggRewardRecognizer
+                from maaracing_assistant.plugins.treasure.eggs import EggRewardRecognizer
                 rec = EggRewardRecognizer(PROJ, ocr=_get_ocr_instance())
             except Exception as e:
                 self._send_json({"error": f"彩蛋识别器不可用: {e}"})

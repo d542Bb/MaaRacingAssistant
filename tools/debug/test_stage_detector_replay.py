@@ -18,7 +18,7 @@ import numpy as np
 PROJ = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJ))
 
-from maaracing_assistant.modules.treasure_detector import TreasureStageDetector  # noqa: E402
+from maaracing_assistant.plugins.treasure.detector import TreasureStageDetector  # noqa: E402
 
 
 USER_ANNOTATION = [

@@ -31,7 +31,7 @@ import cv2
 import numpy as np
 
 from maaracing_assistant.core.base import ActivityContext, ActivityModule
-from maaracing_assistant.modules.bid_strategy import (
+from maaracing_assistant.plugins.treasure.strategy import (
     BALANCE_UNKNOWN,
     BidContext,
     BidDecision,
@@ -43,10 +43,10 @@ from maaracing_assistant.modules.bid_strategy import (
     STRATEGY_LABEL,
     VAL_COEF,
 )
-from maaracing_assistant.modules.treasure_detector import TreasureStageDetector
-from maaracing_assistant.modules.treasure_eggs import EggRewardRecognizer
-from maaracing_assistant.modules.treasure_ocr import TreasureOcr
-from maaracing_assistant.modules.treasure_renderer import TreasureDebugRenderer
+from maaracing_assistant.plugins.treasure.detector import TreasureStageDetector
+from maaracing_assistant.plugins.treasure.eggs import EggRewardRecognizer
+from maaracing_assistant.plugins.treasure.ocr import TreasureOcr
+from maaracing_assistant.plugins.treasure.renderer import TreasureDebugRenderer
 from maaracing_assistant.core.paths import user_data_dir
 from maaracing_assistant.core.window_utils import (
     check_game_window_aspect,

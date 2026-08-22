@@ -31,7 +31,6 @@ from maaracing_assistant import __version__
 from maaracing_assistant.core.controller import MaaRacingAssistantController
 from maaracing_assistant.core.logger import logger
 from maaracing_assistant.core.registry import MODULE_REGISTRY, get_module_info
-from maaracing_assistant.modules.treasure_module import TreasureModule
 from maaracing_assistant.core.paths import user_data_dir
 from maaracing_assistant.core.window_utils import ensure_dpi_aware, has_physical_controller
 
@@ -44,6 +43,8 @@ _STDERR = cast(TextIO, sys.__stderr__)
 # 只写/读本程序自己管理的键；文件里出现未知类/键一律忽略，绝不因此崩溃。
 # --------------------------------------------------------------------------
 _PROFILE_FILENAME = "profile.json"
+# 默认选中模块 id（仅作 id 引用，不直接 import 插件包；GUI 进入默认展示鉴宝）
+_DEFAULT_MODULE_ID = "treasure"
 # 本程序目前持久化的模块配置键（treasure 模块）——回填时只取这些，其余忽略。
 _MODULE_CONFIG_KEYS = ("max_daily_loops", "target_session", "treasure_risk_cap", "treasure_mode")
 
@@ -104,9 +105,10 @@ class SidecarService:
         self._controller = MaaRacingAssistantController()
         self._lock = threading.RLock()
         self._worker = None  # 非 None = start slot 已占用（互斥依据，与 bridge.py 一致）
-        # 默认选中鉴宝模块（GUI 进入即默认展示鉴宝；未注册时回退到第一个已注册模块）
+        # 默认选中鉴宝模块（GUI 进入即默认展示鉴宝；未注册时回退到第一个已注册模块）。
+        # 以模块 id 常量引用，避免 sidecar 耦合具体插件包。
         self._selected_module = (
-            TreasureModule.ID if TreasureModule.ID in MODULE_REGISTRY
+            _DEFAULT_MODULE_ID if _DEFAULT_MODULE_ID in MODULE_REGISTRY
             else (next(iter(MODULE_REGISTRY)) if MODULE_REGISTRY else None)
         )
         try:

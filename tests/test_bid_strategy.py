@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from bid_strategy import (
+from strategy import (
     BidContext,
     BidDecision,
     BidStrategy,
@@ -124,12 +124,23 @@ def test_r4_slight_firefight_second():
 # 区间空 → pass
 # ----------------------------------------------------------------------
 def test_r5_snapshot_incomplete_pass():
-    # 快照含 0（我方不在 1~3 槽信息的场景下对手报价缺失）→ is_complete=False → pass
+    # 快照含 -1（信息缺失，未读到报价）→ is_complete=False → pass。
+    # 注意：0 是掉线/没出价的有效报价，不再视为缺失（见 test_r5_disconnected_bidder_second）。
+    dec = BidStrategy().decide(
+        ctx(5, (30000, 35000, 40000),
+            snap(4, 40000, 30000, (-1, 44000, 45000)), 1000000)
+    )
+    assert_decision("R5 快照不完整(-1)→pass", dec, DECISION_PASS, 0)
+
+
+def test_r5_disconnected_bidder_second():
+    # 对手槽读值 0（掉线/没出价）视为有效最低价，快照仍完整可参与捡漏/卡第二：
+    # 对手报价 45000/44000/0 均无人烧钱(45000<51200) → 捡漏失败转卡第二，紧贴 44001
     dec = BidStrategy().decide(
         ctx(5, (30000, 35000, 40000),
             snap(4, 40000, 30000, (0, 44000, 45000)), 1000000)
     )
-    assert_decision("R5 快照不完整→pass", dec, DECISION_PASS, 0)
+    assert_decision("R5 掉线玩家参与→卡第二(紧贴)", dec, DECISION_TARGET_SECOND, 44001)
 
 
 def test_r5_three_high_tight_second():
