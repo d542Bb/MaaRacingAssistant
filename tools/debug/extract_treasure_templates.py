@@ -20,7 +20,7 @@ import numpy as np
 PROJ = Path(__file__).resolve().parent.parent.parent
 SESSION_DIR = PROJ / "debug" / "treasure" / "20260812_141155"
 RAW_DIR = SESSION_DIR / "raw"
-OUT_DIR = PROJ / "assets" / "resource" / "image" / "treasure"
+OUT_DIR = PROJ / "maaracing_assistant" / "plugins" / "treasure" / "resources"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 

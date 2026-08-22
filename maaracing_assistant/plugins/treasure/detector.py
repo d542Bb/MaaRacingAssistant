@@ -29,6 +29,9 @@ import numpy as np
 
 from maaracing_assistant.core.logger import logger
 
+# 模块资源目录（随插件自包含：plugins/treasure/resources/）
+_RES_DIR = Path(__file__).resolve().parent / "resources"
+
 
 MATCH_THRESHOLD = 0.75  # TM_CCOEFF_NORMED
 
@@ -57,7 +60,7 @@ def _load_rois(proj: Path) -> dict:
     """
     global _roi_thresholds
     _roi_thresholds = {}
-    path = proj / "assets" / "resource" / "image" / "treasure" / "treasure_rois.json"
+    path = _RES_DIR / "treasure_rois.json"
     if not path.exists():
         logger.log(f"[鉴宝检测器] 未找到 {path.name}，无法配置任何 ROI，阶段检测将跳过", "WARNING")
         return {}
@@ -139,7 +142,7 @@ _ROUND_RE = re.compile(r"round(\d+)", re.IGNORECASE)
 
 def _load_schema(proj: Path) -> dict:
     """读取完整 v2（或旧）schema；失败返回空 dict。"""
-    path = proj / "assets" / "resource" / "image" / "treasure" / "treasure_rois.json"
+    path = _RES_DIR / "treasure_rois.json"
     if not path.exists():
         return {}
     try:
@@ -155,7 +158,7 @@ def _load_roi_templates(proj: Path) -> dict[str, list[str]]:
 
     不提供硬编码兜底：JSON 未给某 ROI 配模板时如实返回空，由 detect 跳过该 ROI，
     避免用默认模板掩盖配置缺失导致阶段误判。"""
-    path = proj / "assets" / "resource" / "image" / "treasure" / "treasure_rois.json"
+    path = _RES_DIR / "treasure_rois.json"
     data: dict = {}
     if path.exists():
         try:
@@ -178,7 +181,7 @@ class TreasureStageDetector:
     """巅峰鉴宝自动阶段检测器（无状态，局部 ROI 匹配）"""
 
     def __init__(self, proj: Path, ocr=None):
-        self.tpl_dir = proj / "assets" / "resource" / "image" / "treasure"
+        self.tpl_dir = _RES_DIR
         self._tpl_cache: dict[str, np.ndarray | None] = {}
         self.ROI = _load_rois(proj)       # ← 从调试台 JSON 读取 ROI 区域（仅 stage 运行时）
         self.ROI_TPL = _load_roi_templates(proj)  # ← 从调试台 JSON 读取每个 stage ROI 的模板列表

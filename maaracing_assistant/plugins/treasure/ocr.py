@@ -26,6 +26,9 @@ import numpy as np
 
 from maaracing_assistant.core.logger import logger
 
+# 模块资源目录（随插件自包含：plugins/treasure/resources/）
+_RES_DIR = Path(__file__).resolve().parent / "resources"
+
 
 # 数字提取：千分位格式优先（"1,234,567"），其次纯数字。
 # 游戏金额一定会显示千分位逗号，因此逗号格式结果具有更高可信度。
@@ -213,7 +216,7 @@ class TreasureOcr:
     """巅峰鉴宝 OCR 识别器（RapidOCR，懒加载 + 失败降级）"""
 
     def __init__(self, proj: Path):
-        self.rois_file = proj / "assets" / "resource" / "image" / "treasure" / "treasure_rois.json"
+        self.rois_file = _RES_DIR / "treasure_rois.json"
         self._regions: dict[str, tuple[float, float, float, float]] = self._load_regions()
         self._engine = None          # RapidOCR 引擎（懒加载）
         self._engine_failed = False  # 加载失败后不再重试

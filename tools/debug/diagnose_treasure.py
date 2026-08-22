@@ -25,7 +25,7 @@ PROJ = Path(__file__).resolve().parent.parent.parent
 SESSION_DIR = PROJ / "debug" / "treasure" / "20260812_183611"
 RAW_DIR = SESSION_DIR / "raw"
 EVENT_DIR = SESSION_DIR / "event"
-TPL_DIR = PROJ / "assets" / "resource" / "image" / "treasure"
+TPL_DIR = PROJ / "maaracing_assistant" / "plugins" / "treasure" / "resources"
 OUT_DIR = PROJ / "debug" / "_diagnose_treasure"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 

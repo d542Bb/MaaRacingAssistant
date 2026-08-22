@@ -36,7 +36,7 @@ import numpy as np
 # 路径
 # ---------------------------------------------------------------------------
 PROJ = Path(__file__).resolve().parent.parent.parent
-TPL_DIR = PROJ / "assets" / "resource" / "image" / "treasure"
+TPL_DIR = PROJ / "maaracing_assistant" / "plugins" / "treasure" / "resources"
 DEBUG_ROOT = PROJ / "debug" / "treasure"
 ROIS_FILE = TPL_DIR / "treasure_rois.json"
 STATIC_DIR = Path(__file__).resolve().parent / "static"

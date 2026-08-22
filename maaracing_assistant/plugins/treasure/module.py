@@ -59,12 +59,16 @@ from maaracing_assistant.core.window_utils import (
 )
 from maaracing_assistant.core.logger import logger
 
+# 模块资源目录（随插件自包含：plugins/treasure/resources/，不再依赖主程序 assets/）。
+# 定位基准 = 本文件所在目录，与安装/工作目录解耦。
+_RES_DIR = Path(__file__).resolve().parent / "resources"
+
 
 def _load_action_centers(proj: Path) -> dict[str, tuple[float, float]]:
     """读 treasure_rois.json 的动作按钮 rect → 归一化中心点 {key: (cx, cy)}。
     动作按钮分布在 stage（smart_bid_btn）与 actions（bid_confirm_red_btn /
     confirm_red_btn / settle_collect_red_btn）两个分类；缺失/损坏时返回空 dict。"""
-    path = proj / "assets" / "resource" / "image" / "treasure" / "treasure_rois.json"
+    path = _RES_DIR / "treasure_rois.json"
     if not path.exists():
         return {}
     try:
@@ -148,7 +152,7 @@ def _load_appraiser_templates(
 
     返回: [(priority, key, gray_ndarray, rect, threshold), ...]，至少 0 项，不崩溃。
     """
-    tpl_dir = proj / "assets" / "resource" / "image" / "treasure"
+    tpl_dir = _RES_DIR
     defs: list[tuple[int, str, str, tuple[float, float, float, float], float]] = [
         (prio, key, fname, _APPRAISER_SEARCH_ROI, _APPRAISER_MATCH_THRESHOLD)
         for prio, key, fname in _APPRAISER_TEMPLATE_DEFS
@@ -208,7 +212,7 @@ def _load_selected_check(
      文件缺失/损坏/rect 非法返回 None（选中判定自动跳过）。
     """
     _, fname = _SELECTED_CHECK_DEF
-    tpl_dir = proj / "assets" / "resource" / "image" / "treasure"
+    tpl_dir = _RES_DIR
     p = tpl_dir / fname
     if not p.exists():
         return None
@@ -220,7 +224,7 @@ def _load_selected_check(
         return None
     # rect：stage.appraiser_selected_check
     rect: tuple[float, float, float, float] | None = None
-    rois_path = proj / "assets" / "resource" / "image" / "treasure" / "treasure_rois.json"
+    rois_path = _RES_DIR / "treasure_rois.json"
     if rois_path.exists():
         try:
             with open(rois_path, "r", encoding="utf-8") as f:
@@ -246,7 +250,7 @@ def _load_session_panel(
     （判定降级为未匹配 → 始终先点目标场次 badge，再点开始匹配位置）。
     """
     rois: dict[str, tuple[float, float, float, float]] = {}
-    path = proj / "assets" / "resource" / "image" / "treasure" / "treasure_rois.json"
+    path = _RES_DIR / "treasure_rois.json"
     if path.exists():
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -257,7 +261,7 @@ def _load_session_panel(
                     rois[key] = (float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3]))
         except Exception:
             pass
-    tpl_dir = proj / "assets" / "resource" / "image" / "treasure"
+    tpl_dir = _RES_DIR
     out: list[tuple[int, str, np.ndarray, tuple[float, float, float, float]]] = []
     for prio, key, fname in _SESSION_PANEL_DEFS:
         rect = rois.get(key)
@@ -407,7 +411,7 @@ def _load_smart_bid_btn(
     rect 从 treasure_rois.json 的 stage.smart_bid_btn 读取（调试台可调）。
     文件缺失/损坏/rect 非法返回 None（面板已开判定自动降级 → 依赖主按钮 OCR 兜底）。
     """
-    tpl_dir = proj / "assets" / "resource" / "image" / "treasure"
+    tpl_dir = _RES_DIR
     p = tpl_dir / "bid_smart_btn.png"
     if not p.exists():
         return None
@@ -418,7 +422,7 @@ def _load_smart_bid_btn(
     if gray.size == 0 or gray.shape[0] < 4 or gray.shape[1] < 4:
         return None
     rect: tuple[float, float, float, float] | None = None
-    rois_path = proj / "assets" / "resource" / "image" / "treasure" / "treasure_rois.json"
+    rois_path = _RES_DIR / "treasure_rois.json"
     if rois_path.exists():
         try:
             with open(rois_path, "r", encoding="utf-8") as f:

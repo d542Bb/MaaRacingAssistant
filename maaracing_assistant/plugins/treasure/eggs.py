@@ -33,6 +33,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+# 模块资源目录（随插件自包含：plugins/treasure/resources/）
+_RES_DIR = Path(__file__).resolve().parent / "resources"
+
 
 MATCH_THRESHOLD = 0.72  # TM_CCOEFF_NORMED（与鉴宝师匹配同一数量级）
 # 多尺度：覆盖 0.70× ~ 1.30×（步长 0.05），容忍蛋图标渲染尺寸偏差
@@ -130,7 +133,7 @@ class EggRewardRecognizer:
     """
 
     def __init__(self, proj: Path, ocr=None):
-        self.tpl_dir = proj / "assets" / "resource" / "image" / "treasure"
+        self.tpl_dir = _RES_DIR
         self._ocr = ocr
         # (gray_tpl, rect_norm, threshold)
         self._entry: tuple[np.ndarray, tuple[float, float, float, float], float] | None = None
