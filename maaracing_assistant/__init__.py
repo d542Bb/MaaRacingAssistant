@@ -6,6 +6,13 @@ MaaRacingAssistant
 MAA Framework + YOLOv8 ONNX + vgamepad
 """
 
+import sys
+
+# 禁用字节码写入：本项目进程运行不再到处生成 __pycache__（.gitignore 已忽略，
+# 这里从源头停止生成；打包产物 embedded python 跑 sidecar 同样受益）。
+# 注意：__init__.py 自身的 .pyc 会在本行执行前由解释器写出，属正常现象。
+sys.dont_write_bytecode = True
+
 import re
 import subprocess
 from pathlib import Path

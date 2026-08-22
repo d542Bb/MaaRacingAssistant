@@ -11,6 +11,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+# 测试进程不走 maaracing_assistant 包入口，无法继承 __init__.py 的禁用；
+# 此处同样关闭字节码写入，避免 tests/ 与直导目录散落 __pycache__。
+sys.dont_write_bytecode = True
+
 _PROJ = Path(__file__).resolve().parent.parent
 
 # 把 treasure 插件目录加入 sys.path，使 `from strategy import ...` 生效
