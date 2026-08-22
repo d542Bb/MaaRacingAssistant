@@ -118,7 +118,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 └──────────────────────────────────────────────────┘
 ```
 
-> 流程编排已模块化：`modules/racing_module.py`（RacingModule）承载上述流程，`controller.py` 保留主控调度与活动分发，详见 [赛车文档 §2](CODE_WIKI_RACING.md)。
+> 流程编排已模块化：`maaracing_assistant/plugins/racing/module.py`（RacingModule）承载上述流程，`controller.py` 保留主控调度与活动分发，详见 [赛车文档 §2](CODE_WIKI_RACING.md)。
 
 ---
 
@@ -134,29 +134,36 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 ├── maaracing_assistant/                      # 📦 核心应用包
 │   ├── __init__.py                           # 版本号导出（setuptools-scm 自动生成）
 │   ├── __main__.py                           # python -m 入口
-│   ├── controller.py                         # 主控编排器（MAA 集成 + 阶段调度）
-│   ├── navigation.py                         # 光标导航引擎（ButtonDef + 模板匹配 + 摇杆控制）
-│   ├── racing_loop.py                        # 赛车自动驾驶循环（YOLO + 决策 + 手柄）
-│   ├── yolo_detector.py                      # YOLOv8 ONNX 推理封装（DirectML/GPU）
-│   ├── sidecar.py                           # JSONL RPC 业务后端（供 mra_shell.exe 托管）
-│   ├── modules/                             # 活动模块（racing_module / treasure_module）
-│   ├── debug.py                              # 调试可视化（PEEP 实时预览 + 截图标注）
-│   ├── logger.py                             # 文件+内存双写日志系统
-│   ├── pipeline_logger.py                    # MAA Pipeline 事件监听日志
-│   ├── window_utils.py                       # 窗口查找 + XInput 物理手柄检测
-│   └── opencv_utf8_patch.py                  # OpenCV 中文路径 monkey-patch
+│   ├── core/                                 # 主程序（应用层）
+│   │   ├── controller.py                     # 主控编排器（MAA 集成 + 阶段调度）
+│   │   ├── sidecar.py                        # JSONL RPC 业务后端（供 mra_shell.exe 托管）
+│   │   ├── registry.py                       # 插件自动扫描注册表（扫 plugins/*/manifest.py）
+│   │   ├── base.py                           # ActivityContext / ActivityModule 基类
+│   │   ├── capabilities.py                   # typed capability 窄接口 + adapter
+│   │   ├── debug.py / logger.py / pipeline_logger.py / window_utils.py
+│   │   ├── paths.py / opencv_utf8_patch.py / vgamepad_lazy.py / wgcap.py
+│   │   └── yolo_detector.py                  # 跨活动视觉基础设施
+│   └── plugins/                              # 活动插件（一活动 = 一自包含目录）
+│       ├── racing/                           # 极速狂飙
+│       │   ├── manifest.py                   # ID + MODULE_CLASS（registry 扫描用）
+│       │   ├── module.py / loop.py / navigation.py / renderer.py
+│       │   └── resources/                    # 该模块专属模板图
+│       └── treasure/                         # 巅峰鉴宝
+│           ├── manifest.py                   # ID + MODULE_CLASS（registry 扫描用）
+│           ├── module.py / detector.py / ocr.py / strategy.py
+│           ├── eggs.py / renderer.py / store.py
+│           └── resources/                    # treasure_rois.json + 全部鉴宝模板
 │
 ├── assets/                                   # 资源文件
 │   ├── model/
 │   │   └── model.onnx                        # YOLOv8 模型（3类：coin/car/bonus_car）
 │   ├── resource/
-│   │   ├── image/                            # 模板匹配图片
+│   │   ├── image/                            # 模板匹配图片（racing 专属，暂留主程序）
 │   │   │   ├── settings_page_template.jpg    # 设置页面（归位用）
 │   │   │   ├── activity_page_template.jpg    # 活动页面
 │   │   │   ├── find_opponent_template.jpg    # 寻找对手页面
 │   │   │   ├── round1_end_template.jpg       # 回合1结束画面
-│   │   │   ├── store_popup_template.jpg      # 商店弹窗
-│   │   │   └── treasure/                     # 鉴宝模板（详见鉴宝文档 §8）
+│   │   │   └── store_popup_template.jpg      # 商店弹窗
 │   │   └── pipeline/
 │   │       └── tasks.json                    # MAA Pipeline 任务定义（备用）
 │   ├── icon.ico                              # 应用图标
@@ -214,7 +221,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 > - **赛车域**（racing_loop / racing_module / racing_renderer）→ [CODE_WIKI_RACING.md](CODE_WIKI_RACING.md)
 > - **鉴宝域**（treasure_module / treasure_detector / treasure_ocr / treasure_renderer / bid_strategy）→ [CODE_WIKI_TREASURE.md](CODE_WIKI_TREASURE.md)
 
-### 4.1 [controller.py](file:///d:/maaracing_assistant/maaracing_assistant/controller.py) — 主控编排器
+### 4.1 [controller.py](file:///d:/maaracing_assistant/maaracing_assistant/core/controller.py) — 主控编排器
 
 **职责**：
 - MAA Framework 初始化与绑定（Tasker / Resource / Win32Controller）
@@ -241,7 +248,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 ---
 
-### 4.2 [navigation.py](file:///d:/maaracing_assistant/maaracing_assistant/navigation.py) — 光标导航引擎
+### 4.2 [navigation.py](file:///d:/maaracing_assistant/maaracing_assistant/plugins/racing/navigation.py) — 光标导航引擎
 
 **职责**：
 - 多尺度彩色模板匹配（0.5x–1.8x）
@@ -584,58 +591,59 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 ### 6.1 导入关系图
 
 ```
-sidecar.py（JSONL RPC handler）
-  ├── controller.MaaRacingAssistantController
-  ├── logger.logger
-  └── window_utils.has_physical_controller
+core/sidecar.py（JSONL RPC handler）
+  ├── core.controller.MaaRacingAssistantController
+  ├── core.logger.logger
+  └── core.window_utils.has_physical_controller
+  └── core.registry（插件自动扫描注册）
 
 mra_shell（C#，不导入 Python）
   └── PythonSidecar（stdin/stdout JSONL 通信）
-        └── 子进程：python -m maaracing_assistant（sidecar.py）
+        └── 子进程：python -m maaracing_assistant（core/sidecar.py）
 
-controller.py
-  ├── navigation.ButtonDef, Navigation
-  ├── racing_loop.RacingLoop
-  ├── pipeline_logger.PipelineLogger
-  ├── debug.NavigationDebugger
-  ├── window_utils.find_game_hwnd
-  ├── logger.logger
+core/controller.py
+  ├── plugins/racing.navigation.ButtonDef, Navigation
+  ├── plugins/racing.loop.RacingLoop
+  ├── core.pipeline_logger.PipelineLogger
+  ├── core.debug.NavigationDebugger
+  ├── core.window_utils.find_game_hwnd
+  ├── core.logger.logger
   └── maa.* (Tasker, Resource, Win32Controller, ...)
 
-navigation.py
-  └── logger.logger
-  (TYPE_CHECKING: controller.MaaRacingAssistantController)
+plugins/racing/navigation.py
+  └── core.logger.logger
+  (TYPE_CHECKING: core.controller.MaaRacingAssistantController)
 
-racing_loop.py
-  ├── yolo_detector.YOLODetector
-  ├── logger.logger
+plugins/racing/loop.py
+  ├── core.yolo_detector.YOLODetector
+  ├── core.logger.logger
   └── maa.custom_action.CustomAction, maa.context.Context
 
-yolo_detector.py
-  └── logger.logger
+core/yolo_detector.py
+  └── core.logger.logger
 
-debug.py
+core/debug.py
   └── (无内部依赖，纯OpenCV/numpy)
 
-pipeline_logger.py
-  └── logger.logger
+core/pipeline_logger.py
+  └── core.logger.logger
   └── maa.context.ContextEventSink, maa.event_sink.NotificationType
 
-window_utils.py
+core/window_utils.py
   ├── maa.toolkit.Toolkit
-  └── logger.logger
+  └── core.logger.logger
 
-logger.py
+core/logger.py
   └── (无内部依赖)
 
-opencv_utf8_patch.py
+core/opencv_utf8_patch.py
   └── cv2 (monkey-patch)
 ```
 
 ### 6.2 运行时对象持有关系
 
 ```
-sidecar.py（mra_shell 托管）
+core/sidecar.py（mra_shell 托管）
   └── controller: MaaRacingAssistantController
         ├── nav: Navigation (持有 ctrl 反向引用)
         ├── racing_loop: RacingLoop
@@ -978,7 +986,7 @@ python tools/training/train.py  # 训练+自动导出ONNX+复制到assets/model/
 | Python worker 线程退出 | `sys.exit()` 在非主线程只抛 SystemExit 不退出进程，必须 `os._exit(n)` |
 | Dispose 后访问 Process | `_process.Dispose()` 后访问属性抛「No process is associated」；验证进程存活用 `ProcessId` + `Process.GetProcessById(pid)` 捕获 `ArgumentException` |
 
-> 正式 sidecar：[sidecar.py](file:///d:/maaracing_assistant/maaracing_assistant/sidecar.py)（Step 4 完成，已命令行验证）。入口强制 `sys.stdout = _StdoutGuard`（一切误写转 stderr）。**坑**：handler 线程必须非 daemon——stdin EOF 后主线程退出会杀 daemon，导致 shutdown 等响应丢失。
+> 正式 sidecar：[sidecar.py](file:///d:/maaracing_assistant/maaracing_assistant/core/sidecar.py)（Step 4 完成，已命令行验证）。入口强制 `sys.stdout = _StdoutGuard`（一切误写转 stderr）。**坑**：handler 线程必须非 daemon——stdin EOF 后主线程退出会杀 daemon，导致 shutdown 等响应丢失。
 
 ---
 
@@ -988,15 +996,15 @@ python tools/training/train.py  # 训练+自动导出ONNX+复制到assets/model/
 
 | 类名 | 文件 | 核心职责 |
 |------|------|----------|
-| `MaaRacingAssistantController` | controller.py | 主控编排、MAA绑定、阶段调度 |
-| `ButtonDef` | navigation.py | 导航按钮配置数据类 |
-| `Navigation` | navigation.py | 光标识别追踪、模板匹配、摇杆导航 |
-| `RacingLoop` | racing_loop.py → [赛车文档](CODE_WIKI_RACING.md) | 自动驾驶YOLO循环、决策、手柄控制 |
-| `YOLODetector` | racing_loop.py | ONNX推理、per-class NMS |
-| `RacingModule` | modules/racing_module.py → [赛车文档 §2](CODE_WIKI_RACING.md) | 极速狂飙活动流程（导航+比赛） |
-| `TreasureModule` | modules/treasure_module.py → [鉴宝文档 §1](CODE_WIKI_TREASURE.md) | 巅峰鉴宝活动模块（12阶段状态机） |
+| `MaaRacingAssistantController` | core/controller.py | 主控编排、MAA绑定、阶段调度 |
+| `ButtonDef` | plugins/racing/navigation.py | 导航按钮配置数据类 |
+| `Navigation` | plugins/racing/navigation.py | 光标识别追踪、模板匹配、摇杆导航 |
+| `RacingLoop` | plugins/racing/loop.py → [赛车文档](CODE_WIKI_RACING.md) | 自动驾驶YOLO循环、决策、手柄控制 |
+| `YOLODetector` | core/yolo_detector.py | ONNX推理、per-class NMS |
+| `RacingModule` | plugins/racing/module.py → [赛车文档 §2](CODE_WIKI_RACING.md) | 极速狂飙活动流程（导航+比赛） |
+| `TreasureModule` | plugins/treasure/module.py → [鉴宝文档 §1](CODE_WIKI_TREASURE.md) | 巅峰鉴宝活动模块（12阶段状态机） |
 | `MRAGUI` | ~~gui.py~~ → `archive/legacy_gui/` | 旧 ttkbootstrap 图形界面（已归档） |
-| `Sidecar` | sidecar.py | JSONL RPC 业务后端（mra_shell 托管） |
-| `NavigationDebugger` | debug.py | PEEP预览、截图标注存盘 |
-| `Logger` | logger.py | 内存+文件双写日志 |
-| `PipelineLogger` | pipeline_logger.py | MAA Pipeline事件日志 |
+| `Sidecar` | core/sidecar.py | JSONL RPC 业务后端（mra_shell 托管） |
+| `NavigationDebugger` | core/debug.py | PEEP预览、截图标注存盘 |
+| `Logger` | core/logger.py | 内存+文件双写日志 |
+| `PipelineLogger` | core/pipeline_logger.py | MAA Pipeline事件日志 |

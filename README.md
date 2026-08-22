@@ -182,7 +182,7 @@ dotnet build apps\mra_shell\mra_shell.csproj -c Debug
 
 > 成功标志：GUI 窗口出现，左上角版本号显示当前 `v*`，且「巅峰鉴宝」模块与 12 阶段列表正常加载（后端已连接）。
 
-**独立调试 sidecar**（不经 GUI，等待 stdin JSONL RPC）：`python -u -m maaracing_assistant.sidecar`。
+**独立调试 sidecar**（不经 GUI，等待 stdin JSONL RPC）：`python -u -m maaracing_assistant.core.sidecar`。
 
 ---
 

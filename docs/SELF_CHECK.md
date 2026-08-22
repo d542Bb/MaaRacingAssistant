@@ -137,7 +137,7 @@ start apps\mra_shell\bin\x64\Debug\net8.0-windows10.0.19041.0\win-x64\mra_shell.
 ### E3. 独立调试 sidecar（不经 GUI，可选）
 
 ```bash
-.venv\Scripts\python.exe -u -m maaracing_assistant.sidecar
+.venv\Scripts\python.exe -u -m maaracing_assistant.core.sidecar
 ```
 
 预期：进程保持运行等待 stdin。可另开终端发一行 JSONL 测试吞吐：

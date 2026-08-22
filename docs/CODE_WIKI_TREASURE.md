@@ -25,7 +25,7 @@
 
 ## 1. treasure_module 巅峰鉴宝模块
 
-[treasure_module.py](file:///d:/maaracing_assistant/maaracing_assistant/modules/treasure_module.py)（v0.13.0 主战场）
+[treasure_module.py](file:///d:/maaracing_assistant/maaracing_assistant/plugins/treasure/module.py)（v0.13.0 主战场）
 
 **职责**：
 - 活动模块实现（`ActivityModule` 子类，`ID="treasure"`），12 阶段状态机
@@ -33,6 +33,8 @@
 - 鉴宝师选择自动化 / 场次选择自动化（模板匹配 + 静态按钮中心）
 - 异步 OCR worker（latest-only 丢帧 + 关键 ROI 优先通道）
 - 估值算法：全 5 回合系统报价最大值 `sysmax_13`（H=智能出价填入的输入框值，只取每回合第一次）×1.35(求稳)/1.4(激进) = 真实估值区间
+- **落盘子域**：结构化落盘已拆出到同目录 [store.py](file:///d:/maaracing_assistant/maaracing_assistant/plugins/treasure/store.py)（`TreasureStore`：SQLite 场次明细 + 当日汇总 + 会话总结），模块主循环只做编排与委托
+- **资源随插件**：鉴宝模板与 `treasure_rois.json` 位于同目录 `resources/`（`plugins/treasure/resources/`），模块以 `_RES_DIR` 自引用，不依赖主程序 `assets/`
 
 **阶段链路（`STAGE_ORDER`，与 `treasure_detector._ROI_STAGE` 同步）**：
 ```
@@ -82,7 +84,7 @@
 
 ## 2. bid_strategy 出价策略
 
-[bid_strategy.py](file:///d:/maaracing_assistant/maaracing_assistant/modules/bid_strategy.py)（v0.3.5 编码基线，设计文档 `docs/treasure_bid_strategy.md`）
+[bid_strategy.py](file:///d:/maaracing_assistant/maaracing_assistant/plugins/treasure/strategy.py)（v0.3.5 编码基线，设计文档 `docs/treasure_bid_strategy.md`）
 
 - 数据结构：`RoundSnapshot`（上一轮完整公开快照，策略唯一对手信息源）/ `BidContext`（决策输入）/ `BidDecision`（决策输出）/ `LureState`（逼价基线）
 - 纯函数：`trigger_bid(k, opp_max)`（k≈1.0 → `opp_max+TICK`；k>1.0 → `ceil(k×opp_max)`）/ `sanitize_bid`（只验证域，非法返回 None → 降级 decision，绝不 clamp 后保留原 decision）
@@ -97,7 +99,7 @@
 
 ## 3. treasure_detector 阶段检测器
 
-[treasure_detector.py](file:///d:/maaracing_assistant/maaracing_assistant/modules/treasure_detector.py)
+[treasure_detector.py](file:///d:/maaracing_assistant/maaracing_assistant/plugins/treasure/detector.py)
 
 **职责**：
 - 按优先级扫描 `_ROI_STAGE` 映射的 stage ROI（`priority` 决定顺序）
@@ -113,7 +115,7 @@
 
 ## 4. treasure_ocr 金额识别
 
-[treasure_ocr.py](file:///d:/maaracing_assistant/maaracing_assistant/modules/treasure_ocr.py)
+[treasure_ocr.py](file:///d:/maaracing_assistant/maaracing_assistant/plugins/treasure/ocr.py)
 
 **职责**：
 - RapidOCR（rapidocr_onnxruntime）薄封装，懒加载引擎、失败降级
@@ -126,7 +128,7 @@
 
 ## 5. treasure_renderer HUD 渲染
 
-[treasure_renderer.py](file:///d:/maaracing_assistant/maaracing_assistant/modules/treasure_renderer.py)
+[treasure_renderer.py](file:///d:/maaracing_assistant/maaracing_assistant/plugins/treasure/renderer.py)
 
 **职责**：复用调试渲染器，绘制鉴宝专属 HUD：
 - 阶段/回合号、系统报价 H、估值区间、我方出价、排名
@@ -147,7 +149,7 @@
 - 显示控制：框显示模式（all/selected/none）+ 命中位置高亮（showHit）
 - 截图来源：`debug/treasure/<ts>/raw/`（支持 png/jpg/webp）
 
-**配置**：`assets/resource/image/treasure/treasure_rois.json`，`reference_size=[1280,720]` 归一化坐标，三段结构（stage/actions/ocr）
+**配置**：`maaracing_assistant/plugins/treasure/resources/treasure_rois.json`，`reference_size=[1280,720]` 归一化坐标，三段结构（stage/actions/ocr）
 
 ---
 

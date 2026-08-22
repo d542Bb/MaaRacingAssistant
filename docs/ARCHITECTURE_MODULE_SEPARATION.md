@@ -1,8 +1,9 @@
 # 架构规划：主程序 / 插件模块 分离（Module Separation）
 
-> **状态**：规划定稿（2026-08-22），待分阶段执行。
-> **本文档**即 `modules/capabilities.py` 注释所引用的 `ARCHITECTURE_MODULE_SEPARATION.md`（此前为悬空引用）。
+> **状态**：P0–P5 已落地（2026-08-22 分阶段执行完成，每阶段独立提交）。
+> **本文档**即 `core/capabilities.py` 注释所引用的 `ARCHITECTURE_MODULE_SEPARATION.md`（此前为悬空引用）。
 > **方向已确认**（2026-08-22 用户决策）：① 运行时自动扫描注册；② 模块专属资源随模块进 `plugins/<id>/resources/`；③ 只被单活动使用的能力下沉进该模块。
+> **后置项**：racing 专属模板暂留 `assets/resource/image/`（受 `resource.post_bundle` MAA bundle 机制约束，需实测后迁移）；racing 穿透私有 API 的收口（§4.3）待做。
 
 ---
 
@@ -44,12 +45,12 @@ maaracing_assistant/
 │   └── yolo_detector.py               # 跨活动视觉基础设施
 ├── plugins/                           # 插件根目录（一个活动 = 一个自包含子目录）
 │   ├── racing/                        # 极速狂飙
-│   │   ├── manifest.py                # ID/NAME/STAGE_ORDER/REQUIRES + resources 声明
+│   │   ├── manifest.py                # ID + MODULE_CLASS（registry 扫描用）
 │   │   ├── module.py                  # 原 racing_module.py（状态机主循环）
 │   │   ├── loop.py                    # 原 racing_loop.py（驾驶循环）
 │   │   ├── navigation.py              # 原 navigation.py（仅 racing 使用 → 下沉）
 │   │   ├── renderer.py                # 原 racing_renderer.py
-│   │   └── resources/                 # 该模块专属模板图（activity/find_opponent/...）
+│   │   └── resources/                 # 该模块专属模板图（后置项：暂留 assets/）
 │   └── treasure/                      # 巅峰鉴宝
 │       ├── manifest.py
 │       ├── module.py                  # 原 treasure_module.py（状态机主循环 + 编排，减负）
@@ -70,18 +71,12 @@ maaracing_assistant/
 ### 4.1 registry 运行时自动扫描（已确认）
 
 - `core/registry.py` 遍历 `plugins/*/manifest.py`，import 后读取元信息填充 `MODULE_REGISTRY`。
-- **manifest 契约**（模块自描述）：
+- **manifest 契约**（模块自描述，NAME/STAGE_ORDER/REQUIRES 从模块类读取，单一来源）：
 
 ```python
 # plugins/racing/manifest.py
 ID = "racing"
-NAME = "极速狂飙"
-STAGE_ORDER = ["归位", "导航一(极速狂飙入口)", ...]
-REQUIRES = frozenset({"capture", "gamepad"})
-REQUIRES_GAMEPAD_EXCLUSIVE = True
-# 模块类定位：扫描时按约定 module 名推导，或显式声明
-MODULE_CLASS = "module.RacingModule"
-RESOURCES_DIR = "resources"
+MODULE_CLASS = "module.RacingModule"   # plugins/<id>/module.py 中的类
 ```
 
 - `get_module_info` / `create_module` **签名与返回结构保持不变**，sidecar 零改动。
@@ -107,16 +102,18 @@ RESOURCES_DIR = "resources"
 
 ## 5. 迁移步骤（分阶段，低风险 → 高风险）
 
-| 阶段 | 内容 | 风险 | 验收 |
+| 阶段 | 内容 | 风险 | 状态 |
 |------|------|------|------|
-| **P0** | 确定性小修：`sidecar.get_status` 死代码；`capture_backend` 接线或摘除无效开关 | 低 | py_compile + pytest 通过 |
-| **P1** | 主程序抽 `core/`：纯搬移 + import 修正（sidecar/controller/base/capabilities/registry/logger/window_utils/paths/debug 等） | 中 | `python -m maaracing_assistant` 可启动、GUI 三 Tab 正常 |
-| **P2** | racing 插件化：`racing_module/racing_loop/navigation/racing_renderer` → `plugins/racing/`；registry 自动扫描生效 | 中 | 删 racing 目录后 app 可启动且无残留 import |
-| **P3** | treasure 插件化：`treasure_*`/`bid_strategy` → `plugins/treasure/`；拆 `store.py`（落盘/DB 子域），`module.py` 减负 | 高 | 删 treasure 目录后 app 可启动；pytest（bid_strategy）通过 |
-| **P4** | 资源迁移：`assets/resource/image/treasure/` → `plugins/treasure/resources/`；racing 专属模板 → `plugins/racing/resources/`；路径解析改造 | 中 | 模块自引用资源路径全部可解析 |
-| **P5** | 文档同步（含 CODE_WIKI 迁移，见 §6） | 低 | 文档路径与实际一致 |
+| **P0** | 确定性小修：`sidecar.get_status` 死代码；`capture_backend` 语义确认 | 低 | ✅ 已落地（commit c483593） |
+| **P1** | 主程序抽 `core/`：纯搬移 + import 修正 | 中 | ✅ 已落地（commit ae3c2df） |
+| **P2** | racing 插件化：`racing_*`/navigation → `plugins/racing/`；registry 自动扫描生效 | 中 | ✅ 已落地（commit f3fa6e1） |
+| **P3** | treasure 插件化：→ `plugins/treasure/`；拆 `store.py`；移除 modules 包 | 高 | ✅ 已落地（commit a420f2e / d31f2ff） |
+| **P4** | 资源迁移：treasure → `plugins/treasure/resources/`；racing 资源**后置** | 中 | ✅ treasure 完成（commit c1f96f3 / fb96ca8）；⚠️ racing 资源因 MAA bundle 待迁 |
+| **P5** | 文档同步（三个 CODE_WIKI + README/SELF_CHECK） | 低 | ✅ 已完成 |
 
-> 每阶段独立可合并 / 可回滚；不要求一次完成。
+> **后置项（未做）**：
+> 1. racing 专属模板迁入 `plugins/racing/resources/`（需先实测 `resource.post_bundle` 对目录结构的依赖）。
+> 2. §4.3 racing 穿透私有 API 的窄接口收口（`nav._wait_for_template` / `_ensure_cursor` / `racing_loop._end_reason` 公有化）。
 
 ---
 
@@ -131,16 +128,18 @@ RESOURCES_DIR = "resources"
 
 ---
 
-## 7. 受影响面清单（执行前逐项核对）
+## 7. 受影响面清单（执行核对结果）
 
-| 影响面 | 处理 |
-|--------|------|
-| `sidecar.py` import（`from maaracing_assistant.modules...` / `controller`） | 改指 `core` / `plugins` |
-| `tools/` 调试脚本（diagnose_treasure / test_stage_detector_replay / extract_treasure_templates / treasure_debug_studio/server.py） | 更新 import 与资源路径 |
-| `scripts/release/assemble.ps1` | 打包路径、runtime-lock 是否含新增目录 |
-| `requirements.txt` / `pyproject.toml` | `packages` 配置改为含 `core`/`plugins` |
-| `.trae/skills/project-update/SKILL.md` 中的程序路径清单 | 更新模块路径 |
-| 工作区记忆（`mcp_memory-ws`） | 每个迁移阶段完成后更新模块实体路径 |
+| 影响面 | 处理 | 状态 |
+|--------|------|------|
+| `sidecar.py` import | 改指 `core` / `plugins`，默认模块改 id 引用 | ✅ 已处理 |
+| `tools/` 调试脚本（diagnose_treasure / test_stage_detector_replay / extract_treasure_templates / treasure_debug_studio/server.py） | 更新 import 与资源路径 | ✅ 已处理 |
+| `apps/mra_shell/MainWindow.xaml.cs` | sidecar 启动命令 `-m maaracing_assistant.core.sidecar` | ✅ 已处理 |
+| `tests/`（conftest + test_bid_strategy） | 直导路径改为 `plugins/treasure/` | ✅ 已处理 |
+| `scripts/release/assemble.ps1` | 打包路径、runtime-lock | ⏳ 待打包实测（`maaracing_assistant*` 自动覆盖 core/plugins） |
+| `requirements.txt` / `pyproject.toml` | `include=["maaracing_assistant*"]` 已覆盖新子包 | ✅ 无需改 |
+| `.trae/skills/project-update/SKILL.md` 中的程序路径清单 | 更新模块路径 | ⏳ 待更新（.trae 本地文件） |
+| 工作区记忆（`mcp_memory-ws`） | 每个迁移阶段完成后更新模块实体路径 | ✅ 待本阶段收尾写入 |
 
 ---
 

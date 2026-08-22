@@ -23,7 +23,7 @@
 
 ## 1. RacingLoop 赛车自动驾驶循环
 
-[racing_loop.py](file:///d:/maaracing_assistant/maaracing_assistant/racing_loop.py)
+[racing_loop.py](file:///d:/maaracing_assistant/maaracing_assistant/plugins/racing/loop.py)
 
 **职责**：
 - WGC 持久化后台截图（wgcap.py 零拷贝帧访问，~0.5ms/帧）
@@ -88,7 +88,7 @@
 
 ## 2. RacingModule 赛车活动模块
 
-[racing_module.py](file:///d:/maaracing_assistant/maaracing_assistant/modules/racing_module.py)
+[racing_module.py](file:///d:/maaracing_assistant/maaracing_assistant/plugins/racing/module.py)
 
 **职责**：
 - 活动模块实现（`ActivityModule` 子类，`ID="racing"`，`NAME="极速狂飙"`）
@@ -144,7 +144,7 @@
 
 ## 3. RacingDebugRenderer 调试渲染器
 
-[racing_renderer.py](file:///d:/maaracing_assistant/maaracing_assistant/modules/racing_renderer.py)
+[racing_renderer.py](file:///d:/maaracing_assistant/maaracing_assistant/plugins/racing/renderer.py)
 
 **职责**：极速狂飙调试渲染器，通过 DebugManager 的 renderer token 机制接入渲染管线。
 
