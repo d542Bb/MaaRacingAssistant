@@ -26,11 +26,32 @@ public sealed partial class MainWindow : Window
     private const int MinWindowHeight = 700;
 
     /// <summary>
-    /// 从 exe 运行目录逐级向上查找仓库根（含 pyproject.toml 的目录）。
-    /// 用于替代硬编码的本机绝对路径，保证跨机器可移植；找不到返回 null。
+    /// 定位仓库根 / AppRoot（含 pyproject.toml 的目录，发布版为安装根）。
+    /// 优先级（见 .trae/documents 报告 §5.3）：--app-root 参数 > MRA_APP_ROOT 环境变量 > exe 向上探测 pyproject.toml。
+    /// 第一版 PoC：native Launcher 经环境变量 MRA_APP_ROOT 传入安装根（避免命令行 quoting），
+    /// 此处用 Path.GetFullPath 归一化为绝对路径（不变量：启动期只解析一次，此后不因 cwd/exe 位置再推导）。
+    /// 找不到返回 null。
     /// </summary>
     private static string? ResolveRepoRoot()
     {
+        // --app-root 参数（未来 CLI 用，当前 Launcher 未走此路径）
+        var argRoot = Environment.GetCommandLineArgs()
+            .SkipWhile(a => a != "--app-root").Skip(1).FirstOrDefault();
+        if (argRoot is not null && argRoot.Length > 0)
+        {
+            try { return Path.GetFullPath(argRoot); }
+            catch { /* 非法路径，继续降级 */ }
+        }
+
+        // MRA_APP_ROOT 环境变量（第一版 PoC transport）
+        var envRoot = Environment.GetEnvironmentVariable("MRA_APP_ROOT");
+        if (!string.IsNullOrWhiteSpace(envRoot))
+        {
+            try { return Path.GetFullPath(envRoot); }
+            catch { /* 非法路径，继续降级 */ }
+        }
+
+        // 开发模式回退：从 exe 运行目录逐级向上找含 pyproject.toml 的目录（repo marker）
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null)
         {

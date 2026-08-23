@@ -4,6 +4,14 @@
 
 ## 2026-08-23
 
+### v0.19.0-dev.1 原生 Launcher + app/ 产品目录布局 🏗️
+- **版本号：** `v0.19.0-dev.1`（预发布；基于 v0.18.0-dev.2 新开 minor 系列）
+- **根目录清爽（产品目录/实现目录分离）：** 发布包根目录只保留唯一入口 `MaaRacingAssistant.exe`（native Launcher，111KB 零 runtime 依赖）+ LICENSE/pyproject/第三方许可，GUI 的 dotnet publish 全部 dll 收进黑盒 `app/` 子目录（600+ 文件不再平铺在 exe 旁）；`assemble.ps1 §2` 复制目标整目录进 `StageRoot\app\`，`§2.5` 语言包/WebView2 清理作用于 `app\`
+- **新增 native Launcher：** `apps/mra_launcher/launcher.c`，`CreateProcessW` 启动 `app\mra_shell.exe`；定位自身目录为 AppRoot → 设 `MRA_APP_ROOT` 环境变量（transport，不经命令行 quoting，中文/空格路径安全）→ `cwd=AppRoot` → 等待子进程退出并回传退出码；不传透用户参数
+- **AppRoot 路径协议：** `MainWindow.ResolveRepoRoot()` 优先级 `--app-root` > `MRA_APP_ROOT` > 开发回退向上找 `pyproject.toml`，均 `Path.GetFullPath` 归一化（不变量：启动期只解析一次）；GUI/Python/frontend 全部相对 AppRoot 锚定
+- **CI 集成：** `release.yml` win-build job 增「设置 MSVC」（`mlocati/setup-msvc@v1`）编译 Launcher；assemble.ps1 §2.6 双路径（PATH 里的 cl 优先，否则 vcvarsall 探测）
+- **可安装性：** PoC 验证通过（双击/含空格中文路径/外部 cwd/sidecar/frontend/e2e）；既有 `runtime-cache`/`publish-cache` 缓存指纹机制不受影响
+
 ### v0.18.0-dev.2 插件资源自包含 + 720p 窗口统一 🏗️
 - **版本号：** `v0.18.0-dev.2`（预发布；基于 v0.18.0-dev.1 同系列顺延）
 - **racing 资源随插件自包含：** 5 张模板 jpg（settings/activity/find_opponent/store_popup/round1_end）与 `pipeline/tasks.json` 迁入 `plugins/racing/resources/`；`module.py` 增 `_RES_DIR` 常量使 `post_bundle(str(_RES_DIR))` 自引用（不再依赖主程序 `assets/resource/`）；`loop.py` 结束模板、`navigation.py` `_load_template` 均改 `__file__` 相对定位到模块资源目录（顺带修掉 loop.py 原 `parent.parent` 层级错误隐患）；原 `assets/resource/` 已删除

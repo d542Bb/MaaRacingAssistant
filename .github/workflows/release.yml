@@ -161,6 +161,12 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: 设置 MSVC（编译 native Launcher）
+        uses: mlocati/setup-msvc@v1
+        with:
+          architecture: x64
+          vs-version: latest
+
       - name: 缓存 NuGet 包（Microsoft.WindowsAppSDK 等，避免每次重下）
         uses: actions/cache@v4
         with:
@@ -201,6 +207,8 @@ jobs:
       - name: 组装解压即用包（runtime + publish + 白名单 + 自检 + zip + sha256）
         shell: pwsh
         run: |
+          # native Launcher 编译：前面「设置 MSVC」已把 cl.exe 放入 PATH，assemble 直接使用；
+          # 若 cl 不在 PATH，assemble 内部会自动探测 vcvarsall.bat。
           & "${{ github.workspace }}\scripts\release\assemble.ps1" `
             -Version "$env:VER" `
             -RepoRoot "${{ github.workspace }}" `

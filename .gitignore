@@ -62,6 +62,13 @@ build/spike/
 build/runtime-cache/
 build/publish-cache/
 
+# PoC / 本地打包测试产物（native Launcher 编译输出、临时测试布局、组装测试目录）
+build/poc/
+build/poc-app/
+build/PoC */
+build/assemble-test/
+build/zip-e2e/
+
 # assemble.ps1 本地打包产物（默认输出到 scripts/release；CI 输出到 build/release 已忽略）
 scripts/release/MaaRacingAssistant-*/
 scripts/release/MaaRacingAssistant-*.zip

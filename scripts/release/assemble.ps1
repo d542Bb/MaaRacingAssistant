@@ -18,6 +18,7 @@ param(
     [string]$HostPython = 'python',
     [string]$SourceRuntimeDir = '',
     [string]$RuntimeCacheDir = '',
+    [string]$VcVarsAll = '',   # native Launcher 编译用 MSVC vcvarsall.bat 路径（默认自动探测）
     [switch]$SkipPublish,
     [switch]$KeepGoing
 )
@@ -32,6 +33,24 @@ $RepoRoot  = (Resolve-Path $RepoRoot).Path
 if (-not (Test-Path $OutRoot)) { New-Item -ItemType Directory -Force -Path $OutRoot | Out-Null }
 $OutRoot   = (Resolve-Path $OutRoot).Path
 if (-not $RuntimeCacheDir) { $RuntimeCacheDir = Join-Path $RepoRoot 'build\runtime-cache' }
+# native Launcher 编译需 MSVC；未显式指定时自动探测常见 VS 安装路径
+if (-not $VcVarsAll) {
+    $candidates = @(
+        'C:\Program Files\Microsoft Visual Studio\2022\Enterprise',
+        'C:\Program Files\Microsoft Visual Studio\2022\Professional',
+        'C:\Program Files\Microsoft Visual Studio\2022\Community',
+        'C:\Program Files\Microsoft Visual Studio\2022\BuildTools',
+        'C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise',
+        'C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional',
+        'C:\Program Files\Microsoft Visual Studio\2019\Community',
+        'C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools',
+        'D:\Microsoft Visual Studio\2019\Community',
+        'D:\Microsoft Visual Studio\2022\Community'
+    )
+    $VcVarsAll = $candidates |
+        ForEach-Object { $p = Join-Path $_ 'VC\Auxiliary\Build\vcvarsall.bat'; if (Test-Path $p) { $p } } |
+        Select-Object -First 1
+}
 $Name      = 'MaaRacingAssistant-' + $Version + '-win-x64'
 $StageRoot = Join-Path $OutRoot $Name
 
@@ -100,6 +119,7 @@ Set-Content -Path (Join-Path $rtDir 'python311._pth') -Value $pthContent -Encodi
 # ---------- 2. dotnet publish ----------
 # 统一输出到 build/publish-cache 并记录 C#/XAML 源指纹；
 # -SkipPublish 时仅当指纹一致才复用（改过源码会自动重编，杜绝跨分支误用旧产物）。
+# PoC 布局：GUI publish 整目录进入 StageRoot\app\（实现目录），根目录只保留 Launcher 与资源。
 $publishDir = Join-Path $RepoRoot 'build\publish-cache'
 $csproj = Join-Path $RepoRoot 'apps\mra_shell\mra_shell.csproj'
 if ($SkipPublish -and (& $CacheFPMatch $publishDir $pubFinger)) {
@@ -112,11 +132,67 @@ if ($SkipPublish -and (& $CacheFPMatch $publishDir $pubFinger)) {
     & $CacheFPWrite $publishDir $pubFinger
 }
 
+# 复制 GUI 产物到 StageRoot\app\
+$appDir = Join-Path $StageRoot 'app'
 Get-ChildItem $publishDir -Recurse -File | ForEach-Object {
     $rel = $_.FullName.Substring($publishDir.Length).TrimStart('\')
-    $dest = Join-Path $StageRoot $rel
+    $dest = Join-Path $appDir $rel
     New-Item -ItemType Directory -Path (Split-Path $dest) -Force | Out-Null
     Copy-Item $_.FullName $dest -Force
+}
+
+# ---------- 2.5 publish 产物瘦身（作用于 StageRoot\app\）----------
+# 1) *.exe.WebView2\EBWebView 是 WebView2 运行时生成的用户缓存
+#    （Cookies/History/GPUCache/CodeCache 等），仅本机运行残留，纯冗余且带隐私，
+#    用户机器首次运行会自动重建，删除无副作用。
+# 2) 语言包目录仅保留 zh-CN：WindowsAppSDK 每个 self-contained publish 都会把
+#    全量多语言 .mui 复制进来（几十个目录占用大量小文件），本项目只面向中文。
+$cleanDir = Join-Path $StageRoot 'app'
+$webview2Dirs = Get-ChildItem $cleanDir -Directory -Filter '*.exe.WebView2' -Recurse -ErrorAction SilentlyContinue
+foreach ($d in $webview2Dirs) {
+    Remove-Item $d.FullName -Recurse -Force
+    Write-Host "[assemble] 清理 WebView2 用户缓存: $($d.Name)"
+}
+$langDirs = Get-ChildItem $cleanDir -Directory | Where-Object {
+    $_.Name -ne 'zh-CN' -and (Get-ChildItem $_.FullName -Filter '*.mui' -ErrorAction SilentlyContinue | Select-Object -First 1)
+}
+foreach ($d in $langDirs) {
+    Remove-Item $d.FullName -Recurse -Force
+    Write-Host "[assemble] 清理语言包: $($d.Name)"
+}
+
+# ---------- 2.6 native Launcher 编译 ----------
+# 根目录唯一入口 MaaRacingAssistant.exe（薄 Launcher，见 apps/mra_launcher/launcher.c）。
+# 用 MSVC 编译为静态链接（/MT）GUI 子系统 exe，零外部 runtime 依赖；每次重新编译（体积小、快），不缓存。
+# 优先直接用 PATH 里的 cl（CI 用 setup-msvc 已配置环境）；否则自动探测 vcvarsall.bat 初始化。
+$launcherSrc = Join-Path $RepoRoot 'apps\mra_launcher\launcher.c'
+$launcherOut = Join-Path $StageRoot 'MaaRacingAssistant.exe'
+$clInPath = (Get-Command cl.exe -ErrorAction SilentlyContinue)
+if ($clInPath -and (Test-Path -Path $launcherSrc)) {
+    Write-Host "[assemble] 用 PATH 中的 cl.exe 编译 Launcher"
+    & cl.exe /nologo /utf-8 /O2 /MT /Fe:"$launcherOut" /Fo:"$env:TEMP\mra_launcher.obj" "$launcherSrc" /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib | Out-Null
+    if ($LASTEXITCODE -ne 0) { $errors.Add('Launcher 编译失败 (cl.exe 退出码 ' + $LASTEXITCODE + ')') }
+} elseif (-not $VcVarsAll) {
+    $errors.Add('未找到 MSVC (cl.exe 不在 PATH，也无 vcvarsall.bat)；无法编译 native Launcher。用 -VcVarsAll 指定路径，或 CI 先 setup-msvc')
+} elseif (-not (Test-Path $launcherSrc)) {
+    $errors.Add('missing launcher source: ' + $launcherSrc)
+} else {
+    Write-Host "[assemble] 用 vcvarsall 编译 Launcher: $(Split-Path $launcherOut -Leaf)"
+    # cmd /c 内 call vcvarsall 一次性生效（PowerShell 无法直接继承批处理环境）
+    $cmdLine = "`"$VcVarsAll`" x64 >nul 2>&1 && cl.exe /nologo /utf-8 /O2 /MT /Fe:`"$launcherOut`" /Fo:`"$env:TEMP\mra_launcher.obj`" `"$launcherSrc`" /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib"
+    cmd /c $cmdLine | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        $errors.Add('Launcher 编译失败 (cl.exe 退出码 ' + $LASTEXITCODE + ')')
+    }
+}
+if (-not (Test-Path $launcherOut)) {
+    $errors.Add('Launcher 编译后未生成: ' + $launcherOut)
+} else {
+    Write-Host "[assemble] Launcher OK: $launcherOut"
+}
+# Launcher 前置校验：app\mra_shell.exe 必须存在（Launcher 依赖它启动）
+if (-not (Test-Path (Join-Path $appDir 'mra_shell.exe'))) {
+    $errors.Add('app\mra_shell.exe not found — Launcher 无法启动 GUI')
 }
 
 # ---------- 3. whitelist ----------
