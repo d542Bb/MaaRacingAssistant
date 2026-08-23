@@ -122,7 +122,7 @@ Get-ChildItem $publishDir -Recurse -File | ForEach-Object {
 # ---------- 3. whitelist ----------
 foreach ($rel in @(
     'pyproject.toml', 'LICENSE', 'THIRD_PARTY_LICENSES.md',
-    'assets\model', 'assets\resource', 'assets\icon.ico',
+    'assets\model', 'assets\icon.ico',
     'assets\mra_icon.png', 'assets\config', 'apps\mra_shell\frontend')) {
     $src = Join-Path $RepoRoot $rel
     if (Test-Path $src) {

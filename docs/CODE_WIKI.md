@@ -4,8 +4,8 @@
 >
 > **文档导航（Code Wiki 已按功能域拆分，共 3 份）**：
 > - **本文件（主文档）**：架构总览 / 目录结构 / 主程核心模块 / 依赖 / 运行流程 / 配置常量 / 开发调试 / 主程坑点 / GUI 选型
-> - [CODE_WIKI_RACING.md](CODE_WIKI_RACING.md)：**赛车域**（RacingLoop 决策算法 / RacingModule / 赛车参数 / 赛车坑点）
-> - [CODE_WIKI_TREASURE.md](CODE_WIKI_TREASURE.md)：**鉴宝域**（treasure_* 全模块 / 出价策略 / 鉴宝模板 / 鉴宝坑点）
+> - [赛车域 CODE_WIKI（plugins/racing）](../maaracing_assistant/plugins/racing/CODE_WIKI.md)（RacingLoop 决策算法 / RacingModule / 赛车参数 / 赛车坑点）
+> - [鉴宝域 CODE_WIKI（plugins/treasure）](../maaracing_assistant/plugins/treasure/CODE_WIKI.md)（treasure_* 全模块 / 出价策略 / 鉴宝模板 / 鉴宝坑点）
 
 ---
 
@@ -118,7 +118,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 └──────────────────────────────────────────────────┘
 ```
 
-> 流程编排已模块化：`maaracing_assistant/plugins/racing/module.py`（RacingModule）承载上述流程，`controller.py` 保留主控调度与活动分发，详见 [赛车文档 §2](CODE_WIKI_RACING.md)。
+> 流程编排已模块化：`maaracing_assistant/plugins/racing/module.py`（RacingModule）承载上述流程，`controller.py` 保留主控调度与活动分发，详见 [赛车文档 §2](../maaracing_assistant/plugins/racing/CODE_WIKI.md)。
 
 ---
 
@@ -204,9 +204,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 │
 ├── docs/
 │   ├── update_log.md                         # 版本更新日志
-│   ├── CODE_WIKI.md                          # 本文档（主文档）
-│   ├── CODE_WIKI_RACING.md                   # Code Wiki · 赛车域
-│   └── CODE_WIKI_TREASURE.md                 # Code Wiki · 鉴宝域
+│   └── CODE_WIKI.md                          # 本文档（主文档）；赛车/鉴宝域文档随插件（plugins/&lt;id&gt;/CODE_WIKI.md）
 │
 ├── logs/                                     # 运行日志（自动生成，gitignore）
 └── debug/                                    # 调试截图（自动生成，gitignore）
@@ -217,8 +215,8 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 ## 4. 核心模块说明
 
 > 本文档覆盖**主程核心模块**。按功能域拆分：
-> - **赛车域**（racing_loop / racing_module / racing_renderer）→ [CODE_WIKI_RACING.md](CODE_WIKI_RACING.md)
-> - **鉴宝域**（treasure_module / treasure_detector / treasure_ocr / treasure_renderer / bid_strategy）→ [CODE_WIKI_TREASURE.md](CODE_WIKI_TREASURE.md)
+> - **赛车域**（racing_loop / racing_module / racing_renderer）→ [赛车域文档](../maaracing_assistant/plugins/racing/CODE_WIKI.md)
+> - **鉴宝域**（treasure_module / treasure_detector / treasure_ocr / treasure_renderer / bid_strategy）→ [鉴宝域文档](../maaracing_assistant/plugins/treasure/CODE_WIKI.md)
 
 ### 4.1 [controller.py](file:///d:/maaracing_assistant/maaracing_assistant/core/controller.py) — 主控编排器
 
@@ -480,7 +478,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 ## 5. 关键类与函数索引
 
-> 赛车域（RacingLoop）类速查见 [CODE_WIKI_RACING.md §1](CODE_WIKI_RACING.md)；鉴宝域（treasure_*）类速查见 [CODE_WIKI_TREASURE.md §7](CODE_WIKI_TREASURE.md)。
+> 赛车域（RacingLoop）类速查见 [赛车域文档 §1](../maaracing_assistant/plugins/racing/CODE_WIKI.md)；鉴宝域（treasure_*）类速查见 [鉴宝域文档 §7](../maaracing_assistant/plugins/treasure/CODE_WIKI.md)。
 
 ### 5.1 controller.MaaRacingAssistantController
 
@@ -565,7 +563,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 |------|----------|------|---------------|
 | `_screencap()` | RacingLoop / Navigation | 截图 RGB ndarray（优先 MAA → 失败回退 ctypes GDI）| 返回 BGR/RGB 需核对，推荐走封装好的 `_cap` / `_screenshot` |
 | `_screencap_ctypes()` | Navigation | Win32 GDI 备用截图方案（绕过 MAA 管线回退用）| 窗口句柄和 DPI 需提前确认；非首选 |
-| `_cap(ctrl)` / `_cap_fast(ctrl)` | RacingLoop | **v0.11.1** 截图：默认快速 BitBlt（~3-7ms），失败降级 MAA | 见 [赛车文档 §5.2](CODE_WIKI_RACING.md) 兜底链路；每步失败 WARNING 日志 |
+| `_cap(ctrl)` / `_cap_fast(ctrl)` | RacingLoop | **v0.11.1** 截图：默认快速 BitBlt（~3-7ms），失败降级 MAA | 见 [赛车文档 §5.2](../maaracing_assistant/plugins/racing/CODE_WIKI.md) 兜底链路；每步失败 WARNING 日志 |
 | `_press_button(gpad, button, duration)` | Navigation | 按下 → 保持 → 释放（button=XInput enum） | duration 默认 0.3 s；racing 用 `_apply_trigger`/`_steer` 另封装 |
 | `_interruptible_sleep(seconds)` | Navigation / RacingLoop / Controller | 每 0.1 s 轮询检查 `_running` 的可中断 sleep | stop 能 0.1 s 级响应；**不要用 `time.sleep(>0.2)`** |
 | `_load_template(name)` | Controller / Navigation | 加载模板图片，优先 png → jpg 回退 | 返回 RGB ndarray，不存在返回 None 或 WARNING |
@@ -585,7 +583,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 ## 6. 模块依赖关系
 
-> 赛车域（RacingLoop 决策/截图链路）详见 [CODE_WIKI_RACING.md](CODE_WIKI_RACING.md)。
+> 赛车域（RacingLoop 决策/截图链路）详见 [赛车域文档](../maaracing_assistant/plugins/racing/CODE_WIKI.md)。
 
 ### 6.1 导入关系图
 
@@ -694,7 +692,7 @@ core/sidecar.py（mra_shell 托管）
    ├─ Tasker() + Resource()
    ├─ RacingLoop(model_path, debug, record_mode)
    ├─ resource.register_custom_action("RacingLoop", racing_loop)
-   ├─ resource.post_bundle(assets/resource).wait()
+   ├─ resource.post_bundle(plugins/racing/resources).wait()   # 模块资源自包含（_RES_DIR）
    ├─ tasker.bind(resource, controller)
    └─ tasker.add_context_sink(PipelineLogger())
 
@@ -729,7 +727,7 @@ core/sidecar.py（mra_shell 托管）
    └─ continue（回到导航二，循环对局）
 ```
 
-> 该流程已由 [RacingModule（赛车文档 §2）](CODE_WIKI_RACING.md) 承载（MAA 对象模块自有）；`RacingLoop._run_impl()` 帧级核心循环见 [赛车文档 §6](CODE_WIKI_RACING.md)。
+> 该流程已由 [RacingModule（赛车文档 §2）](../maaracing_assistant/plugins/racing/CODE_WIKI.md) 承载（MAA 对象模块自有）；`RacingLoop._run_impl()` 帧级核心循环见 [赛车文档 §6](../maaracing_assistant/plugins/racing/CODE_WIKI.md)。
 
 ---
 
@@ -762,7 +760,7 @@ core/sidecar.py（mra_shell 托管）
 | 盲操超时 | 2秒 | 光标丢失盲操超时 |
 | 缓存帧跳距 | >250px | 识别到左上角跳帧时跳过 |
 
-> 赛车控制参数（帧率/油门/力度/车道保持/基准调优）见 [赛车文档 §5](CODE_WIKI_RACING.md)。
+> 赛车控制参数（帧率/油门/力度/车道保持/基准调优）见 [赛车文档 §5](../maaracing_assistant/plugins/racing/CODE_WIKI.md)。
 
 ### 8.3 模板匹配参数
 
@@ -773,7 +771,7 @@ core/sidecar.py（mra_shell 托管）
 | 结束检测（商店） | 0.90 | 单尺度，灰度 |
 | 结束检测（回合1） | 0.55 | 单尺度，灰度 |
 
-#### 8.3.1 模板图片清单（assets/resource/image/）
+#### 8.3.1 模板图片清单（plugins/racing/resources/image/）
 
 命名格式：`{用途}_template.{ext}`。按钮定义和阈值在 ButtonDef 中同步维护，本表为快速检索快照。
 
@@ -782,12 +780,12 @@ core/sidecar.py（mra_shell 托管）
 | `settings_page_template.jpg` | ~484×300 | 归位：识别设置页面（左上角 ROI 50%，彩色多尺度）| 0.65 | ✅ 正常 | §7.3 homing()；§8.3 "设置页面（归位）"行 |
 | `activity_page_template.jpg` | 1100×550 | 导航：识别活动页面 / 检测页面已离开（导航二"开始挑战"消失验证正反逻辑）| 0.70 | ✅ 正常 | §7.3 导航二；ButtonDef；§8.3 "页面验证（导航）"行 |
 | `find_opponent_template.jpg` | 374×195 | 导航三：识别"寻找对手"页面，按钮消失=成功验证（`template_should_match=False`）| 0.55 | ✅ v0.5.0 | §7.3 导航三；ButtonDef；§8.3 "页面验证（导航）"行；scales=0.5/0.7/0.9/1.0/1.2/1.5/1.8 |
-| `store_popup_template.jpg` | 159×262 | 商店弹窗检测 + `RacingLoop._is_end()` 结束画面检测（任一模板命中即返回 True）| 0.55 | ✅ v0.6.0 | §7.3 商店弹窗步骤；[赛车文档 §4](CODE_WIKI_RACING.md) RacingLoop._is_end；§8.3 "结束检测（商店）"行（阈值 0.90 是新版加强）|
-| `round1_end_template.jpg` | — | 回合 1 结束画面检测；`_is_end` 模板列表中的主模板（用户截图重命名）| 0.55 | ✅ v0.6.0 | [赛车文档 §6](CODE_WIKI_RACING.md) RacingLoop 结束检测；§8.3 "结束检测（回合1）"行 |
+| `store_popup_template.jpg` | 159×262 | 商店弹窗检测 + `RacingLoop._is_end()` 结束画面检测（任一模板命中即返回 True）| 0.55 | ✅ v0.6.0 | §7.3 商店弹窗步骤；[赛车文档 §4](../maaracing_assistant/plugins/racing/CODE_WIKI.md) RacingLoop._is_end；§8.3 "结束检测（商店）"行（阈值 0.90 是新版加强）|
+| `round1_end_template.jpg` | — | 回合 1 结束画面检测；`_is_end` 模板列表中的主模板（用户截图重命名）| 0.55 | ✅ v0.6.0 | [赛车文档 §6](../maaracing_assistant/plugins/racing/CODE_WIKI.md) RacingLoop 结束检测；§8.3 "结束检测（回合1）"行 |
 | `cursor_template.jpg` | 168×176 | 旧光标模板匹配 → 已废弃，现改为 §10.3 "双中心面积评分"几何形状识别（灰白 S<30 + 面积 310/420 + area<240 硬过滤）| — | ❌ 已废弃 | §10.3 光标导航坑点；§4.2 Navigation._find_cursor_by_shape |
 | `button_main_template.jpg` | ~242×67 | 旧按钮位置模板 → 已废弃，现改为 ButtonDef.pct 百分比硬编码 + 页面模板验证 | — | ❌ 已废弃 | §4.2 navigation.py；§5.2 ButtonDef 定义 |
 
-> 鉴宝模板清单（`assets/resource/image/treasure/`）见 [鉴宝文档 §8](CODE_WIKI_TREASURE.md)。
+> 鉴宝模板清单（`plugins/treasure/resources/`）见 [鉴宝文档 §8](../maaracing_assistant/plugins/treasure/CODE_WIKI.md)。
 
 ### 8.4 版本管理
 
@@ -853,7 +851,7 @@ python tools/training/train.py  # 训练+自动导出ONNX+复制到assets/model/
 
 ## 10. 已知坑点与注意事项
 
-> 赛车控制坑点见 [赛车文档 §7](CODE_WIKI_RACING.md)；鉴宝坑点见 [鉴宝文档 §9](CODE_WIKI_TREASURE.md)。
+> 赛车控制坑点见 [赛车文档 §7](../maaracing_assistant/plugins/racing/CODE_WIKI.md)；鉴宝坑点见 [鉴宝文档 §9](../maaracing_assistant/plugins/treasure/CODE_WIKI.md)。
 
 ### 10.1 系统层
 
@@ -991,17 +989,17 @@ python tools/training/train.py  # 训练+自动导出ONNX+复制到assets/model/
 
 ## 附录：类速查表
 
-> 主程类速查见下表；RacingLoop 见 [赛车文档 §1](CODE_WIKI_RACING.md)，鉴宝类（TreasureModule / TreasureStageDetector / TreasureOcr / TreasureDebugRenderer）见 [鉴宝文档 §7](CODE_WIKI_TREASURE.md)。
+> 主程类速查见下表；RacingLoop 见 [赛车文档 §1](../maaracing_assistant/plugins/racing/CODE_WIKI.md)，鉴宝类（TreasureModule / TreasureStageDetector / TreasureOcr / TreasureDebugRenderer）见 [鉴宝文档 §7](../maaracing_assistant/plugins/treasure/CODE_WIKI.md)。
 
 | 类名 | 文件 | 核心职责 |
 |------|------|----------|
 | `MaaRacingAssistantController` | core/controller.py | 主控编排、MAA绑定、阶段调度 |
 | `ButtonDef` | plugins/racing/navigation.py | 导航按钮配置数据类 |
 | `Navigation` | plugins/racing/navigation.py | 光标识别追踪、模板匹配、摇杆导航 |
-| `RacingLoop` | plugins/racing/loop.py → [赛车文档](CODE_WIKI_RACING.md) | 自动驾驶YOLO循环、决策、手柄控制 |
+| `RacingLoop` | plugins/racing/loop.py → [赛车文档](../maaracing_assistant/plugins/racing/CODE_WIKI.md) | 自动驾驶YOLO循环、决策、手柄控制 |
 | `YOLODetector` | core/yolo_detector.py | ONNX推理、per-class NMS |
-| `RacingModule` | plugins/racing/module.py → [赛车文档 §2](CODE_WIKI_RACING.md) | 极速狂飙活动流程（导航+比赛） |
-| `TreasureModule` | plugins/treasure/module.py → [鉴宝文档 §1](CODE_WIKI_TREASURE.md) | 巅峰鉴宝活动模块（12阶段状态机） |
+| `RacingModule` | plugins/racing/module.py → [赛车文档 §2](../maaracing_assistant/plugins/racing/CODE_WIKI.md) | 极速狂飙活动流程（导航+比赛） |
+| `TreasureModule` | plugins/treasure/module.py → [鉴宝文档 §1](../maaracing_assistant/plugins/treasure/CODE_WIKI.md) | 巅峰鉴宝活动模块（12阶段状态机） |
 | `MRAGUI` | ~~gui.py~~ → `archive/legacy_gui/` | 旧 ttkbootstrap 图形界面（已归档） |
 | `Sidecar` | core/sidecar.py | JSONL RPC 业务后端（mra_shell 托管） |
 | `NavigationDebugger` | core/debug.py | PEEP预览、截图标注存盘 |

@@ -26,6 +26,7 @@ from maaracing_assistant.core.window_utils import (
     ensure_dpi_aware,
     find_game_hwnd,
     is_window_on_screen,
+    resize_game_window_720p,
 )
 from maaracing_assistant.core.logger import logger
 from maaracing_assistant.core.base import ActivityContext, ModuleDependencyError
@@ -242,6 +243,10 @@ class MaaRacingAssistantController:
         # 切前台失败仅 WARNING 提示（不终止）：逻辑继续运行，点击时若游戏非前台会被前台校验取消
         if not activate_window(hwnd):
             logger.log("切换到游戏窗口前台失败（Windows 前台锁定）——逻辑继续运行，点击需游戏在前台", "WARNING")
+
+        # 统一把所有模块的游戏窗口客户区调整为 720p（截图/模板/ROI 均按 720p 归一化）。
+        # 调整失败不阻断：退化到原尺寸并交由后续 16:9 / 屏幕内校验兜底告警。
+        resize_game_window_720p(hwnd)
 
         # 窗口屏幕内校验：窗口完全不可见（被最小化且无法自动还原 / 被拖出屏幕）→ 无法点击 → 报错并终止模块
         if not is_window_on_screen(hwnd):

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 从宝藏局测试会话的 raw 帧里，按归一化坐标裁剪出模板小图，
-保存到 assets/resource/image/treasure/，供 TreasureStageDetector 做 cv2.matchTemplate。
+保存到 plugins/treasure/resources/，供 TreasureStageDetector 做 cv2.matchTemplate。
 
 锚点选择原则（唯一 + 稳定 + 不受文字大小影响）：
   1. 独有的文字大标题（如「第1回合」「竞拍失败」「前往鉴宝」「领取」）

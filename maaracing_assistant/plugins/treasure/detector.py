@@ -44,7 +44,7 @@ MATCH_SCALES: tuple[float, ...] = (
 )
 
 # ============================================================
-# 搜索 ROI：从 assets/resource/image/treasure/treasure_rois.json 读取
+# 搜索 ROI：从插件资源目录 plugins/treasure/resources/treasure_rois.json 读取
 # （调试台 tools/treasure_debug_studio 负责可视化校准并保存该文件）。
 # rect 为归一化坐标 (x1n, y1n, x2n, y2n)，匹配时直接乘当前输入帧 W/H。
 # 注意：不提供硬编码 fallback——JSON 缺失/失败时如实报告并跳过，

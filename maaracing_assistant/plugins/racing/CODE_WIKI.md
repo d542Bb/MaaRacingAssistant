@@ -4,8 +4,8 @@
 > 聚焦赛车控制核心：决策算法 / 前馈瞄准 / 防碰撞 / 车道保持 / 性能调优 / 活动流程。
 >
 > 配套文档：
-> - 主文档：[CODE_WIKI.md](CODE_WIKI.md)（架构 / 导航引擎 / 配置 / 调试 / GUI）
-> - 鉴宝域：[CODE_WIKI_TREASURE.md](CODE_WIKI_TREASURE.md)
+> - 主文档：[docs/CODE_WIKI.md](../../docs/CODE_WIKI.md)（架构 / 导航引擎 / 配置 / 调试 / GUI）
+> - 鉴宝域：[../treasure/CODE_WIKI.md](../treasure/CODE_WIKI.md)
 
 ---
 

@@ -320,9 +320,6 @@ class SidecarService:
 
     def start(self, params):
         """快速响应 + worker 线程跑 controller；stop/get_status 在运行期间必须仍可处理。"""
-        if not self._controller.check_model():
-            return (False, None, "模型未找到，请检查 assets/model/model.onnx")
-
         start_from = params.get("start_from")
         with self._lock:
             module_id = self._selected_module
@@ -353,6 +350,11 @@ class SidecarService:
 
         if info["requires_gamepad_exclusive"] and has_physical_controller():
             return (False, None, "请断开所有物理手柄后再运行")
+
+        # 仅对申明了 onnx 能力（如 racing 的 YOLO）的模块校验本地模型存在；
+        # 鉴宝等无需模型的模块不再被无条件拦截。
+        if "onnx" in info["requires"] and not self._controller.check_model():
+            return (False, None, "模型未找到，请检查 assets/model/model.onnx")
 
         # 启动阶段检测：依赖虚拟手柄的模块（racing）在 ViGEmBus 驱动缺失时提前拦下，
         # 返回结构化错误码 VIGEM_BUS_MISSING，供前端弹「下载并安装 ViGEmBus 驱动」引导。

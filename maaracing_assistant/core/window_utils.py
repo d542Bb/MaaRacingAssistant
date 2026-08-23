@@ -352,6 +352,49 @@ def check_game_window_aspect(hwnd: int, tol: float = 0.05) -> bool:
     return ok
 
 
+# =====================================================================
+#  窗口尺寸调整（写：把游戏窗口客户区统一调整为 720p）
+# =====================================================================
+
+# SWP 组合标志：保留位置与 Z 序、不激活；FRAMECHANGED 让系统重算边框
+_SWP_FRAMECHANGED = 0x0020
+_SW_RESTORE = 9
+
+
+def resize_game_window_720p(hwnd: int, client_w: int = 1280, client_h: int = 720) -> bool:
+    """把游戏窗口客户区调整为 1280×720（720p），保持左上角位置不变。等幂：已是目标尺寸则跳过。
+
+    各模块启动（connect）前统一调用，保证截图帧 / 模板 / ROI 均落在 720p 客户区，
+    避免多尺寸适配前的识别错位。返回是否成功；窗口无效或已是最佳尺寸同样视为成功返回 True。
+    """
+    size = window_client_size(hwnd)
+    if size is not None and size[0] == client_w and size[1] == client_h:
+        return True
+    if not hwnd:
+        return False
+    try:
+        if _UD.IsIconic(hwnd):
+            _UD.ShowWindow(hwnd, _SW_RESTORE)  # 最小化先还原，再调整尺寸
+        style = _UD.GetWindowLongW(hwnd, _GWL_STYLE)
+        exstyle = _UD.GetWindowLongW(hwnd, _GWL_EXSTYLE)
+        rect = wintypes.RECT(0, 0, client_w, client_h)
+        # 由目标客户区反推包含边框的窗口总尺寸（菜单条按无系统菜单处理）
+        if not _UD.AdjustWindowRectEx(ctypes.byref(rect), style, 0, exstyle):
+            return False
+        win_w = rect.right - rect.left
+        win_h = rect.bottom - rect.top
+        ok = bool(_UD.SetWindowPos(
+            hwnd, 0, 0, 0, win_w, win_h,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | _SWP_FRAMECHANGED,
+        ))
+        if ok:
+            logger.log(f"[坐标] 已将游戏窗口客户区调整为 {client_w}x{client_h}（720p）")
+        return ok
+    except Exception:
+        logger.log("[坐标] 调整窗口尺寸失败", "WARNING")
+        return False
+
+
 def hwnd_from_pid(pid: int) -> int:
     user32 = ctypes.windll.user32
     _cache = {}

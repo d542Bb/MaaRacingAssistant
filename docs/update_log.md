@@ -2,6 +2,16 @@
 
 > 按时间顺序记录每次重大修改。
 
+## 2026-08-23
+
+### v0.18.0-dev.2 插件资源自包含 + 720p 窗口统一 🏗️
+- **版本号：** `v0.18.0-dev.2`（预发布；基于 v0.18.0-dev.1 同系列顺延）
+- **racing 资源随插件自包含：** 5 张模板 jpg（settings/activity/find_opponent/store_popup/round1_end）与 `pipeline/tasks.json` 迁入 `plugins/racing/resources/`；`module.py` 增 `_RES_DIR` 常量使 `post_bundle(str(_RES_DIR))` 自引用（不再依赖主程序 `assets/resource/`）；`loop.py` 结束模板、`navigation.py` `_load_template` 均改 `__file__` 相对定位到模块资源目录（顺带修掉 loop.py 原 `parent.parent` 层级错误隐患）；原 `assets/resource/` 已删除
+- **CODE_WIKI 随插件：** `docs/CODE_WIKI_RACING.md` → `plugins/racing/CODE_WIKI.md`、`docs/CODE_WIKI_TREASURE.md` → `plugins/treasure/CODE_WIKI.md`；主文档保留在 `docs/CODE_WIKI.md`，AGENTS.md / 主文档跨域链接 / ARCHITECTURE / SELF_CHECK 均已同步更新为插件相对路径
+- **720p 窗口统一：** `window_utils.py` 新增 `resize_game_window_720p`，controller 连接游戏时统一将客户区调为 1280×720（截图/模板/ROI 归一化基础），调整失败不阻断
+- **onnx 能力按需校验：** `base.py` 增 `onnx` capability；`sidecar.py` 启动校验改为仅对申明 `REQUIRES` 含 `onnx` 的模块（如 racing）检查本地模型，鉴宝等无需模型的模块不再被无条件拦截
+- **打包适配：** `assemble.ps1` 白名单移除 `assets\resource`（插件资源由 robocopy 整个包带上），保留 `assets\model`（YOLO 模型主程序共享）；文档遗留过时路径注释（detector.py / extract_treasure_templates.py）修正
+
 ## 2026-08-22
 
 ### v0.18.0-dev.1 模块化架构分离（core/ + plugins/ 插件体系）🏗️

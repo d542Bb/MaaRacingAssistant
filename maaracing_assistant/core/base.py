@@ -104,6 +104,10 @@ class ActivityContext:
         # 依赖它的模块（如 racing）在启动前拦下，而不是运行中途崩。
         if self.app.gamepad_available():
             result.add("gamepad")
+        # onnx 能力：本地 YOLO 模型（assets/model/model.onnx）存在时暴露。
+        # 只有申明 REQUIRES 含 "onnx" 的模块（如 racing）启动才依赖它，鉴宝等无需拦截。
+        if self.app.check_model():
+            result.add("onnx")
         # debug_renderer 恒可用（debug 实例常驻）
         result.add("debug_renderer")
         return frozenset(result)

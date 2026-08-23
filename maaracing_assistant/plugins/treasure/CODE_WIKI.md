@@ -4,8 +4,8 @@
 > 聚焦鉴宝核心：12 阶段状态机 / 准星意图 / 出价策略（bid_strategy）/ 异步 OCR / ROI 三段分类。
 >
 > 配套文档：
-> - 主文档：[CODE_WIKI.md](CODE_WIKI.md)（架构 / 导航引擎 / 配置 / 调试 / GUI）
-> - 赛车域：[CODE_WIKI_RACING.md](CODE_WIKI_RACING.md)
+> - 主文档：[docs/CODE_WIKI.md](../../docs/CODE_WIKI.md)（架构 / 导航引擎 / 配置 / 调试 / GUI）
+> - 赛车域：[../racing/CODE_WIKI.md](../racing/CODE_WIKI.md)
 
 ---
 

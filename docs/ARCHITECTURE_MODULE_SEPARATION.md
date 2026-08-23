@@ -3,7 +3,7 @@
 > **状态**：P0–P5 已落地（2026-08-22 分阶段执行完成，每阶段独立提交）。
 > **本文档**即 `core/capabilities.py` 注释所引用的 `ARCHITECTURE_MODULE_SEPARATION.md`（此前为悬空引用）。
 > **方向已确认**（2026-08-22 用户决策）：① 运行时自动扫描注册；② 模块专属资源随模块进 `plugins/<id>/resources/`；③ 只被单活动使用的能力下沉进该模块。
-> **后置项**：racing 专属模板暂留 `assets/resource/image/`（受 `resource.post_bundle` MAA bundle 机制约束，需实测后迁移）；racing 穿透私有 API 的收口（§4.3）待做。
+> **后置项**：✅ 已解决（2026-08-23）——racing 专属模板已迁入 `maaracing_assistant/plugins/racing/resources/` 并自引用（`resource.post_bundle` 指向 `_RES_DIR`），原 `assets/resource/` 已移除；racing 穿透私有 API 的收口（§4.3）待做。
 
 ---
 
@@ -122,8 +122,8 @@ MODULE_CLASS = "module.RacingModule"   # plugins/<id>/module.py 中的类
 用户明确要求「别忘了迁移各自的 codewiki」。原则：**文档与最终目录结构保持一致**。
 
 - `docs/CODE_WIKI.md`（主文档）：保留架构总览与分层图；§3 目录结构章节更新为 `core/ + plugins/` 结构；§5/§6 类速查与依赖关系更新实际路径。
-- `docs/CODE_WIKI_RACING.md`：全部引用路径更新为 `plugins/racing/`；新增一节说明插件化后的模块入口与资源位置。
-- `docs/CODE_WIKI_TREASURE.md`：全部引用路径更新为 `plugins/treasure/`；新增 `store.py` 落盘子域说明；`treasure_rois.json` 路径更新。
+- `maaracing_assistant/plugins/racing/CODE_WIKI.md`（赛车域）：已随插件移动；资源自包含于 `plugins/racing/resources/`（`resource.post_bundle` 指向该目录）。
+- `maaracing_assistant/plugins/treasure/CODE_WIKI.md`（鉴宝域）：已随插件移动；`treasure_rois.json` 与模板位于 `plugins/treasure/resources/`。
 - `docs/SELF_CHECK.md` / `README.md` / `CONTRIBUTING.md`：涉及模块路径的描述同步。
 
 ---

@@ -6,6 +6,7 @@ MAA Resource/Tasker/RacingLoop 归属模块内部创建与管理。
 """
 
 import time
+from pathlib import Path
 
 from maa.tasker import Tasker
 from maa.resource import Resource
@@ -18,13 +19,17 @@ from maaracing_assistant.core.pipeline_logger import PipelineLogger
 from maaracing_assistant.core.logger import logger
 
 
+# 模块资源目录（随插件自包含：plugins/racing/resources/）
+_RES_DIR = Path(__file__).resolve().parent / "resources"
+
+
 class RacingModule(ActivityModule):
     """极速狂飙：导航 + YOLO 比赛循环"""
 
     ID = "racing"
     NAME = "极速狂飙"
     REQUIRES_GAMEPAD_EXCLUSIVE = True
-    REQUIRES = frozenset({"capture", "gamepad"})
+    REQUIRES = frozenset({"capture", "gamepad", "onnx"})
 
     # 阶段顺序（GUI 断点选择用）
     STAGE_ORDER = [
@@ -61,7 +66,7 @@ class RacingModule(ActivityModule):
             str(self.ctx.model_path), debug=self.ctx.debug,
             capture_backend=self.ctx.capture_backend, hwnd=self.ctx.hwnd)
         resource.register_custom_action("RacingLoop", self.racing_loop)
-        resource.post_bundle(self.ctx.proj / "assets" / "resource").wait()
+        resource.post_bundle(str(_RES_DIR)).wait()
         # MAA 绑定经 ctx 窄入口（内部持有 Win32Controller，模块不接触高权限对象）
         self.ctx.bind_tasker(tasker, resource)
         tasker.add_context_sink(PipelineLogger())
