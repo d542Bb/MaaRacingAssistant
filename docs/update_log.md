@@ -2,6 +2,16 @@
 
 > 按时间顺序记录每次重大修改。
 
+## 2026-08-24
+
+### v0.19.0 正式版：入口体验三处修复（提权 / 图标 / 解压目录）🏷️
+- **版本号：** `v0.19.0`（正式版；基于 v0.19.0-dev.1 系列成熟，标记为稳定可用交付）
+- **修复启动错误码 740（权限不足）：** 根因 Launcher `CreateProcessW` 拉起声明 `requireAdministrator` 的 `app/mra_shell.exe` 时不弹 UAC，直接返回 `ERROR_ELEVATION_REQUIRED (740)`。为 `apps/mra_launcher/launcher.manifest` 声明 `requireAdministrator`，入口即提权，子进程继承同一 token，单次 UAC 后正常启动
+- **修复入口图标缺失：** 新增 `apps/mra_launcher/launcher.rc`，一次嵌入 `assets/icon.ico`（图标）与内嵌 application manifest；MSVC 编译先 `rc.exe` 生成 `.res` 再 `cl.exe` 链接，消除发布包入口 `MaaRacingAssistant.exe` 无图标、与解压包层级不一致的问题
+- **修复解压多套一层同名目录：** `assemble.ps1 §7` 由「包一层版本目录」改为「用目录内容作 zip 顶层」，用户选「解压到文件名文件夹」不再双重嵌套，解压后 `MaaRacingAssistant.exe` 直接在解压根
+- **构建侧加固：** `rc.exe` 对带引号的 `/fo` 及含环境变量路径存在 RC1109 坑，assemble 改为先 `Push-Location` 到 `apps/mra_launcher`、用无引号相对名编译后删除临时 `.res`，规避本地/CI 差异
+- **发版说明：** 本版本经实机验证为可正常使用的稳定交付（对外/引导用户指向本版本）
+
 ## 2026-08-23
 
 ### v0.19.0-dev.1 原生 Launcher + app/ 产品目录布局 🏗️

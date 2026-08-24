@@ -164,26 +164,45 @@ foreach ($d in $langDirs) {
 # ---------- 2.6 native Launcher 编译 ----------
 # 根目录唯一入口 MaaRacingAssistant.exe（薄 Launcher，见 apps/mra_launcher/launcher.c）。
 # 用 MSVC 编译为静态链接（/MT）GUI 子系统 exe，零外部 runtime 依赖；每次重新编译（体积小、快），不缓存。
-# 优先直接用 PATH 里的 cl（CI 用 setup-msvc 已配置环境）；否则自动探测 vcvarsall.bat 初始化。
+# 现在通过 launcher.rc 一次性嵌入两类 Win32 资源：图标（resources/icon）与内嵌申请清单
+# （launcher.manifest 的 requireAdministrator 提权）。作用：① 入口 exe 有图标；
+# ② Launcher 启动即申请管理员权限，CreateProcessW 启动 mra_shell.exe 时子进程继承
+# 同一 token，规避 ERROR_ELEVATION_REQUIRED (740)。
+# 优先直接用 PATH 里的 cl/rc（CI 用 setup-msvc 已配置环境）；否则自动探测 vcvarsall.bat 初始化。
 $launcherSrc = Join-Path $RepoRoot 'apps\mra_launcher\launcher.c'
 $launcherOut = Join-Path $StageRoot 'MaaRacingAssistant.exe'
-$clInPath = (Get-Command cl.exe -ErrorAction SilentlyContinue)
-if ($clInPath -and (Test-Path -Path $launcherSrc)) {
-    Write-Host "[assemble] 用 PATH 中的 cl.exe 编译 Launcher"
-    & cl.exe /nologo /utf-8 /O2 /MT /Fe:"$launcherOut" /Fo:"$env:TEMP\mra_launcher.obj" "$launcherSrc" /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib | Out-Null
-    if ($LASTEXITCODE -ne 0) { $errors.Add('Launcher 编译失败 (cl.exe 退出码 ' + $LASTEXITCODE + ')') }
-} elseif (-not $VcVarsAll) {
-    $errors.Add('未找到 MSVC (cl.exe 不在 PATH，也无 vcvarsall.bat)；无法编译 native Launcher。用 -VcVarsAll 指定路径，或 CI 先 setup-msvc')
-} elseif (-not (Test-Path $launcherSrc)) {
-    $errors.Add('missing launcher source: ' + $launcherSrc)
-} else {
-    Write-Host "[assemble] 用 vcvarsall 编译 Launcher: $(Split-Path $launcherOut -Leaf)"
-    # cmd /c 内 call vcvarsall 一次性生效（PowerShell 无法直接继承批处理环境）
-    $cmdLine = "`"$VcVarsAll`" x64 >nul 2>&1 && cl.exe /nologo /utf-8 /O2 /MT /Fe:`"$launcherOut`" /Fo:`"$env:TEMP\mra_launcher.obj`" `"$launcherSrc`" /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib"
-    cmd /c $cmdLine | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        $errors.Add('Launcher 编译失败 (cl.exe 退出码 ' + $LASTEXITCODE + ')')
+$launcherObj = Join-Path $env:TEMP 'mra_launcher.obj'
+# rc 内部的相对资源路径（..\..\assets\icon.ico、launcher.manifest）是按编译时的工作目录
+# （而非 .rc 文件所在目录）解析的，因此编译前必须把 cwd 切到 apps\mra_launcher 并保持到结束。
+# res 以相对名下发当前目录生成：rc.exe 对带引号的 /fo 及环境变量路径存在 RC1109 坑，
+# 无引号相对名最稳；编译后立即删除该临时 res，避免污染源码目录。
+$launcherDir = Join-Path $RepoRoot 'apps\mra_launcher'
+$launcherRes = Join-Path $launcherDir 'mra_launcher.res'
+Push-Location $launcherDir
+try {
+    $clInPath = (Get-Command cl.exe -ErrorAction SilentlyContinue)
+    if ($clInPath -and (Test-Path -Path $launcherSrc)) {
+        Write-Host "[assemble] 用 PATH 中的 cl.exe/rc.exe 编译 Launcher"
+        & rc.exe /nologo /fomra_launcher.res launcher.rc
+        if ($LASTEXITCODE -ne 0) { $errors.Add('Launcher 资源编译失败 (rc.exe 退出码 ' + $LASTEXITCODE + ')') }
+        & cl.exe /nologo /utf-8 /O2 /MT /Fe:"$launcherOut" /Fo:"$launcherObj" launcher.c mra_launcher.res /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib | Out-Null
+        Remove-Item $launcherRes -Force -ErrorAction SilentlyContinue
+        if ($LASTEXITCODE -ne 0) { $errors.Add('Launcher 编译失败 (cl.exe 退出码 ' + $LASTEXITCODE + ')') }
+    } elseif (-not $VcVarsAll) {
+        $errors.Add('未找到 MSVC (cl.exe 不在 PATH，也无 vcvarsall.bat)；无法编译 native Launcher。用 -VcVarsAll 指定路径，或 CI 先 setup-msvc')
+    } elseif (-not (Test-Path -Path $launcherSrc)) {
+        $errors.Add('missing launcher source: ' + $launcherSrc)
+    } else {
+        Write-Host "[assemble] 用 vcvarsall 编译 Launcher: $(Split-Path $launcherOut -Leaf)"
+        # cmd /c 内 call vcvarsall 一次性生效（PowerShell 无法直接继承批处理环境）
+        $cmdLine = "`"$VcVarsAll`" x64 >nul 2>&1 && rc.exe /nologo /fomra_launcher.res launcher.rc && cl.exe /nologo /utf-8 /O2 /MT /Fe:`"$launcherOut`" /Fo:`"$launcherObj`" launcher.c mra_launcher.res /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib & del /q /s mra_launcher.res >nul 2>&1"
+        cmd /c $cmdLine | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            $errors.Add('Launcher 编译失败 (cl.exe 退出码 ' + $LASTEXITCODE + ')')
+        }
     }
+} finally {
+    Pop-Location
 }
 if (-not (Test-Path $launcherOut)) {
     $errors.Add('Launcher 编译后未生成: ' + $launcherOut)
@@ -259,7 +278,9 @@ if ($errors.Count -gt 0) {
 # ---------- 7. zip + sha256 ----------
 $zip = Join-Path $OutRoot ($Name + '.zip')
 if (Test-Path $zip) { Remove-Item $zip -Force }
-& tar -a -cf $zip -C $OutRoot $Name
+# 只用 $Name 目录的内容作 zip 顶层（而非再包一层 $Name 目录），
+# 避免用户"解压到文件名文件夹"时目录多做一层嵌套。解压后 MaaRacingAssistant.exe 直接在解压根。
+& tar -a -cf $zip -C (Join-Path $OutRoot $Name) .
 if ($LASTEXITCODE -ne 0) { exit 1 }
 $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
 $shaLine = $hash + '  ' + (Split-Path $zip -Leaf)
