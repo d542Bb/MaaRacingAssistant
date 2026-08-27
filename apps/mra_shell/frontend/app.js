@@ -1061,8 +1061,13 @@
 
   // 按模块渲染「数据/设置」页并绑定当前模块的控件事件
   function renderModulePages(moduleId) {
+    // 防注入白名单：moduleId 会拼入 HTML 模板（如 id="${mid}-..."），
+    // 只接受注册表中已声明的模块键，非法值一律回退 treasure（兼断 CodeQL js/xss-through-dom 污点）
+    if (!Object.prototype.hasOwnProperty.call(MODULE_PAGE_DEFS, moduleId)) {
+      moduleId = 'treasure';
+    }
     currentModuleId = moduleId;
-    const def = MODULE_PAGE_DEFS[moduleId] || MODULE_PAGE_DEFS.treasure;
+    const def = MODULE_PAGE_DEFS[moduleId];
     const dataPage = $('page-data');
     const settingsPage = $('page-settings');
     if (dataPage) dataPage.innerHTML = def.data(moduleId);

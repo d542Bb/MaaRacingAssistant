@@ -16,6 +16,8 @@ jobs:
   test:
     name: 单元测试 (pytest)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       matrix:
         python-version: ['3.10', '3.11']

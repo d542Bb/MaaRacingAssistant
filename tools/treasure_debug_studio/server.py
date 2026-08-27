@@ -392,9 +392,11 @@ class Handler(BaseHTTPRequestHandler):
     def _serve_static(self, rel: str):
         if rel in ("", "/"):
             rel = "index.html"
-        # 防目录穿越
-        file = (STATIC_DIR / rel).resolve()
-        if not str(file).startswith(str(STATIC_DIR.resolve())) or not file.is_file():
+        # 防目录穿越：resolve + is_relative_to 严格限定在静态目录内
+        # （不用 str.startswith —— 同前缀目录如 staticX 会误判通过）
+        base = STATIC_DIR.resolve()
+        file = (base / rel).resolve()
+        if not file.is_relative_to(base) or not file.is_file():
             self.send_error(404)
             return
         ctype = {
@@ -479,9 +481,10 @@ class Handler(BaseHTTPRequestHandler):
     def _resolve_raw(self, session: str, name: str) -> Path | None:
         if not (_SESSION_RE.match(session) and _RAW_RE.match(name)):
             return None
-        p = (DEBUG_ROOT / session / "raw" / name).resolve()
         base = (DEBUG_ROOT / session / "raw").resolve()
-        if p.is_file() and str(p).startswith(str(base)):
+        p = (base / name).resolve()
+        # is_relative_to 严格限定在 session raw 目录内，防同前缀目录绕过
+        if p.is_file() and p.is_relative_to(base):
             return p
         return None
 
