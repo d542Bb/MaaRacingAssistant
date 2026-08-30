@@ -431,6 +431,20 @@ class SidecarService:
         except Exception as exc:  # noqa: BLE001
             return (False, None, f"打开链接失败: {exc}")
 
+    def open_user_data_folder(self, params):
+        """用资源管理器打开用户数据目录（%APPDATA%/MaaRacingAssistant）。
+
+        目录不存在时自动创建，避免首次运行即报错。os.startfile 是 Windows
+        原生调起关联程序的方式，比 subprocess.Popen(['explorer', path]) 更稳。
+        """
+        path = user_data_dir()
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(path))  # type: ignore[attr-defined]  # Windows 特有
+            return (True, {"path": str(path)}, None)
+        except Exception as exc:  # noqa: BLE001
+            return (False, None, f"打开文件夹失败: {exc}")
+
     # ---------- 关于页：检查更新 / 公告 ----------
 
     _GITHUB_REPO = "d542Bb/MaaRacingAssistant"

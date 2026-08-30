@@ -1277,10 +1277,19 @@
       });
     });
 
-    // 快捷工具（后端暂无对应方法，先做 UI 提示）
+    // 快捷工具：folder → sidecar open_user_data_folder；其余暂未接入
     document.querySelectorAll('.mra-tool-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        showError('该工具尚未接入 sidecar');
+      btn.addEventListener('click', async () => {
+        const tool = btn.dataset.tool;
+        if (tool === 'folder') {
+          try {
+            await mra.call('open_user_data_folder', {});
+          } catch (e) {
+            showError('打开文件夹失败: ' + e.message);
+          }
+        } else {
+          showError('该工具尚未接入 sidecar');
+        }
       });
     });
   }
