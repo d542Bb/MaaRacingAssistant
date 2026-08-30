@@ -51,6 +51,85 @@
     showError._t = setTimeout(() => { toast.style.display = 'none'; }, 4000);
   }
 
+  // ---------- 通用模态弹窗 ----------
+  // overlay + 居中卡片；opts: { title, titleColor, bodyHtml, maxWidth, buttons:[{text, primary, asLink, href, onClick(modal)}] }
+  // onClick 回调自主决定是否调用 modal.close()；点空白处默认关闭
+  // 弹窗开关时向 C# 发 {type:'modal'}：置灰/恢复原生标题栏按钮（HTML 盖不住 AppWindowTitleBar overlay）
+  let modalOpenCount = 0;
+  function notifyModalState() {
+    try {
+      window.chrome.webview.postMessage({ type: 'modal', open: modalOpenCount > 0 });
+    } catch (e) { /* 非 WebView2 环境（浏览器直开）忽略 */ }
+  }
+
+  function openModal(opts) {
+    modalOpenCount++;
+    notifyModalState();
+    const overlay = document.createElement('div');
+    overlay.className = 'mra-modal-overlay';
+    overlay.style.cssText =
+      'position:fixed;inset:0;background:rgba(0,0,0,0.45);display:flex;align-items:center;' +
+      'justify-content:center;z-index:9999;';
+    const card = document.createElement('div');
+    card.className = 'mra-modal-card';
+    card.style.cssText =
+      'background:var(--mra-surface,#1c1f26);border:1px solid var(--mra-border,#2a2f3a);' +
+      'border-radius:12px;padding:22px 24px;max-width:' + (opts.maxWidth || 420) + 'px;width:92%;' +
+      'box-shadow:0 12px 40px rgba(0,0,0,0.4);';
+    const h3 = document.createElement('h3');
+    h3.style.cssText = 'margin:0 0 10px;font-size:15px;color:' +
+      (opts.titleColor || 'var(--mra-foreground,#e5e7eb)') + ';';
+    h3.textContent = opts.title || '';
+    card.appendChild(h3);
+    const body = document.createElement('div');
+    body.innerHTML = opts.bodyHtml || '';
+    card.appendChild(body);
+    const modal = {
+      overlay, card,
+      close: () => {
+        if (overlay._closing) return;
+        overlay._closing = true;
+        modalOpenCount = Math.max(0, modalOpenCount - 1);
+        notifyModalState();
+        overlay.classList.add('mra-modal-overlay--closing');
+        card.classList.add('mra-modal-card--closing');
+        setTimeout(() => overlay.remove(), 130);
+      }
+    };
+    if (Array.isArray(opts.buttons) && opts.buttons.length) {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;align-items:center;margin-top:14px;';
+      opts.buttons.forEach((b) => {
+        let el;
+        if (b.asLink) {
+          el = document.createElement('a');
+          el.href = b.href || '#';
+          el.target = '_blank';
+          el.rel = 'noopener';
+          el.style.cssText = 'font-size:12px;color:var(--mra-info,#38bdf8);';
+        } else {
+          el = document.createElement('button');
+          el.style.cssText = 'cursor:pointer;border-radius:8px;font-size:13px;padding:8px 16px;' +
+            (b.primary
+              ? 'border:none;background:var(--mra-primary,#2563eb);color:#fff;'
+              : 'border:1px solid var(--mra-border,#2a2f3a);background:transparent;color:var(--mra-foreground-secondary,#8b93a3);');
+        }
+        el.textContent = b.text;
+        if (b.onClick) el.addEventListener('click', () => b.onClick(modal));
+        row.appendChild(el);
+      });
+      card.appendChild(row);
+    }
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', (ev) => { if (ev.target === overlay) modal.close(); });
+    // 进场动画结束后摘动画类：卡片回归主文档光栅化，避免非整数 DPI 下文字发虚（同 page-slide-in 手法）
+    card.addEventListener('animationend', (ev) => {
+      if (ev.animationName === 'modal-card-in') card.classList.remove('mra-modal-card');
+    });
+    return modal;
+  }
+
   // ---------- ViGEmBus 驱动缺失引导弹框 ----------
   const VIGEM_DL_URL = 'https://github.com/nefarius/ViGEmBus/releases/latest';
   // 关于页底部跳转链接
@@ -61,37 +140,30 @@
     docs: REPO_URL + '/blob/master/docs/CODE_WIKI.md',
   };
   function showVigemDialog(detailMsg) {
-    const overlay = document.createElement('div');
-    overlay.id = 'vigem-dialog';
-    overlay.style.cssText =
-      'position:fixed;inset:0;background:rgba(0,0,0,0.45);display:flex;align-items:center;' +
-      'justify-content:center;z-index:9999;';
-    overlay.innerHTML =
-      '<div style="background:var(--mra-surface,#1c1f26);border:1px solid var(--mra-border,#2a2f3a);' +
-      'border-radius:12px;padding:22px 24px;max-width:420px;width:92%;box-shadow:0 12px 40px rgba(0,0,0,0.4);">' +
-      '<h3 style="margin:0 0 10px;font-size:15px;color:var(--mra-danger,#ef4444);">缺少 ViGEmBus 驱动</h3>' +
-      '<p style="margin:0 0 8px;font-size:13px;line-height:1.6;color:var(--mra-foreground,#e5e7eb);">' +
-      '极速狂飙需要虚拟手柄（vgamepad）控制，底层依赖 <b>ViGEmBus</b> 内核驱动。它无法随解压包分发，需在本机安装一次。</p>' +
-      '<div style="display:flex;gap:10px;justify-content:flex-end;align-items:center;">' +
-      '<a href="' + VIGEM_DL_URL + '" target="_blank" rel="noopener" style="font-size:12px;color:var(--mra-info,#38bdf8);">手动打开下载页</a>' +
-      '<button id="vigem-btn-dl" style="border:none;cursor:pointer;background:var(--mra-primary,#2563eb);color:#fff;' +
-      'padding:8px 16px;border-radius:8px;font-size:13px;">下载并安装 ViGEmBus 驱动</button>' +
-      '<button id="vigem-btn-close" style="border:1px solid var(--mra-border,#2a2f3a);cursor:pointer;background:transparent;color:var(--mra-foreground-secondary,#8b93a3);' +
-      'padding:8px 12px;border-radius:8px;font-size:13px;">暂不</button>' +
-      '</div></div>';
-    document.body.appendChild(overlay);
-    overlay.querySelector('#vigem-btn-dl').onclick = async () => {
-      try {
-        await mra.call('open_vigembus_download', { url: VIGEM_DL_URL });
-      } catch (err) {
-        // 后端打开失败：前端兜底新开标签页
-        window.open(VIGEM_DL_URL, '_blank');
-      }
-      showError('已打开 ViGEmBus 下载页。下载安装后请重新运行。');
-      overlay.remove();
-    };
-    overlay.querySelector('#vigem-btn-close').onclick = () => overlay.remove();
-    overlay.addEventListener('click', (ev) => { if (ev.target === overlay) overlay.remove(); });
+    openModal({
+      title: '缺少 ViGEmBus 驱动',
+      titleColor: 'var(--mra-danger,#ef4444)',
+      bodyHtml:
+        '<p style="margin:0 0 8px;font-size:13px;line-height:1.6;color:var(--mra-foreground,#e5e7eb);">' +
+        '极速狂飙需要虚拟手柄（vgamepad）控制，底层依赖 <b>ViGEmBus</b> 内核驱动。它无法随解压包分发，需在本机安装一次。</p>',
+      buttons: [
+        { text: '手动打开下载页', asLink: true, href: VIGEM_DL_URL },
+        {
+          text: '下载并安装 ViGEmBus 驱动', primary: true,
+          onClick: async (modal) => {
+            try {
+              await mra.call('open_vigembus_download', { url: VIGEM_DL_URL });
+            } catch (err) {
+              // 后端打开失败：前端兜底新开标签页
+              window.open(VIGEM_DL_URL, '_blank');
+            }
+            showError('已打开 ViGEmBus 下载页。下载安装后请重新运行。');
+            modal.close();
+          }
+        },
+        { text: '暂不', onClick: (modal) => modal.close() },
+      ],
+    });
     void detailMsg;
   }
 
@@ -252,6 +324,118 @@
     fetchAnnouncement(); // 启动拉一次公告（进入关于页即展示）
   }
   initAbout();
+
+  // ---------- 关于页彩蛋：点击版本号掉落文字（同款 MAA） ----------
+  // 彩蛋内容占位：null = 掉落当前版本号；想好后填字符串数组即随机取用
+  const FALLING_EGG_TEXTS = null;
+  const MAX_FALLING = 40;
+  // 连点 EGG_DIALOG_CLICKS 次（2s 内不中断）弹出「员工守则」
+  const EGG_DIALOG_CLICKS = 10;
+  let eggClickCount = 0;
+  let eggLastClickAt = 0;
+
+  // 员工守则（规则怪谈，致敬 MAA）
+  const EGG_RULES = [
+    'MaaRacingAssistant 正式版不会出现「调试模式」。如果你在运行时看到 Debug 选项，请立即关闭软件，不要点击它，并联系离你最近的开发者。',
+    '运行前请断开所有物理手柄。如果你已经断开了所有手柄，界面却显示「已连接」，请把它也拔掉。',
+    'AI 的出价建议仅供参考。如果 AI 建议你抵押房产，请重启软件，并道歉。',
+    '软件不会主动发送好友申请。如果你收到来自「MRA_System」的好友请求，不要接受，并删除该账号。',
+    '日志文件不应包含乱码。如果日志中出现「ERROR: 数据解析失败」以外的异常信息，删除日志并重新安装软件。',
+    '从关于页掉落的版本号是正常的。如果它们开始排队，请不要清点数量。',
+    '夜间运行是安全的。但如果软件在凌晨 3:33 自动启动并执行「未知任务」，请拔掉电源，等待日出后再使用。',
+    '请尊重每一位对手。哪怕他连续出价 72 小时没有停过，也不要去检查系统时间。',
+    'YOLO 模型是善良的。你只需付出小小的代价（显存），就能得到她的庇护。',
+    '软件不支持未来版本。如果软件自动更新到一个尚未发布的版本号（如 v99.0.0），不要运行，等待官方公告。',
+    '软件没有语音提示。如果听到低语声、笑声或非程序生成的语音，请关闭扬声器，并检查是否有未知脚本在运行。',
+    '软件不会在周日凌晨更新。如果收到更新提示，请忽略，不要查看更新公告，直到周一。',
+    '最后一条规则不存在。如果你看到了这条，请忘记它，并正常使用 MaaRacingAssistant。',
+  ];
+
+  function showRulesDialog() {
+    const listHtml = EGG_RULES.map((r, i) =>
+      '<p style="display:flex;gap:10px;margin:0 0 10px;font-size:13px;line-height:1.7;' +
+      'color:var(--mra-foreground,#e5e7eb);">' +
+      '<b style="flex-shrink:0;color:var(--mra-primary,#E5484D);">' + (i + 1) + '.</b>' +
+      '<span>' + r + '</span></p>'
+    ).join('');
+    openModal({
+      title: '员工守则',
+      maxWidth: 580,
+      bodyHtml:
+        '<div style="display:flex;gap:14px;align-items:flex-start;">' +
+        '<img src="../../../assets/icon.ico" alt="" style="width:40px;height:40px;flex-shrink:0;margin-top:4px;">' +
+        '<div style="flex:1;min-width:0;max-height:56vh;overflow-y:auto;padding-right:4px;">' + listHtml + '</div>' +
+        '</div>',
+      buttons: [
+        { text: '确定要退出吗？', primary: true, onClick: (modal) => modal.close() },
+      ],
+    });
+  }
+
+  function spawnFallingText(text, cx, cy) {
+    const alive = document.querySelectorAll('.falling-text');
+    if (alive.length >= MAX_FALLING) alive[0].remove();
+    const el = document.createElement('div');
+    el.className = 'falling-text';
+    el.textContent = text;
+    document.body.appendChild(el);
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    let x = cx - w / 2;
+    let y = cy - h / 2;
+    let vx = (Math.random() - 0.5) * 240;
+    let vy = -80 - Math.random() * 100;
+    let rot = 0;
+    let vr = (Math.random() - 0.5) * 160;
+    let bounces = 0;
+    let gone = false;
+    let last = performance.now();
+    function step(now) {
+      const dt = Math.min((now - last) / 1000, 0.05);
+      last = now;
+      vy += 1800 * dt;
+      x += vx * dt;
+      y += vy * dt;
+      rot += vr * dt;
+      const floor = window.innerHeight - h - 8;
+      if (y > floor) {
+        y = floor;
+        vy = -vy * 0.42;
+        vx *= 0.72;
+        vr *= 0.5;
+        if (++bounces > 3 || Math.abs(vy) < 60) gone = true;
+      }
+      el.style.transform = 'translate(' + x + 'px,' + y + 'px) rotate(' + rot + 'deg)';
+      if (gone) {
+        el.style.opacity = '0';
+        setTimeout(() => el.remove(), 500);
+        return;
+      }
+      requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  function initVersionEgg() {
+    ['about-version'].forEach((id) => {
+      const n = $(id);
+      if (!n) return;
+      n.addEventListener('click', (e) => {
+        const now = Date.now();
+        eggClickCount = now - eggLastClickAt < 2000 ? eggClickCount + 1 : 1;
+        eggLastClickAt = now;
+        if (eggClickCount >= EGG_DIALOG_CLICKS) {
+          eggClickCount = 0;
+          showRulesDialog();
+        }
+        const t = Array.isArray(FALLING_EGG_TEXTS) && FALLING_EGG_TEXTS.length
+          ? FALLING_EGG_TEXTS[Math.floor(Math.random() * FALLING_EGG_TEXTS.length)]
+          : n.textContent;
+        spawnFallingText(t, e.clientX, e.clientY);
+      });
+    });
+  }
+  initVersionEgg();
 
   // ---------- 标题栏拖拽区排除 ----------
   // 交互区（brand / tabs）上报给 C# 挖出系统 drag region：双击按钮区不会触发最大化

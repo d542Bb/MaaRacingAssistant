@@ -554,6 +554,27 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .ver-row { display: flex; align-items: center; gap: 12px; padding: 4px 0; }
 .ver-label { font-size: 12px; color: var(--mra-foreground-muted); width: 64px; flex-shrink: 0; }
 .ver-value { font-size: 13px; font-weight: 500; color: var(--mra-foreground); font-family: var(--mra-font-mono); }
+#about-version { cursor: pointer; user-select: none; }
+
+/* 关于页彩蛋：点击版本号掉落的文字 */
+.falling-text {
+  position: fixed; left: 0; top: 0; z-index: 9999;
+  pointer-events: none; user-select: none;
+  font-family: var(--mra-font-mono); font-size: 16px; font-weight: 700;
+  color: var(--mra-primary);
+  text-shadow: 0 2px 10px rgba(229, 72, 77, 0.35);
+  will-change: transform, opacity; transition: opacity 0.5s ease;
+}
+
+/* 通用模态弹窗（app.js openModal）：WinUI 原生风格弹出/退出动画 */
+.mra-modal-overlay { animation: modal-overlay-in 0.15s ease-out both; }
+.mra-modal-overlay--closing { animation: modal-overlay-out 0.12s ease-in both; }
+.mra-modal-card { animation: modal-card-in 0.2s cubic-bezier(0.1, 0.9, 0.2, 1) both; }
+.mra-modal-card--closing { animation: modal-card-out 0.12s ease-in both; }
+@keyframes modal-overlay-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes modal-overlay-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes modal-card-in { from { opacity: 0; transform: scale(1.06); } to { opacity: 1; transform: scale(1); } }
+@keyframes modal-card-out { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(1.05); } }
 .ver-status { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; min-height: 22px; }
 .ver-status--ok { color: var(--mra-success); }
 .ver-status--new { color: var(--mra-primary); font-weight: 500; }
