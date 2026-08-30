@@ -24,6 +24,9 @@ import json
 import os
 import sys
 import threading
+from datetime import datetime
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 from pathlib import Path
 from typing import TextIO, cast
 
@@ -427,6 +430,92 @@ class SidecarService:
             return (True, {"opened": url}, None)
         except Exception as exc:  # noqa: BLE001
             return (False, None, f"打开链接失败: {exc}")
+
+    # ---------- 关于页：检查更新 / 公告 ----------
+
+    _GITHUB_REPO = "d542Bb/MaaRacingAssistant"
+    _RELEASE_URL = f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest"
+    _ANNOUNCEMENT_URLS = (
+        f"https://raw.githubusercontent.com/{_GITHUB_REPO}/master/docs/announcement.json",
+        f"https://cdn.jsdelivr.net/gh/{_GITHUB_REPO}@master/docs/announcement.json",
+    )
+    _NET_TIMEOUT = 4.0  # 秒（手动触发可接受）
+
+    @staticmethod
+    def _http_get(url: str) -> str:
+        """带 UA 的 GET，超时返回空串；不抛网络异常（由调用方处理结果断言）。"""
+        req = Request(url, headers={"User-Agent": f"MaaRacingAssistant/{__version__}"})
+        with urlopen(req, timeout=SidecarService._NET_TIMEOUT) as resp:
+            return resp.read().decode("utf-8")
+
+    def check_update(self, params):
+        """查最新 release 与当前版本比较。仅手动触发（GUI 按钮）。"""
+        try:
+            body = self._http_get(self._RELEASE_URL)
+        except HTTPError as exc:
+            return (True, {"has_update": False, "error": None, "status": "no_release" if exc.code == 404 else "network"}, None)
+        except (URLError, TimeoutError, OSError):
+            return (True, {"has_update": False, "error": "无法连接到更新服务器，请稍后再试", "status": "network"}, None)
+        try:
+            rel = json.loads(body)
+            latest = str(rel.get("tag_name", "")).lstrip("v")
+            published = rel.get("published_at", "")[:10]
+        except (ValueError, TypeError):
+            return (True, {"has_update": False, "error": "更新服务器返回异常数据", "status": "parse"}, None)
+
+        cur = ".".join(str(x) for x in self._version_tuple())
+        has_update = self._compare_versions(latest, cur) > 0
+        return (True, {
+            "has_update": has_update,
+            "latest_tag": latest,
+            "published_at": published,
+            "download_url": f"https://github.com/{self._GITHUB_REPO}/releases/latest",
+            "error": None,
+            "status": "ok",
+        }, None)
+
+    def fetch_announcement(self, params):
+        """拉取公告（主源 raw + 回退 jsdelivr）。过期返回空；数据异常返回空。"""
+        for url in self._ANNOUNCEMENT_URLS:
+            try:
+                body = self._http_get(url)
+                data = json.loads(body)
+            except (HTTPError, URLError, TimeoutError, OSError, ValueError, TypeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            until = str(data.get("effective_until", "")).strip()
+            if until and until < datetime.now().strftime("%Y-%m-%d"):
+                continue  # 过期公告，跳过显示
+            return (True, {
+                "title": str(data.get("title", "")),
+                "body": str(data.get("body", "")),
+                "level": str(data.get("level", "info")),
+                "date": str(data.get("date", "")),
+                "url": str(data.get("url", "")) or "",
+                "url_text": str(data.get("url_text", "查看详情")) or "查看详情",
+            }, None)
+        return (True, {"title": "", "body": "", "level": "none", "date": "", "url": "", "url_text": ""}, None)
+
+    @staticmethod
+    def _version_tuple() -> tuple:
+        """当前版本 → (主, 次, 修) 元组；dev 后缀取基线。异常回退 (0,0,0)。"""
+        import re
+        raw = __version__.split("+")[0].split("-")[0]
+        m = re.match(r"(\d+)\.(\d+)\.(\d+)", raw)
+        if not m:
+            return (0, 0, 0)
+        return tuple(int(x) for x in m.groups())
+
+    @staticmethod
+    def _compare_versions(a: str, b: str) -> int:
+        """semver 三段比较，返回 a-b 的符号（>0 表示 a 较新）。非数字段按 0 处理。"""
+        import re
+        def key(s):
+            nums = re.findall(r"\d+", s) or ["0"]
+            return tuple(int(x) for x in nums[:3] + ["0"] * (3 - len(nums)))
+        ka, kb = key(a), key(b)
+        return (ka > kb) - (ka < kb)
 
     def fetch_logs(self, params):
         lines = logger.get_lines()

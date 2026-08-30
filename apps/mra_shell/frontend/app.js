@@ -164,6 +164,95 @@
     });
   });
 
+  // ---------- 关于页：检查更新 / 公告 ----------
+  function openUrl(url) {
+    if (!url) return;
+    mra.call('open_external_url', { url }).catch((e) => showError('打开链接失败: ' + e.message));
+  }
+
+  // 渲染「版本与更新」卡状态
+  function renderUpdateStatus(statusEl, cls, html) {
+    statusEl.className = 'ver-status ' + cls;
+    statusEl.innerHTML = html;
+  }
+
+  async function checkUpdate() {
+    const btn = $('btn-check-update');
+    const statusEl = $('about-update-status');
+    const releaseEl = $('about-new-release');
+    if (!btn || !statusEl) return;
+    btn.disabled = true;
+    renderUpdateStatus(statusEl, 'ver-status--checking',
+      '<span class="spinner"></span>正在检查更新…');
+    releaseEl.style.display = 'none';
+    try {
+      const d = await mra.call('check_update');
+      if (d.error) {
+        renderUpdateStatus(statusEl, 'ver-status--err', d.error);
+      } else if (d.status === 'no_release') {
+        renderUpdateStatus(statusEl, 'ver-status--ok', '暂无发布版本');
+      } else if (d.has_update) {
+        renderUpdateStatus(statusEl, 'ver-status--new', '发现新版本 v' + d.latest_tag);
+        releaseEl.style.display = 'flex';
+        releaseEl.innerHTML =
+          '<div class="nr-info">' +
+            '<div class="nr-title">v' + d.latest_tag + ' 已发布</div>' +
+            '<div class="nr-sub">' + (d.published_at ? '发布于 ' + d.published_at + ' · ' : '') + '建议更新到最新版本</div>' +
+          '</div>' +
+          '<button class="mra-btn mra-btn--primary" id="btn-go-download" type="button">前往下载<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7"/><path d="M7 7h10v10"/></svg></button>';
+        $('btn-go-download').addEventListener('click', () => openUrl(d.download_url));
+      } else {
+        renderUpdateStatus(statusEl, 'ver-status--ok', '已是最新版本');
+      }
+    } catch (e) {
+      console.error(e);
+      renderUpdateStatus(statusEl, 'ver-status--err', '检查失败：' + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // 拉取并渲染公告
+  async function fetchAnnouncement() {
+    const bodyEl = $('about-announce-body');
+    if (!bodyEl) return;
+    try {
+      const d = await mra.call('fetch_announcement');
+      if (!d || d.level === 'none' || !d.title) {
+        bodyEl.innerHTML = '<div class="about-announce-empty">暂无公告</div>';
+        return;
+      }
+      const cls = d.level === 'warn' ? 'about-announce--warn' : 'about-announce--info';
+      const badge = d.level === 'warn' ? '重要' : '公告';
+      const dateHtml = d.date ? '<span class="about-announce-date">' + d.date + '</span>' : '';
+      const linkHtml = d.url
+        ? '<button class="about-announce-link" id="btn-announce-link" type="button">' + (d.url_text || '查看详情') + '</button>'
+        : '';
+      bodyEl.innerHTML =
+        '<div class="about-announce ' + cls + '">' +
+          '<span class="about-announce-badge">' + badge + '</span>' +
+          '<div class="about-announce-main">' +
+            '<div class="about-announce-title">' + d.title + dateHtml + '</div>' +
+            (d.body ? '<div class="about-announce-body"></div>' : '') +
+            linkHtml +
+          '</div>' +
+        '</div>';
+      if (d.body) bodyEl.querySelector('.about-announce-body').textContent = d.body;
+      const linkBtn = $('btn-announce-link');
+      if (linkBtn) linkBtn.addEventListener('click', () => openUrl(d.url));
+    } catch (e) {
+      console.error(e);
+      bodyEl.innerHTML = '<div class="about-announce-empty">暂无公告</div>';
+    }
+  }
+
+  function initAbout() {
+    const btn = $('btn-check-update');
+    if (btn) btn.addEventListener('click', checkUpdate);
+    fetchAnnouncement(); // 启动拉一次公告（进入关于页即展示）
+  }
+  initAbout();
+
   // ---------- 标题栏拖拽区排除 ----------
   // 交互区（brand / tabs）上报给 C# 挖出系统 drag region：双击按钮区不会触发最大化
   function reportDragExcludes() {
@@ -193,6 +282,8 @@
       const data = await mra.call('get_initial_state');
       $('app-version').textContent = 'v' + data.version;
       $('about-version').textContent = 'v' + data.version;
+      const verCur = $('about-ver-current');
+      if (verCur) verCur.textContent = 'v' + data.version;
       renderModuleSelect(data.modules, data.selected_module);
       state.stages = data.stages || [];
       renderStageList();

@@ -134,65 +134,22 @@
         </div>
 
         <div class="card">
-          <div class="card-head"><h3>技术栈</h3></div>
-          <div class="card-body">
-            <div class="tech-grid">
-              <div class="tech-item">
-                <div class="tech-icon" style="background:var(--mra-info-bg);color:var(--mra-info);">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/></svg>
-                </div>
-                <div style="min-width:0;">
-                  <div class="tech-name">MAA Framework</div>
-                  <div class="tech-sub">5.11.1 · 流程编排</div>
-                </div>
-              </div>
-              <div class="tech-item">
-                <div class="tech-icon" style="background:rgba(139,92,246,0.1);color:#8B5CF6;">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/></svg>
-                </div>
-                <div style="min-width:0;">
-                  <div class="tech-name">YOLOv8 + ONNX Runtime</div>
-                  <div class="tech-sub">目标检测</div>
-                </div>
-              </div>
-              <div class="tech-item">
-                <div class="tech-icon" style="background:var(--mra-success-bg);color:var(--mra-success);">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" x2="10" y1="11" y2="11"/><line x1="8" x2="15" y1="12" y2="18"/><line x1="15" x2="22" y1="8" y2="8"/><path d="M12 22v-2"/><path d="M4 12H2"/><path d="M6 6l-1-1"/><path d="M10 4l1-1"/><path d="M14 4l-1-1"/><path d="M18 6l1-1"/><path d="M20 12h2"/><path d="M17 10l1 1"/><path d="M17 14l-1 1"/><circle cx="4" cy="18" r="2"/><circle cx="20" cy="18" r="2"/></svg>
-                </div>
-                <div style="min-width:0;">
-                  <div class="tech-name">vgamepad</div>
-                  <div class="tech-sub">0.1.1 · 虚拟手柄</div>
-                </div>
-              </div>
-              <div class="tech-item">
-                <div class="tech-icon" style="background:var(--mra-danger-bg);color:var(--mra-danger);">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
-                </div>
-                <div style="min-width:0;">
-                  <div class="tech-name">OpenCV</div>
-                  <div class="tech-sub">图像处理</div>
-                </div>
-              </div>
-              <div class="tech-item">
-                <div class="tech-icon" style="background:var(--mra-warning-bg);color:var(--mra-warning);">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
-                </div>
-                <div style="min-width:0;">
-                  <div class="tech-name">WinUI 3 + WebView2</div>
-                  <div class="tech-sub">原生窗口 + HTML 前端</div>
-                </div>
-              </div>
-              <div class="tech-item">
-                <div class="tech-icon" style="background:rgba(20,184,166,0.1);color:#14B8A6;">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-                </div>
-                <div style="min-width:0;">
-                  <div class="tech-name">Python 3.11+</div>
-                  <div class="tech-sub">运行环境</div>
-                </div>
-              </div>
-            </div>
+          <div class="card-head"><h3>版本与更新</h3><span class="spacer"></span>
+            <button class="mra-btn" id="btn-check-update" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-9 9"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+              检查更新
+            </button>
           </div>
+          <div class="card-body">
+            <div class="ver-row"><span class="ver-label">当前版本</span><span class="ver-value" id="about-ver-current">--</span></div>
+            <div class="ver-status" id="about-update-status"></div>
+            <div class="new-release" id="about-new-release" style="display:none;"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>公告</h3></div>
+          <div class="card-body" id="about-announce-body"></div>
         </div>
 
         <div class="card">
