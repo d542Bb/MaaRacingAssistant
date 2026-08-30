@@ -123,10 +123,14 @@ public sealed class PythonSidecar : IDisposable
 
     private async Task DrainStderrAsync()
     {
-        // GUI 无控制台：sidecar stderr 落盘便于排查。日志目录以工作目录（仓库根）为锚，
-        // 无法解析时回退到进程当前目录，保证跨机器可移植（不再硬编码绝对路径）。
-        var workDir = _workDir ?? Environment.CurrentDirectory;
-        var logPath = Path.Combine(workDir, "logs", "sidecar_stderr.log");
+        // GUI 无控制台：sidecar stderr 落盘便于排查。固定落用户数据目录
+        // （%APPDATA%/MaaRacingAssistant/logs，开发/发行一致、不受日志开关控制——框架诊断日志）；
+        // APPDATA 不可用时回退工作目录，保证跨机器可移植。
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        var baseDir = string.IsNullOrEmpty(appData)
+            ? (_workDir ?? Environment.CurrentDirectory)
+            : Path.Combine(appData, "MaaRacingAssistant");
+        var logPath = Path.Combine(baseDir, "logs", "sidecar_stderr.log");
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);

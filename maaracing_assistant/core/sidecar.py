@@ -498,6 +498,7 @@ class SidecarService:
             "peep_enabled": bool(debug.peep_enabled),
             "capture_backend": self._controller._capture_backend,
             "emergency_stop_enabled": bool(getattr(self._controller, "_emergency_stop_enabled", False)),
+            "file_logging": logger.file_logging,
         }, None)
 
     def set_debug_mode(self, params):
@@ -509,6 +510,17 @@ class SidecarService:
         _save_profile({"debug": cur})
         logger.log(f"调试截图模式: {'开启' if enabled else '关闭'}")
         return (True, {"debug_mode": enabled}, None)
+
+    def set_file_logging(self, params):
+        """日志记录开关：开启后才把日志写入磁盘（user_data_dir/logs，每次开启新建文件）。"""
+        enabled = bool(params.get("enabled", False))
+        logger.set_file_logging(enabled)
+        cur = _load_profile().get("debug")
+        cur = cur if isinstance(cur, dict) else {}
+        cur["file_logging"] = bool(enabled)
+        _save_profile({"debug": cur})
+        logger.log(f"日志记录(写盘): {'开启' if enabled else '关闭'}")
+        return (True, {"file_logging": enabled}, None)
 
     def set_peep(self, params):
         enabled = bool(params.get("enabled", False))
@@ -560,6 +572,10 @@ class SidecarService:
 def main() -> None:
     # DPI awareness 须最早设置：进程级语义，不继承 C# shell 配置（坐标换算前提）
     ensure_dpi_aware()
+    # 日志写盘开关回读（profile.debug.file_logging，默认关）：须在 SidecarService
+    # 构造前应用，让启动初期的日志也遵守开关状态
+    _dbg = _load_profile().get("debug")
+    logger.set_file_logging(bool(isinstance(_dbg, dict) and _dbg.get("file_logging", False)))
     protocol_stdout = sys.stdout
     sys.stdout = _StdoutGuard(protocol_stdout)  # 后续一切 print 都走 stderr，协议通道纯净
     try:

@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import time
 from typing import Optional, TYPE_CHECKING
+from pathlib import Path
 
 import cv2
 import numpy as np
-from pathlib import Path
 
+from maaracing_assistant.core.paths import user_data_dir
 from maaracing_assistant.core.vgamepad_lazy import vg
 
 if TYPE_CHECKING:
@@ -193,7 +194,7 @@ class Navigation:
         binary = cv2.bitwise_and(binary, sat_mask)
 
         if debug:
-            debug_dir = self.proj / "debug" / "diagnose"
+            debug_dir = user_data_dir() / "debug" / "diagnose"
             debug_dir.mkdir(parents=True, exist_ok=True)
             cv2.imwrite(str(debug_dir / "cursor_binary.png"), binary)
 

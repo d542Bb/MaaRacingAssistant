@@ -12,6 +12,7 @@ from pathlib import Path
 from maa.toolkit import Toolkit
 
 from maaracing_assistant.core.logger import logger
+from maaracing_assistant.core.paths import user_data_dir
 
 # ---- Win32 常量 ----
 _UD = ctypes.windll.user32
@@ -436,9 +437,10 @@ def has_physical_controller() -> bool:
 
 
 def find_game_hwnd() -> int:
-    proj_root = Path(__file__).parent.parent
+    # MAA user_path 指向用户数据目录：框架日志（maafw.log）与 cache 落 %APPDATA%，
+    # 开发/发行一致且不受安装目录权限影响；路径解析失败时退回包根
     try:
-        Toolkit.init_option(str(proj_root))
+        Toolkit.init_option(str(user_data_dir()))
     except Exception:
         pass
 

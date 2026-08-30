@@ -2987,7 +2987,7 @@ class TreasureModule(ActivityModule):
         对应 tick 不存盘、会话总结不显示「保存帧数/调试目录」。
         """
         assert self.ctx is not None  # 仅运行态调用
-        self._debug_root = self.ctx.proj / "debug" / "treasure"
+        self._debug_root = user_data_dir() / "debug" / "treasure"
         self._session_dir = None
         self._raw_dir = None
         if self.ctx.debug.enabled:

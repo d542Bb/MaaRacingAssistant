@@ -103,8 +103,8 @@ class NavigationDebugger:
     类名保持 NavigationDebugger 不变，避免大改调用方。
     """
 
-    def __init__(self, proj_dir: Path):
-        self.proj_dir = proj_dir
+    def __init__(self, debug_root: Path):
+        self.debug_root = Path(debug_root)  # 调试存图根：user_data_dir()/debug（开发/发行一致）
         self.enabled = False  # GUI 控制开关 → 存盘
         self.session_dir: Path | None = None
         self.frame_count = 0
@@ -147,7 +147,7 @@ class NavigationDebugger:
         if not self.enabled:
             return
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.session_dir = self.proj_dir / "debug" / "navigate" / f"{label}_{ts}"
+        self.session_dir = self.debug_root / "navigate" / f"{label}_{ts}"
         self.session_dir.mkdir(parents=True, exist_ok=True)
 
     # ---------- 颜色常量 ----------

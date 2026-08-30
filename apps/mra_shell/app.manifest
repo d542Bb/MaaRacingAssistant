@@ -15,4 +15,12 @@
       <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
     </application>
   </compatibility>
+  <!-- Per-Monitor V2 DPI 感知：缺失时进程按 96 DPI 渲染被系统位图拉伸（高分屏字体发虚），
+       且 GetDpiForWindow 拿到的是虚拟化值，所有按 DPI 的换算全部失效 -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+    </windowsSettings>
+  </application>
 </assembly>

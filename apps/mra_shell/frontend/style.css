@@ -62,7 +62,6 @@ body {
   color: var(--mra-foreground);
   font-family: var(--mra-font-sans);
   font-size: 13px; line-height: 1.5;
-  -webkit-font-smoothing: antialiased;
   user-select: none;
 }
 

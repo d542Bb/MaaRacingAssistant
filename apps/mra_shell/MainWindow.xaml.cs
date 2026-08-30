@@ -170,6 +170,9 @@ public sealed partial class MainWindow : Window
             if (web.CoreWebView2 is not null)
                 web.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
         };
+        // 滚轮修复：WM_MOUSEWHEEL 投递给键盘焦点窗口，WebView2 无焦点时收不到滚轮
+        // （表现为滚轮滚不动、中键点击后才恢复）。页面加载完成后主动聚焦。
+        web.NavigationCompleted += (_, _) => web.Focus(FocusState.Programmatic);
         var indexPath = ResolveRepoAssetPath("apps", "mra_shell", "frontend", "index.html");
         if (indexPath is not null)
         {

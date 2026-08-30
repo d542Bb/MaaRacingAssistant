@@ -18,6 +18,7 @@ from maa.controller import Win32Controller
 from maa.define import MaaWin32ScreencapMethodEnum
 
 from maaracing_assistant.core.debug import NavigationDebugger
+from maaracing_assistant.core.paths import user_data_dir
 from maaracing_assistant.core.vgamepad_lazy import gamepad_available as _vgamepad_available
 from maaracing_assistant.core.vgamepad_lazy import vg
 from maaracing_assistant.core.window_utils import (
@@ -45,7 +46,7 @@ class MaaRacingAssistantController:
         self._hwnd = 0  # 已连接的游戏窗口句柄（未连接为 0）
         self._gpad = None  # 虚拟手柄，首次使用时创建，不复位不销毁
         self._gp_avail = None  # vgamepad 可用性缓存（None=未探测）
-        self.debug = NavigationDebugger(self.proj)
+        self.debug = NavigationDebugger(user_data_dir() / "debug")
         self._debug_mode = False  # 调试模式开关（由 GUI 控制）
         self._capture_backend = capture_backend
         self._running = False  # 模块运行标志（start_module 生命周期内为 True）

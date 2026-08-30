@@ -131,6 +131,21 @@
     void page.offsetWidth; // 强制 reflow 重置动画
     page.style.setProperty('--slide-from', fromRight ? '42px' : '-42px');
     page.classList.add('page-slide-in');
+    // 动画结束/被打断后立即摘掉动画类：页面回归主文档光栅化。
+    // 合成层提升窗口严格限定在动画期间；残留类会让页面停留在合成层路径，
+    // 非整数 DPI（150%）下文字发虚。animationName 过滤避免子元素动画误触发。
+    const detach = () => {
+      page.removeEventListener('animationend', onEnd);
+      page.removeEventListener('animationcancel', detach);
+      if (page.classList.contains('page-slide-in'))
+        page.classList.remove('page-slide-in');
+    };
+    const onEnd = (e2) => {
+      if (e2.animationName !== 'page-slide') return;
+      detach();
+    };
+    page.addEventListener('animationend', onEnd);
+    page.addEventListener('animationcancel', detach);
   }
   tabButtons.forEach((btn) => {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
@@ -825,7 +840,7 @@
       list.innerHTML = '<p class="board-empty">今日暂无对局记录</p>';
       return;
     }
-    list.innerHTML = arr.slice(0, 20).map((g2) => {
+    list.innerHTML = arr.map((g2) => {
       const res = g2.auction_result === 'win'
         ? '<span class="board-res board-res--win">拍中</span>'
         : g2.auction_result === 'fail'
@@ -980,7 +995,7 @@
               <button class="mra-toggle" id="${mid}-toggle-debug" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">DEBUG 每帧截图</div>
-                <p class="option-desc">开启后每帧截图保存到 debug/navigate/ 目录，用于分析导航和识别问题</p>
+                <p class="option-desc">开启后每帧截图保存到 %APPDATA%/MaaRacingAssistant/debug/navigate/ 目录，用于分析导航和识别问题</p>
               </div>
               <span class="option-note">约占用 50-100MB/分钟磁盘空间</span>
             </div>
@@ -991,6 +1006,14 @@
                 <p class="option-desc">开启后同时按下键盘任意 2 个及以上按键，立即停止运行逻辑（全局生效）</p>
               </div>
               <span class="option-note">紧急安全阀，运行中建议开启</span>
+            </div>
+            <div class="option-row">
+              <button class="mra-toggle" id="${mid}-toggle-filelog" role="switch" aria-checked="false"></button>
+              <div class="option-main">
+                <div class="option-title">日志记录</div>
+                <p class="option-desc">开启后才把运行日志写入 %APPDATA%/MaaRacingAssistant/logs（每次开启新建一个文件）；关闭时日志仅保留在界面内存，不落盘</p>
+              </div>
+              <span class="option-note">默认关闭，排查问题时开启</span>
             </div>
           </div>
         </div>
@@ -1107,6 +1130,22 @@
       }
     });
 
+    // 日志记录开关：开启后才把日志写盘（sidecar 落 user_data_dir/logs，持久化 profile）
+    const tFilelog = p('toggle-filelog');
+    if (tFilelog) {
+      tFilelog.addEventListener('click', async () => {
+        const on = !toggleState(tFilelog);
+        setToggle(tFilelog, on); // 先翻转视觉状态
+        try {
+          await mra.call('set_file_logging', { enabled: on });
+        } catch (e) {
+          console.error(e);
+          showError(e.message);
+          setToggle(tFilelog, !on); // 回滚
+        }
+      });
+    }
+
     // 实时预览卡：播放/暂停（peep 开关）+ 放大/还原（全屏）
     const previewToggle = p('btn-preview-toggle');
     const previewMax = p('btn-preview-max');
@@ -1161,10 +1200,13 @@
     try {
       const d = await mra.call('get_debug_state');
       if (!d || currentModuleId !== mid) return; // 已切模块：丢弃
-      setToggle($(mid + '-toggle-debug'), !!d.debug_mode);
+      // 判空防护：设置页 DOM 尚未渲染（或模板差异）时跳过对应回填，避免 null.classList 崩溃
+      const safeToggle = (suffix, on) => { const el = $(mid + '-' + suffix); if (el) setToggle(el, on); };
+      safeToggle('toggle-debug', !!d.debug_mode);
       state.peepEnabled = !!d.peep_enabled;
       setPreviewPlayState(!!d.peep_enabled);
-      setToggle($(mid + '-toggle-estop'), !!d.emergency_stop_enabled);
+      safeToggle('toggle-estop', !!d.emergency_stop_enabled);
+      safeToggle('toggle-filelog', !!d.file_logging);
       // 截图方式选中态
       document.querySelectorAll('.mra-radio-card').forEach((card) => {
         card.classList.toggle('mra-radio-card--selected', card.dataset.backend === d.capture_backend);
