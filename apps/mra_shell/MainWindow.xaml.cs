@@ -82,6 +82,17 @@ public sealed partial class MainWindow : Window
     private const int GWLP_WNDPROC = -4;
     private readonly WndProcDelegate _wndProcHook;
     private readonly IntPtr _oldWndProc;
+    // 前端模态弹窗打开时系统按钮"伪透明"：HTML 遮罩（rgba(0,0,0,0.45)）盖不住 AppWindowTitleBar overlay，
+    // 故把按钮颜色设为标题栏原色被遮罩压暗后的合成色（原色 × 0.55），使按钮融入遮罩下的标题栏
+    private static readonly Color CaptionBtnFg = Color.FromArgb(0xFF, 0x1F, 0x23, 0x28);
+    private static readonly Color CaptionBgNormal = Color.FromArgb(0xFF, 0xFF, 0xFF, 0xFF);  // header 背景 --mra-surface
+    private static readonly Color CaptionBgHover = Color.FromArgb(0xFF, 0xE5, 0xE7, 0xEB);
+    private static readonly Color CaptionBgPressed = Color.FromArgb(0xFF, 0xD1, 0xD5, 0xDB);
+    private static readonly Color DimBgNormal = Color.FromArgb(0xFF, 0x8C, 0x8C, 0x8C);   // CaptionBgNormal × 0.55
+    private static readonly Color DimBgHover = Color.FromArgb(0xFF, 0x7E, 0x7F, 0x81);    // CaptionBgHover × 0.55
+    private static readonly Color DimBgPressed = Color.FromArgb(0xFF, 0x73, 0x75, 0x78);  // CaptionBgPressed × 0.55
+    private static readonly Color DimFg = Color.FromArgb(0xFF, 0x11, 0x13, 0x16);         // CaptionBtnFg × 0.55
+    private bool _captionDimmed;
 
     // 前端上报的标题栏交互区（DIP）：系统 drag region 需挖掉该区，
     // 双击按钮区不会触发最大化（见 UpdateDragRects 挖孔计算）
@@ -107,14 +118,14 @@ public sealed partial class MainWindow : Window
         titleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
         // 系统按钮配色：白色标题栏（与 HTML 背景一致），符号深色，hover 浅灰
         // 注意：失焦（Inactive）时若不显式设置，会回退系统主题色，必须成对覆盖
-        titleBar.ButtonBackgroundColor = Color.FromArgb(0xFF, 0xFF, 0xFF, 0xFF);
-        titleBar.ButtonForegroundColor = Color.FromArgb(0xFF, 0x1F, 0x23, 0x28);
-        titleBar.ButtonHoverBackgroundColor = Color.FromArgb(0xFF, 0xE5, 0xE7, 0xEB);
-        titleBar.ButtonHoverForegroundColor = Color.FromArgb(0xFF, 0x1F, 0x23, 0x28);
-        titleBar.ButtonPressedBackgroundColor = Color.FromArgb(0xFF, 0xD1, 0xD5, 0xDB);
-        titleBar.ButtonPressedForegroundColor = Color.FromArgb(0xFF, 0x1F, 0x23, 0x28);
-        titleBar.ButtonInactiveBackgroundColor = Color.FromArgb(0xFF, 0xFF, 0xFF, 0xFF);
-        titleBar.ButtonInactiveForegroundColor = Color.FromArgb(0xFF, 0x1F, 0x23, 0x28);
+        titleBar.ButtonBackgroundColor = CaptionBgNormal;
+        titleBar.ButtonForegroundColor = CaptionBtnFg;
+        titleBar.ButtonHoverBackgroundColor = CaptionBgHover;
+        titleBar.ButtonHoverForegroundColor = CaptionBtnFg;
+        titleBar.ButtonPressedBackgroundColor = CaptionBgPressed;
+        titleBar.ButtonPressedForegroundColor = CaptionBtnFg;
+        titleBar.ButtonInactiveBackgroundColor = CaptionBgNormal;
+        titleBar.ButtonInactiveForegroundColor = CaptionBtnFg;
         UpdateDragRects();
         AppWindow.Changed += (_, args) =>
         {
@@ -272,6 +283,11 @@ public sealed partial class MainWindow : Window
                     UpdateDragRects();
                 }
             }
+            else if (msgType == "modal")
+            {
+                // 前端通用弹窗开关 → 标题栏系统按钮置灰/恢复（视觉禁用，不拦截点击）
+                SetCaptionButtonsDimmed(root.TryGetProperty("open", out var o) && o.ValueKind == JsonValueKind.True);
+            }
             else if (msgType == "call")
             {
                 var callId = root.GetProperty("callId").GetInt64();
@@ -285,6 +301,35 @@ public sealed partial class MainWindow : Window
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[shell] webmessage 解析失败: {ex.Message}");
+        }
+    }
+
+    private void SetCaptionButtonsDimmed(bool dimmed)
+    {
+        if (_captionDimmed == dimmed) return;
+        _captionDimmed = dimmed;
+        var titleBar = AppWindow.TitleBar;
+        if (dimmed)
+        {
+            titleBar.ButtonBackgroundColor = DimBgNormal;
+            titleBar.ButtonHoverBackgroundColor = DimBgHover;
+            titleBar.ButtonPressedBackgroundColor = DimBgPressed;
+            titleBar.ButtonInactiveBackgroundColor = DimBgNormal;
+            titleBar.ButtonForegroundColor = DimFg;
+            titleBar.ButtonHoverForegroundColor = DimFg;
+            titleBar.ButtonPressedForegroundColor = DimFg;
+            titleBar.ButtonInactiveForegroundColor = DimFg;
+        }
+        else
+        {
+            titleBar.ButtonBackgroundColor = CaptionBgNormal;
+            titleBar.ButtonHoverBackgroundColor = CaptionBgHover;
+            titleBar.ButtonPressedBackgroundColor = CaptionBgPressed;
+            titleBar.ButtonInactiveBackgroundColor = CaptionBgNormal;
+            titleBar.ButtonForegroundColor = CaptionBtnFg;
+            titleBar.ButtonHoverForegroundColor = CaptionBtnFg;
+            titleBar.ButtonPressedForegroundColor = CaptionBtnFg;
+            titleBar.ButtonInactiveForegroundColor = CaptionBtnFg;
         }
     }
 
