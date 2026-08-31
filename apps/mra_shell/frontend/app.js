@@ -1309,10 +1309,18 @@
           </div>
         </div>
 
-        <!-- 运行结束后 -->
+        <!-- 运行选项 -->
         <div class="card">
-          <div class="card-head"><h3>运行结束后</h3></div>
+          <div class="card-head"><h3>运行选项</h3></div>
           <div class="card-body" style="display:flex;flex-direction:column;gap:16px;">
+            <div class="option-row">
+              <button class="mra-toggle" id="${mid}-toggle-mutegame" role="switch" aria-checked="false"></button>
+              <div class="option-main">
+                <div class="option-title">运行时静音游戏</div>
+                <p class="option-desc">运行期间把游戏音量静音（方便听别的），停止/结束后自动恢复游戏音量为 100%</p>
+              </div>
+              <span class="option-note">结束自动恢复 100%</span>
+            </div>
             <div class="option-row">
               <button class="mra-toggle" id="${mid}-toggle-closegame" role="switch" aria-checked="false"></button>
               <div class="option-main">
@@ -1329,6 +1337,43 @@
               </div>
               <span class="option-note">建议先勾选关闭游戏</span>
             </div>
+          </div>
+        </div>
+
+        <!-- 点击方式 -->
+        <div class="card">
+          <div class="card-head"><h3>点击方式</h3></div>
+          <div class="card-body">
+            <div class="radio-grid">
+              <div class="mra-radio-card mra-radio-card--selected" data-clickmode="real">
+                <div class="radio-inner">
+                  <div class="mra-radio-dot"></div>
+                  <div class="option-main">
+                    <div class="radio-title"><strong>真实点击</strong><span class="badge-recommend">推荐</span></div>
+                    <p class="radio-desc">光标移到目标后 SendInput 点击，兼容性最稳；需游戏在前台</p>
+                  </div>
+                </div>
+              </div>
+              <div class="mra-radio-card" data-clickmode="background">
+                <div class="radio-inner">
+                  <div class="mra-radio-dot"></div>
+                  <div class="option-main">
+                    <div class="radio-title"><strong>后台点击</strong><span class="badge-wip">开发中</span></div>
+                    <p class="radio-desc">光标就位 + PostMessage 投递；部分按钮仍需游戏在前台才能激活逻辑</p>
+                  </div>
+                </div>
+              </div>
+              <div class="mra-radio-card" data-clickmode="intent">
+                <div class="radio-inner">
+                  <div class="mra-radio-dot"></div>
+                  <div class="option-main">
+                    <div class="radio-title"><strong>意图显示</strong></div>
+                    <p class="radio-desc">只把光标移到目标位置不点击，人工确认后手动操作</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <p class="capture-note">切换后立即生效；后台点击已实测可穿过其他窗口点击游戏</p>
           </div>
         </div>
 
@@ -1460,7 +1505,22 @@
       });
     }
 
-    // 运行结束后：关闭游戏进程 / 退出 MRA 程序（仅"流程正常结束"时由后端触发）
+    // 运行选项：运行时静音游戏 / 关闭游戏进程 / 退出 MRA 程序
+    const tMuteGame = p('toggle-mutegame');
+    if (tMuteGame) {
+      tMuteGame.addEventListener('click', async () => {
+        const on = !toggleState(tMuteGame);
+        setToggle(tMuteGame, on); // 先翻转视觉状态
+        try {
+          await mra.call('set_mute_game', { enabled: on });
+        } catch (e) {
+          console.error(e);
+          showError(e.message);
+          setToggle(tMuteGame, !on); // 回滚
+        }
+      });
+    }
+
     const tCloseGame = p('toggle-closegame');
     if (tCloseGame) {
       tCloseGame.addEventListener('click', async () => {
@@ -1517,17 +1577,24 @@
       previewMin.addEventListener('click', () => { exitPreviewFullscreen(previewCard); });
     }
 
-    // 截图方式（DOM 中只有当前模块的卡片，querySelectorAll 只命中本模块）
-    document.querySelectorAll('.mra-radio-card').forEach((card) => {
-      card.addEventListener('click', async () => {
-        document.querySelectorAll('.mra-radio-card').forEach((c) => c.classList.remove('mra-radio-card--selected'));
-        card.classList.add('mra-radio-card--selected');
-        try {
-          await mra.call('set_capture_backend', { backend: card.dataset.backend });
-        } catch (e) {
-          console.error(e);
-          showError(e.message);
-        }
+    // 点击方式 / 截图方式：每个 .radio-grid 是一组单选，组内互斥、组间独立
+    // （两组共用 .mra-radio-card 样式，但选中态不能全页互斥，否则点一组会清掉另一组的选中）
+    document.querySelectorAll('.radio-grid').forEach((grid) => {
+      grid.querySelectorAll('.mra-radio-card').forEach((card) => {
+        card.addEventListener('click', async () => {
+          grid.querySelectorAll('.mra-radio-card').forEach((c) => c.classList.remove('mra-radio-card--selected'));
+          card.classList.add('mra-radio-card--selected');
+          try {
+            if (card.dataset.clickmode) {
+              await mra.call('set_click_mode', { mode: card.dataset.clickmode });
+            } else if (card.dataset.backend) {
+              await mra.call('set_capture_backend', { backend: card.dataset.backend });
+            }
+          } catch (e) {
+            console.error(e);
+            showError(e.message);
+          }
+        });
       });
     });
 
@@ -1563,9 +1630,14 @@
       safeToggle('toggle-filelog', !!d.file_logging);
       safeToggle('toggle-closegame', !!d.auto_close_game);
       safeToggle('toggle-exitmra', !!d.auto_exit_mra);
-      // 截图方式选中态
+      safeToggle('toggle-mutegame', !!d.mute_game);
+      // 点击方式 / 截图方式选中态
       document.querySelectorAll('.mra-radio-card').forEach((card) => {
-        card.classList.toggle('mra-radio-card--selected', card.dataset.backend === d.capture_backend);
+        if (card.dataset.clickmode) {
+          card.classList.toggle('mra-radio-card--selected', card.dataset.clickmode === d.click_mode);
+        } else if (card.dataset.backend) {
+          card.classList.toggle('mra-radio-card--selected', card.dataset.backend === d.capture_backend);
+        }
       });
     } catch (e) {
       console.error(e);

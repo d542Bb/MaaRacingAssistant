@@ -200,6 +200,15 @@ class SidecarService:
                     close_game=acg if isinstance(acg, bool) else None,
                     exit_mra=aem if isinstance(aem, bool) else None,
                 )
+            cm = dbg.get("click_mode")
+            if isinstance(cm, str):
+                try:
+                    self._controller.set_click_mode(cm)
+                except ValueError:
+                    pass  # 非法值忽略，保持默认
+            mg = dbg.get("mute_game")
+            if isinstance(mg, bool):
+                self._controller.set_mute_game(mg)
         # 2) 模块配置（flat dict，含 module_id）→ 只取本程序管理的键，其余未知键忽略
         mc = data.get("module_config")
         if isinstance(mc, dict):
@@ -612,10 +621,12 @@ class SidecarService:
             "debug_mode": bool(getattr(self._controller, "_debug_mode", False)),
             "peep_enabled": bool(debug.peep_enabled),
             "capture_backend": self._controller._capture_backend,
+            "click_mode": self._controller.click_mode,
             "emergency_stop_enabled": bool(getattr(self._controller, "_emergency_stop_enabled", False)),
             "file_logging": logger.file_logging,
             "auto_close_game": bool(self._controller.auto_close_game),
             "auto_exit_mra": bool(self._controller.auto_exit_mra),
+            "mute_game": bool(self._controller.mute_game_enabled),
         }, None)
 
     def set_debug_mode(self, params):
@@ -671,6 +682,23 @@ class SidecarService:
         logger.log(f"截图方式: {backend}")
         return (True, {"capture_backend": backend}, None)
 
+    def set_click_mode(self, params):
+        """切换点击方式：intent(意图显示) / real(真实点击) / background(后台点击)。
+
+        模式持久化到 profile（debug.click_mode），下次启动由 _restore_profile 回填。
+        """
+        mode = params.get("mode", "real")
+        try:
+            self._controller.set_click_mode(mode)
+        except ValueError as e:
+            return (False, None, str(e))
+        cur = _load_profile().get("debug")
+        cur = cur if isinstance(cur, dict) else {}
+        cur["click_mode"] = mode
+        _save_profile({"debug": cur})
+        logger.log(f"点击方式: {mode}")
+        return (True, {"click_mode": mode}, None)
+
     def set_auto_close_game(self, params):
         enabled = bool(params.get("enabled", False))
         self._controller.set_auto_shutdown(close_game=enabled)
@@ -690,6 +718,21 @@ class SidecarService:
         _save_profile({"debug": cur})
         logger.log(f"运行结束后自动退出程序: {'开启' if enabled else '关闭'}")
         return (True, {"auto_exit_mra": enabled}, None)
+
+    def set_mute_game(self, params):
+        """「运行选项」运行时静音游戏开关：运行期间静音游戏，结束后恢复 100%。
+
+        静音/恢复动作由 controller.start_module 的 finally 统一执行（任何停止路径都恢复）；
+        此处只改开关并持久化到 profile（debug.mute_game）。
+        """
+        enabled = bool(params.get("enabled", False))
+        self._controller.set_mute_game(enabled)
+        cur = _load_profile().get("debug")
+        cur = cur if isinstance(cur, dict) else {}
+        cur["mute_game"] = enabled
+        _save_profile({"debug": cur})
+        logger.log(f"运行时静音游戏: {'开启' if enabled else '关闭'}")
+        return (True, {"mute_game": enabled}, None)
 
     def close(self, params):
         """shell 关闭前的业务清理：置 _closed + 停止 worker。"""

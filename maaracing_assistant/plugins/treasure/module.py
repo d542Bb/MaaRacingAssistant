@@ -51,17 +51,21 @@ from maaracing_assistant.core.paths import user_data_dir
 from maaracing_assistant.core.window_utils import (
     check_game_window_aspect,
     is_foreground,
-    norm_to_screen,
-    send_left_click,
-    set_cursor_visible,
     verify_frame_client,
-    window_client_size,
 )
 from maaracing_assistant.core.logger import logger
 
 # 模块资源目录（随插件自包含：plugins/treasure/resources/，不再依赖主程序 assets/）。
 # 定位基准 = 本文件所在目录，与安装/工作目录解耦。
 _RES_DIR = Path(__file__).resolve().parent / "resources"
+
+
+class ClickRetryExhaustedError(RuntimeError):
+    """阶段切换类点击重试耗尽：点击无法生效、页面不切换，判定为系统性问题，终止模块。
+
+    抛出后由主循环单帧兜底识别并【穿透】（不进入"连续帧异常"计数兜底），
+    沿 start() 上抛 → start_module 记 ERROR → finally 恢复音量并收尾，流程停止。
+    """
 
 
 def _load_action_centers(proj: Path) -> dict[str, tuple[float, float]]:
@@ -617,6 +621,7 @@ class TreasureModule(ActivityModule):
             super().__init__(ctx)
         else:
             self.ctx = None
+        self._clicker = None  # 点击器（懒创建，绑定 ctx.hwnd；模式每次执行前同步自 ctx.click_mode）
         self._current_stage: str | None = None
         # 落盘子域（DB 连接管理 + 场次/汇总写入 + 会话总结）
         self._store = TreasureStore(self)
@@ -1070,11 +1075,15 @@ class TreasureModule(ActivityModule):
         # 5. 主循环（纯观察）
         # 单帧异常兜底：_tick_once 抛异常不杀死主循环，跳过该帧继续；连续失败达
         # _MAIN_CRASH_RETRY_MAX 帧才照常上抛，让异常走 finally 清理后终止模块（防静默空转）。
+        # 例外：ClickRetryExhaustedError（阶段切换点击重试耗尽）直接穿透终止，
+        # 不等待连续帧计数——重试失败是明确的系统性问题，应立即停止而非跳过。
         _MAIN_CRASH_RETRY_MAX = 30   # 30 帧 ≈ 9s（主循环 ~300ms/帧）
         try:
             while self.ctx.lifecycle.running:
                 try:
                     self._tick_once()
+                except ClickRetryExhaustedError:
+                    raise  # 重试耗尽：穿透单帧兜底，终止模块
                 except Exception as e:
                     self._main_crash_frames += 1
                     if self._main_crash_frames == 1:
@@ -2634,16 +2643,29 @@ class TreasureModule(ActivityModule):
             return None
         return {"key": a["key"], "center": center, "hint": a["hint"]}
 
+    def _get_clicker(self):
+        """懒创建点击器（绑定窗口句柄）。
+
+        模式不在创建时固定：每次 _execute_click 前会从 ctx.click_mode 同步，
+        因此设置页切换点击方式后立即生效，无需重启模块。
+        """
+        if self._clicker is None:
+            from maaracing_assistant.core.clicker import Clicker
+            self._clicker = Clicker(self.ctx.hwnd, self.ctx.click_mode)
+        return self._clicker
+
     def _execute_click(self, target: dict | None) -> None:
-        """把当前点击意图执行成真实点击：可见移动鼠标 → 停顿 → SendInput 左键。
+        """把当前点击意图执行成点击：按设置的点击方式（intent/real/background）执行。
 
         方案见 docs/treasure_real_click_plan.md（评审通过版），安全机制：
           • 指纹锁（边沿触发）：持续相同意图只点一次；数字键指纹含输入位锚点
             （_bid_input_progress），区分连续相同数字（如价格 11 的第二个 1）
           • cooldown：不同意图之间最小物理点击间隔（限速，非重复执行的许可）
-          • 前台校验：目标窗口非前台 → 取消本次点击（不抢前台）
+          • 前台校验：仅 real 模式要求目标窗口在前台（不抢前台）；background/intent 不需要
           • 坐标换算以客户区物理尺寸为锚（与截图帧对齐）+ 像素索引 clamp
-          • SetCursorPos / SendInput 检查返回值，失败不算点击成功 → 指纹不更新，下帧重试
+          • 统一走 core.clicker.Clicker：intent=只移光标不点击 / real=SetCursorPos+SendInput
+            / background=SetCursorPos+PostMessage（实测游戏校验光标位置、不校验输入源）；
+            执行失败不算点击成功 → 指纹不更新，下帧重试
         """
         if not target:
             return
@@ -2673,34 +2695,28 @@ class TreasureModule(ActivityModule):
         now = time.time()
         if now - self._last_click_time < self.CLICK_COOLDOWN_S:
             return
-        # 前台校验：目标窗口非前台则取消（安全策略：不主动抢前台）。
-        # 打日志（节流），避免"失焦导致静默不点"让用户误以为程序坏了。
-        if not is_foreground(self.ctx.hwnd):
+        # 前台校验：仅真实点击模式需要（后台点击/意图显示不需要前台）。
+        # 模式在"首部"（设置页）切换：这里每次执行前同步，运行中切换即时生效。
+        clicker = self._get_clicker()
+        clicker.set_mode(self.ctx.click_mode)
+        if clicker.need_foreground and not is_foreground(self.ctx.hwnd):
             if self._frame_counter % 10 == 0:
                 logger.log(
                     f"[鉴宝点击] 前台校验失败：游戏窗口非前台，取消本次点击 key={key}"
-                    "（安全策略：不抢前台）", "WARNING",
+                    f"（模式={clicker.mode}；安全策略：真实点击不抢前台）", "WARNING",
                 )
             return
-        # 坐标换算：客户区物理尺寸为锚（实时取，窗口可能被拖动/改尺寸）
-        size = window_client_size(self.ctx.hwnd)
-        if size is None:
-            logger.log("[鉴宝点击] 获取客户区尺寸失败，取消本次点击", "WARNING")
+        # 坐标换算与点击执行统一走 Clicker（intent 只移光标 / real SendInput / background PostMessage）。
+        # 失败 → 指纹不更新，下帧同意图自动重试。
+        if not clicker.click(
+                center[0], center[1],
+                down_up_gap_ms=self.CLICK_DOWN_UP_GAP_MS,
+                move_pause_s=self.CLICK_MOVE_PAUSE_S):
+            logger.log(
+                f"[鉴宝点击] 执行失败 key={key} state={state} 模式={clicker.mode} "
+                f"归一化=({center[0]:.3f},{center[1]:.3f})", "WARNING")
             return
-        cw, ch = size
-        pos = norm_to_screen(self.ctx.hwnd, center[0], center[1], cw, ch)
-        if pos is None:
-            logger.log("[鉴宝点击] 坐标换算失败（窗口句柄无效？），取消本次点击", "WARNING")
-            return
-        sx, sy = pos
-        # 可见移动鼠标 → 停顿（让用户看清）→ 点击
-        if not set_cursor_visible(sx, sy):
-            logger.log(f"[鉴宝点击] SetCursorPos({sx},{sy}) 失败，取消本次点击", "WARNING")
-            return
-        time.sleep(self.CLICK_MOVE_PAUSE_S)
-        if not send_left_click(self.CLICK_DOWN_UP_GAP_MS):
-            logger.log(f"[鉴宝点击] SendInput 失败 key={key} state={state} ({sx},{sy})", "WARNING")
-            return
+        sx, sy = clicker.last_pos or (0, 0)
         # 点击成功：更新指纹与时刻（失败时不更新 → 下帧意图相同会重试）
         self._last_click_fingerprint = fp
         self._last_click_time = time.time()
@@ -2781,13 +2797,13 @@ class TreasureModule(ActivityModule):
             return
         if self._click_retry_count >= self.CLICK_RETRY_MAX:
             logger.log(
-                f"[鉴宝点击] key={key} 重试 {self.CLICK_RETRY_MAX} 次后仍无法切换页面，"
-                "停止重试（请检查游戏界面/手动处理，或停止后重新开始）", "WARNING",
+                f"[鉴宝点击] key={key} 重试 {self.CLICK_RETRY_MAX} 次后仍无法切换页面"
+                f"（停留在「{self._click_retry_stage}」），判定点击失效，终止模块", "ERROR",
             )
-            self._click_retry_key = None
-            self._click_retry_stage = None
-            self._click_retry_count = 0
-            return
+            raise ClickRetryExhaustedError(
+                f"阶段切换类点击 key={key} 重试 {self.CLICK_RETRY_MAX} 次仍无法切换页面"
+                f"（停留在「{self._click_retry_stage}」），请检查游戏界面/点击方式后重新开始"
+            )
         self._click_retry_count += 1
         self._last_click_fingerprint = None      # 重新 arm → 本帧同一意图可再次点击
         self._click_retry_since = self._frame_counter

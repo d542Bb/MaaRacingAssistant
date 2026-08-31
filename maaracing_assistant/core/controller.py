@@ -50,6 +50,7 @@ class MaaRacingAssistantController:
         self.debug = NavigationDebugger(user_data_dir() / "debug")
         self._debug_mode = False  # 调试模式开关（由 GUI 控制）
         self._capture_backend = capture_backend
+        self._click_mode = "real"  # 点击方式：intent(意图显示) / real(真实点击) / background(后台点击)
         self._running = False  # 模块运行标志（start_module 生命周期内为 True）
         self._active_module = None  # 当前活动模块实例（生命周期由 start_module 管理）
         self._ctx = None  # ActivityContext 懒创建
@@ -63,6 +64,7 @@ class MaaRacingAssistantController:
         self._auto_close_game = False  # 结束后关闭游戏进程
         self._auto_exit_mra = False    # 结束后退出 MRA 程序
         self._last_run_natural = False  # 上次 start_module 是否正常跑完（非报错、非手动停止）
+        self._mute_game_enabled = False  # 「运行选项」运行时静音游戏（结束恢复 100%）
 
     # ---------- 模块生命周期 ----------
 
@@ -91,6 +93,18 @@ class MaaRacingAssistantController:
     def is_running(self) -> bool:
         """是否仍在运行（由 stop_event 控制）"""
         return not self.stop_event.is_set()
+
+    @property
+    def click_mode(self) -> str:
+        """点击方式（intent / real / background），由设置页切换，模块点击统一读取。"""
+        return self._click_mode
+
+    def set_click_mode(self, mode: str) -> None:
+        """切换点击方式；非法值直接报错（防止静默错点）。"""
+        from maaracing_assistant.core.clicker import CLICK_MODES
+        if mode not in CLICK_MODES:
+            raise ValueError(f"非法点击方式: {mode!r}，可选 {CLICK_MODES}")
+        self._click_mode = mode
 
     @property
     def module_active(self) -> bool:
@@ -126,6 +140,12 @@ class MaaRacingAssistantController:
             self.active_module = module
         self._running = True
         self._last_run_natural = False
+        # 「运行选项」运行时静音游戏：每次启动都静音（结束由 finally 统一恢复 100%）。
+        # 必须放在这里而非 connect()：connect 幂等（第二次启动直接短路返回），
+        # 放 connect 会导致"停止后再开始不再静音"（2026-09-01 实测 bug）。
+        # hwnd 取 self._hwnd（二次运行复用上次句柄）或 find_game_hwnd 兜底（首次运行）。
+        if self._mute_game_enabled:
+            self._apply_game_volume(0.0, "运行开始：静音游戏", verify=True)
         try:
             module.start(start_from)
             # 仅当 start 正常返回（未抛异常）才标记"自然完成"；
@@ -150,7 +170,10 @@ class MaaRacingAssistantController:
             with self._lifecycle_lock:
                 self.active_module = None
             self._running = False
-            # 运行结束后行为（GUI「运行结束后」卡片）：仅"正常完成"生效 ——
+            # 「运行选项」运行时静音游戏：任何停止路径（正常/报错/手动）都恢复 100%
+            if self._mute_game_enabled:
+                self._apply_game_volume(1.0, "运行结束：恢复游戏音量为 100%")
+            # 运行结束后行为（GUI「运行选项」卡片）：仅"正常完成"生效 ——
             # 报错退出（natural=False）或手动停止（stop_event 置位）不触发。
             if self._last_run_natural and not self.stop_event.is_set():
                 self._maybe_auto_shutdown()
@@ -182,11 +205,48 @@ class MaaRacingAssistantController:
         return self._last_run_natural and not self.stop_event.is_set()
 
     def set_auto_shutdown(self, close_game: bool | None = None, exit_mra: bool | None = None) -> None:
-        """设置「运行结束后」自动关闭的开关（GUI 设置卡片）。"""
+        """设置「运行选项」自动关闭/退出的开关（GUI 设置卡片）。"""
         if close_game is not None:
             self._auto_close_game = bool(close_game)
         if exit_mra is not None:
             self._auto_exit_mra = bool(exit_mra)
+
+    # ---------- 运行时静音游戏（GUI「运行选项」卡片）----------
+
+    @property
+    def mute_game_enabled(self) -> bool:
+        """是否开启「运行时静音游戏」（设置开关）"""
+        return self._mute_game_enabled
+
+    def set_mute_game(self, enabled: bool) -> None:
+        """设置「运行时静音游戏」开关。运行期间由 start_module/finally 执行静音与恢复。"""
+        self._mute_game_enabled = bool(enabled)
+
+    def _apply_game_volume(self, level: float, label: str, verify: bool = False) -> None:
+        """把游戏进程音量设为 level（0~1），作用于其全部音频会话。
+
+        verify=True 时设置后读回确认。失败仅 WARNING，不中断运行。
+        """
+        try:
+            from maaracing_assistant.core.audio_volume import get_game_volume, set_game_volume
+            hwnd = self._hwnd or find_game_hwnd()
+            if not hwnd:
+                logger.log(f"{label}：未能定位游戏窗口，跳过音量设置", "WARNING")
+                return
+            n = set_game_volume(hwnd, level)
+            if n == 0:
+                logger.log(f"{label}：未找到游戏音频会话（游戏可能尚未发声），音量设置未生效", "WARNING")
+                return
+            if verify:
+                vols = get_game_volume(hwnd)
+                if vols and not all(abs(v - level) <= 0.01 for v in vols):
+                    logger.log(
+                        f"{label}：设置后读回音量={[round(v, 2) for v in vols]} ≠ 目标{level:.2f}，"
+                        "部分会话未生效", "WARNING")
+                    return
+            logger.log(f"{label}（游戏音量 {level:.0%}，会话×{n}）", "INFO")
+        except Exception as e:  # noqa: BLE001
+            logger.log(f"{label}：音量设置异常: {e}", "WARNING")
 
     def _maybe_auto_shutdown(self) -> None:
         """流程正常结束后执行：按开关关闭游戏进程（退出 MRA 由 sidecar 依 last_run_natural 发起，以保证时序）"""
@@ -293,10 +353,15 @@ class MaaRacingAssistantController:
         self._hwnd = hwnd
         logger.log(f"已连接窗口 (hWnd={hwnd})")
 
-        # 按下开始后的窗口准备：切换到游戏窗口前台（用户明确操作，区别于运行中点击的"不抢前台"策略）
-        # 切前台失败仅 WARNING 提示（不终止）：逻辑继续运行，点击时若游戏非前台会被前台校验取消
-        if not activate_window(hwnd):
-            logger.log("切换到游戏窗口前台失败（Windows 前台锁定）——逻辑继续运行，点击需游戏在前台", "WARNING")
+        # 按下开始后的窗口准备：仅「真实点击」模式切前台（用户明确操作）。
+        # 「后台点击/意图显示」模式保留游戏在后台——后台点击的意义就是游戏留在后台，
+        # 前台校验也只在 real 模式生效（见 treasure 模块 _execute_click）。
+        if self._click_mode == "real":
+            if not activate_window(hwnd):
+                logger.log("切换到游戏窗口前台失败（Windows 前台锁定）——逻辑继续运行，点击需游戏在前台", "WARNING")
+
+        # 注：运行时静音不再放这里——connect 幂等，第二次启动会短路返回导致不再静音；
+        # 静音统一在 start_module 每次启动时执行（见 start_module）。
 
         # 统一把所有模块的游戏窗口客户区调整为 720p（截图/模板/ROI 均按 720p 归一化）。
         # 调整失败不阻断：退化到原尺寸并交由后续 16:9 / 屏幕内校验兜底告警。

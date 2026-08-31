@@ -135,6 +135,11 @@ class ActivityContext:
         return self.app._capture_backend
 
     @property
+    def click_mode(self) -> str:
+        """点击方式（intent 意图显示 / real 真实点击 / background 后台点击）"""
+        return self.app._click_mode
+
+    @property
     def hwnd(self) -> int:
         """已连接的游戏窗口句柄（未连接为 0）"""
         return self.app._hwnd

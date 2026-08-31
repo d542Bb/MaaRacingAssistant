@@ -443,6 +443,10 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   font-size: 10px; font-weight: 500; color: var(--mra-primary); padding: 2px 6px;
   border-radius: 4px; background: var(--mra-primary-soft);
 }
+.badge-wip {
+  font-size: 10px; font-weight: 500; color: #b45309; padding: 2px 6px;
+  border-radius: 4px; background: #fef3c7;
+}
 .capture-note { font-size: 11px; color: var(--mra-foreground-muted); margin-top: 12px; }
 
 /* 性能监控 */
