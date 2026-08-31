@@ -11,7 +11,12 @@
     function bootBridge() {
       window.chrome.webview.addEventListener('message', (e) => {
         const msg = e.data;
-        if (!msg || msg.type !== 'response') return;
+        if (!msg) return;
+        // 非 response 消息 = C# 主动推送（如 maximized 状态），分发给订阅者
+        if (msg.type !== 'response') {
+          nativeListeners.forEach((fn) => fn(msg));
+          return;
+        }
         const p = pending.get(msg.callId);
         if (!p) return;
         pending.delete(msg.callId);
@@ -19,6 +24,9 @@
         else p.reject(new Error(msg.error || 'rpc error'));
       });
     }
+
+    const nativeListeners = new Set();
+    function onNativeMessage(fn) { nativeListeners.add(fn); }
 
     function call(method, params) {
       return new Promise((resolve, reject) => {
@@ -29,7 +37,7 @@
     }
 
     bootBridge();
-    return { call };
+    return { call, onNativeMessage };
   })();
   window.mra = mra;
 
@@ -54,17 +62,7 @@
   // ---------- 通用模态弹窗 ----------
   // overlay + 居中卡片；opts: { title, titleColor, bodyHtml, maxWidth, buttons:[{text, primary, asLink, href, onClick(modal)}] }
   // onClick 回调自主决定是否调用 modal.close()；点空白处默认关闭
-  // 弹窗开关时向 C# 发 {type:'modal'}：置灰/恢复原生标题栏按钮（HTML 盖不住 AppWindowTitleBar overlay）
-  let modalOpenCount = 0;
-  function notifyModalState() {
-    try {
-      window.chrome.webview.postMessage({ type: 'modal', open: modalOpenCount > 0 });
-    } catch (e) { /* 非 WebView2 环境（浏览器直开）忽略 */ }
-  }
-
   function openModal(opts) {
-    modalOpenCount++;
-    notifyModalState();
     const overlay = document.createElement('div');
     overlay.className = 'mra-modal-overlay';
     overlay.style.cssText =
@@ -89,8 +87,6 @@
       close: () => {
         if (overlay._closing) return;
         overlay._closing = true;
-        modalOpenCount = Math.max(0, modalOpenCount - 1);
-        notifyModalState();
         overlay.classList.add('mra-modal-overlay--closing');
         card.classList.add('mra-modal-card--closing');
         setTimeout(() => overlay.remove(), 130);
@@ -437,28 +433,48 @@
   }
   initVersionEgg();
 
-  // ---------- 标题栏拖拽区排除 ----------
-  // 交互区（brand / tabs）上报给 C# 挖出系统 drag region：双击按钮区不会触发最大化
+  // ---------- 标题栏交互区上报 ----------
+  // 交互区（brand / tabs / win-controls）逐元素矩形上报给 C#：精确注册 Passthrough，
+  // 空白区保持 Draggable（整条标题栏带，系统处理拖动与双击最大化）
   function reportDragExcludes() {
     const header = document.getElementById('titlebar');
     if (!header || !window.chrome.webview) return;
-    const nodes = header.querySelectorAll('.brand, .tabs');
-    let minL = Infinity, minT = Infinity, maxR = -Infinity, maxB = -Infinity;
-    nodes.forEach((n) => {
-      const r = n.getBoundingClientRect();
-      minL = Math.min(minL, r.left);
-      minT = Math.min(minT, r.top);
-      maxR = Math.max(maxR, r.right);
-      maxB = Math.max(maxB, r.bottom);
-    });
-    if (!isFinite(minL)) return;
+    const rects = Array.from(header.querySelectorAll('.brand, .tabs, .win-controls'))
+      .map((n) => {
+        const r = n.getBoundingClientRect();
+        return { x: r.left, y: r.top, w: r.width, h: r.height };
+      });
     window.chrome.webview.postMessage({
       type: 'drag-exclude',
-      rect: { x: minL, y: minT, w: maxR - minL, h: maxB - minT }, // CSS 像素（DIP）
+      rects, // CSS 像素（DIP）
     });
   }
   reportDragExcludes();
   window.addEventListener('resize', reportDragExcludes);
+
+  // ---------- 自绘窗口控制按钮 ----------
+  // 点击 → C# win-action（最小化/最大化/关闭）；C# 推送 maximized → 切换图标与无障碍文案
+  function postWindowAction(action) {
+    try {
+      window.chrome.webview.postMessage({ type: 'win-action', action });
+    } catch (e) { /* 非 WebView2 环境（浏览器直开）忽略 */ }
+  }
+
+  function initWindowControls() {
+    $('btn-win-min').addEventListener('click', () => postWindowAction('minimize'));
+    $('btn-win-max').addEventListener('click', () => postWindowAction('maximize'));
+    $('btn-win-close').addEventListener('click', () => postWindowAction('close'));
+    mra.onNativeMessage((msg) => {
+      if (msg.type !== 'maximized') return;
+      const btn = $('btn-win-max');
+      if (!btn) return;
+      const maxed = Boolean(msg.value);
+      btn.classList.toggle('win-btn--maximized', maxed);
+      btn.setAttribute('aria-label', maxed ? '还原' : '最大化');
+      btn.setAttribute('title', maxed ? '还原' : '最大化');
+    });
+  }
+  initWindowControls();
 
   // ---------- 主控 ----------
   async function init() {

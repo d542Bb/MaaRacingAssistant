@@ -5,12 +5,12 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Microsoft.UI.Input;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.Web.WebView2.Core;
 using Windows.Graphics;
-using Windows.UI;
 using WinRT.Interop;
 
 namespace mra_shell;
@@ -82,21 +82,13 @@ public sealed partial class MainWindow : Window
     private const int GWLP_WNDPROC = -4;
     private readonly WndProcDelegate _wndProcHook;
     private readonly IntPtr _oldWndProc;
-    // 前端模态弹窗打开时系统按钮"伪透明"：HTML 遮罩（rgba(0,0,0,0.45)）盖不住 AppWindowTitleBar overlay，
-    // 故把按钮颜色设为标题栏原色被遮罩压暗后的合成色（原色 × 0.55），使按钮融入遮罩下的标题栏
-    private static readonly Color CaptionBtnFg = Color.FromArgb(0xFF, 0x1F, 0x23, 0x28);
-    private static readonly Color CaptionBgNormal = Color.FromArgb(0xFF, 0xFF, 0xFF, 0xFF);  // header 背景 --mra-surface
-    private static readonly Color CaptionBgHover = Color.FromArgb(0xFF, 0xE5, 0xE7, 0xEB);
-    private static readonly Color CaptionBgPressed = Color.FromArgb(0xFF, 0xD1, 0xD5, 0xDB);
-    private static readonly Color DimBgNormal = Color.FromArgb(0xFF, 0x8C, 0x8C, 0x8C);   // CaptionBgNormal × 0.55
-    private static readonly Color DimBgHover = Color.FromArgb(0xFF, 0x7E, 0x7F, 0x81);    // CaptionBgHover × 0.55
-    private static readonly Color DimBgPressed = Color.FromArgb(0xFF, 0x73, 0x75, 0x78);  // CaptionBgPressed × 0.55
-    private static readonly Color DimFg = Color.FromArgb(0xFF, 0x11, 0x13, 0x16);         // CaptionBtnFg × 0.55
-    private bool _captionDimmed;
 
-    // 前端上报的标题栏交互区（DIP）：系统 drag region 需挖掉该区，
-    // 双击按钮区不会触发最大化（见 UpdateDragRects 挖孔计算）
-    private RectInt32 _dragExcludeDips;
+    private AppWindow? _appWindow;
+    private InputNonClientPointerSource? _inputNonClientPointerSource;
+
+    // 前端上报的标题栏交互区（DIP，各元素矩形）：精确注册为 Passthrough（输入穿透交给 HTML），
+    // Draggable = 整条标题栏带（Passthrough 优先于 drag rects，重叠无冲突，见 UpdateDragRects）
+    private readonly List<RectInt32> _interactionRectsDips = new();
 
     private delegate IntPtr WndProcDelegate(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
@@ -111,27 +103,16 @@ public sealed partial class MainWindow : Window
         if (iconPath is not null)
             AppWindow.SetIcon(iconPath);
 
-        // AppWindowTitleBar：HTML 内容延伸到标题栏 + 系统按钮 overlay（winui_spike 已实测通过）
-        var titleBar = AppWindow.TitleBar;
-        titleBar.ExtendsContentIntoTitleBar = true;
-        // Tall：系统按钮 48px 高，与 HTML 48px header 垂直对齐（Standard 32px 会显得偏小）
-        titleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
-        // 系统按钮配色：白色标题栏（与 HTML 背景一致），符号深色，hover 浅灰
-        // 注意：失焦（Inactive）时若不显式设置，会回退系统主题色，必须成对覆盖
-        titleBar.ButtonBackgroundColor = CaptionBgNormal;
-        titleBar.ButtonForegroundColor = CaptionBtnFg;
-        titleBar.ButtonHoverBackgroundColor = CaptionBgHover;
-        titleBar.ButtonHoverForegroundColor = CaptionBtnFg;
-        titleBar.ButtonPressedBackgroundColor = CaptionBgPressed;
-        titleBar.ButtonPressedForegroundColor = CaptionBtnFg;
-        titleBar.ButtonInactiveBackgroundColor = CaptionBgNormal;
-        titleBar.ButtonInactiveForegroundColor = CaptionBtnFg;
+        // 标题栏：保留系统边框（可缩放），去掉系统标题栏与 —□× 按钮，由 HTML 自绘（win-controls）
+        if (AppWindow.Presenter is OverlappedPresenter presenter)
+            presenter.SetBorderAndTitleBar(true, false);
+
+        _appWindow = AppWindow;
+        _appWindow.Changed += AppWindow_Changed;
+
+        // 非客户区指针源：Draggable 空白区系统处理拖动/双击最大化，Passthrough 交互区穿透给 HTML
+        _inputNonClientPointerSource = InputNonClientPointerSource.GetForWindowId(AppWindow.Id);
         UpdateDragRects();
-        AppWindow.Changed += (_, args) =>
-        {
-            if (args.DidSizeChange)
-                UpdateDragRects();
-        };
 
         // 最小尺寸：subclass 窗口过程拦截 WM_GETMINMAXINFO（系统级，拖拽/Resize 均被钳制）
         var hwnd = WindowNative.GetWindowHandle(this);
@@ -183,7 +164,12 @@ public sealed partial class MainWindow : Window
         };
         // 滚轮修复：WM_MOUSEWHEEL 投递给键盘焦点窗口，WebView2 无焦点时收不到滚轮
         // （表现为滚轮滚不动、中键点击后才恢复）。页面加载完成后主动聚焦。
-        web.NavigationCompleted += (_, _) => web.Focus(FocusState.Programmatic);
+        // 同时主动上报一次初始最大化状态（自绘最大化/还原按钮图标需要对齐）
+        web.NavigationCompleted += (_, _) =>
+        {
+            web.Focus(FocusState.Programmatic);
+            SendMaximizedState();
+        };
         var indexPath = ResolveRepoAssetPath("apps", "mra_shell", "frontend", "index.html");
         if (indexPath is not null)
         {
@@ -233,32 +219,24 @@ public sealed partial class MainWindow : Window
     [DllImport("user32.dll")]
     private static extern uint GetDpiForWindow(IntPtr hwnd);
 
-    /// <summary>HTML 标题栏拖拽区 = 顶部 52px 全宽，挖掉前端上报的交互区（brand/tabs）。
+    /// <summary>HTML 标题栏（顶部 52px）双区域注册：Draggable = 整条标题栏带（系统处理拖动 +
+    /// 双击最大化）；Passthrough = 各交互区精确矩形（brand/tabs/win-controls，输入穿透交给 HTML）。
+    /// Passthrough 优先于 drag rects，故交互区之间的空白（如 tabs 右侧）保持可拖拽。
     /// 坐标单位物理像素（系统级 hit-test），与 WndProc 的 DPI 换算一致。</summary>
     private void UpdateDragRects()
     {
         var scale = GetDpiForWindow(WindowNative.GetWindowHandle(this)) / 96.0;
         int width = AppWindow.Size.Width;
         int top = (int)(52 * scale);
-        var rects = new List<RectInt32>();
-        bool hasExclude = _dragExcludeDips.Width > 0 && _dragExcludeDips.Height > 0;
-        if (hasExclude)
-        {
-            int exL = (int)(_dragExcludeDips.X * scale);
-            int exR = (int)((_dragExcludeDips.X + _dragExcludeDips.Width) * scale);
-            int exB = (int)((_dragExcludeDips.Y + _dragExcludeDips.Height) * scale);
-            // 挖孔：交互区左侧、右侧、下方三段仍可拖拽（双击空白标题栏仍能最大化）
-            if (exL > 0) rects.Add(new RectInt32(0, 0, exL, top));
-            if (exR < width) rects.Add(new RectInt32(exR, 0, width - exR, top));
-            if (exB < top) rects.Add(new RectInt32(0, exB, width, top - exB));
-        }
-        else
-        {
-            // 未收到排除信息（如页面尚未加载完成）：整条可拖拽
-            rects.Add(new RectInt32(0, 0, width, top));
-        }
-        if (rects.Count > 0)
-            AppWindow.TitleBar.SetDragRectangles(rects.ToArray());
+        AppWindow.TitleBar.SetDragRectangles(new[] { new RectInt32(0, 0, width, top) });
+        var passthrough = _interactionRectsDips
+            .Select(d => new RectInt32(
+                (int)(d.X * scale),
+                (int)(d.Y * scale),
+                (int)(d.Width * scale),
+                (int)(d.Height * scale)))
+            .ToArray();
+        _inputNonClientPointerSource?.SetRegionRects(NonClientRegionKind.Passthrough, passthrough);
     }
 
     // ---------- HTML → C# → Python 转发 ----------
@@ -272,21 +250,32 @@ public sealed partial class MainWindow : Window
             var msgType = root.TryGetProperty("type", out var t) ? t.GetString() : "";
             if (msgType == "drag-exclude")
             {
-                // 前端上报标题栏交互区（DIP）→ 重算系统 drag region（不回复）
-                if (root.TryGetProperty("rect", out var r) && r.ValueKind == JsonValueKind.Object)
+                // 前端上报标题栏交互区（DIP，各元素矩形）→ 重算非客户区双区域（不回复）
+                _interactionRectsDips.Clear();
+                if (root.TryGetProperty("rects", out var arr) && arr.ValueKind == JsonValueKind.Array)
                 {
-                    _dragExcludeDips = new RectInt32(
-                        (int)r.GetProperty("x").GetDouble(),
-                        (int)r.GetProperty("y").GetDouble(),
-                        (int)r.GetProperty("w").GetDouble(),
-                        (int)r.GetProperty("h").GetDouble());
-                    UpdateDragRects();
+                    foreach (var r in arr.EnumerateArray())
+                    {
+                        if (r.ValueKind != JsonValueKind.Object) continue;
+                        _interactionRectsDips.Add(new RectInt32(
+                            (int)r.GetProperty("x").GetDouble(),
+                            (int)r.GetProperty("y").GetDouble(),
+                            (int)r.GetProperty("w").GetDouble(),
+                            (int)r.GetProperty("h").GetDouble()));
+                    }
                 }
+                UpdateDragRects();
             }
-            else if (msgType == "modal")
+            else if (msgType == "win-action")
             {
-                // 前端通用弹窗开关 → 标题栏系统按钮置灰/恢复（视觉禁用，不拦截点击）
-                SetCaptionButtonsDimmed(root.TryGetProperty("open", out var o) && o.ValueKind == JsonValueKind.True);
+                // 自绘标题栏按钮 → 窗口控制
+                var action = root.GetProperty("action").GetString();
+                switch (action)
+                {
+                    case "minimize": MinimizeWindow(); break;
+                    case "maximize": ToggleMaximizeWindow(); break;
+                    case "close": CloseWindow(); break;
+                }
             }
             else if (msgType == "call")
             {
@@ -304,32 +293,52 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void SetCaptionButtonsDimmed(bool dimmed)
+    // ---------- 自绘标题栏：窗口控制 + 最大化状态上报 ----------
+
+    private void MinimizeWindow()
     {
-        if (_captionDimmed == dimmed) return;
-        _captionDimmed = dimmed;
-        var titleBar = AppWindow.TitleBar;
-        if (dimmed)
+        if (AppWindow.Presenter is OverlappedPresenter p) p.Minimize();
+    }
+
+    private void ToggleMaximizeWindow()
+    {
+        if (AppWindow.Presenter is not OverlappedPresenter p) return;
+        if (p.State == OverlappedPresenterState.Maximized) p.Restore();
+        else p.Maximize();
+    }
+
+    private void CloseWindow() => Close();
+
+    // Presenter 变化（最大化/还原）→ 通知前端切换最大化/还原图标；
+    // 尺寸变化（拖拽缩放）→ 重算非客户区 Draggable/Passthrough 区域。
+    // 坑：Restore 后常只触发 DidSizeChange 而不触发 DidPresenterChange，
+    // 故两者任一变化都检查并上报最大化状态（前端按值幂等设置，重复消息无副作用）
+    private void AppWindow_Changed(AppWindow sender, AppWindowChangedEventArgs args)
+    {
+        if (args.DidSizeChange)
+            UpdateDragRects();
+        if (!args.DidSizeChange && !args.DidPresenterChange) return;
+        if (sender.Presenter is not OverlappedPresenter presenter) return;
+        PostMaximizedState(presenter.State == OverlappedPresenterState.Maximized);
+    }
+
+    private void SendMaximizedState()
+    {
+        if (AppWindow.Presenter is not OverlappedPresenter presenter) return;
+        PostMaximizedState(presenter.State == OverlappedPresenterState.Maximized);
+    }
+
+    private void PostMaximizedState(bool value)
+    {
+        try
         {
-            titleBar.ButtonBackgroundColor = DimBgNormal;
-            titleBar.ButtonHoverBackgroundColor = DimBgHover;
-            titleBar.ButtonPressedBackgroundColor = DimBgPressed;
-            titleBar.ButtonInactiveBackgroundColor = DimBgNormal;
-            titleBar.ButtonForegroundColor = DimFg;
-            titleBar.ButtonHoverForegroundColor = DimFg;
-            titleBar.ButtonPressedForegroundColor = DimFg;
-            titleBar.ButtonInactiveForegroundColor = DimFg;
+            var json = JsonSerializer.Serialize(new { type = "maximized", value });
+            web.CoreWebView2?.PostWebMessageAsJson(json);
         }
-        else
+        catch (Exception ex)
         {
-            titleBar.ButtonBackgroundColor = CaptionBgNormal;
-            titleBar.ButtonHoverBackgroundColor = CaptionBgHover;
-            titleBar.ButtonPressedBackgroundColor = CaptionBgPressed;
-            titleBar.ButtonInactiveBackgroundColor = CaptionBgNormal;
-            titleBar.ButtonForegroundColor = CaptionBtnFg;
-            titleBar.ButtonHoverForegroundColor = CaptionBtnFg;
-            titleBar.ButtonPressedForegroundColor = CaptionBtnFg;
-            titleBar.ButtonInactiveForegroundColor = CaptionBtnFg;
+            // 窗口关闭边缘 Presenter 变化时 WebView 可能已释放，忽略即可
+            Console.Error.WriteLine($"[shell] 上报最大化状态失败: {ex.Message}");
         }
     }
 

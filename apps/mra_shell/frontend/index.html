@@ -6,7 +6,7 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <!-- ===== 顶部标题栏（系统 drag rect 区域；右侧系统按钮由 AppWindowTitleBar overlay） ===== -->
+  <!-- ===== 顶部标题栏（Draggable 空白区 / Passthrough 交互区由 C# InputNonClientPointerSource 管理；窗口控制按钮为 HTML 自绘） ===== -->
   <header id="titlebar">
     <div class="brand">
       <img class="brand-logo" src="logo.png" alt="MRA">
@@ -20,7 +20,18 @@
       <button class="mra-tab" data-tab="settings">设置</button>
       <button class="mra-tab" data-tab="about">关于</button>
     </nav>
-    <div class="header-spacer"></div>
+    <div class="win-controls" id="win-controls">
+      <button class="win-btn" id="btn-win-min" type="button" aria-label="最小化" title="最小化">
+        <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M1 5H9"/></svg>
+      </button>
+      <button class="win-btn" id="btn-win-max" type="button" aria-label="最大化" title="最大化">
+        <svg class="icon-max" viewBox="0 0 10 10" aria-hidden="true"><rect x="2" y="2" width="6" height="6"/></svg>
+        <svg class="icon-restore" viewBox="0 0 10 10" aria-hidden="true"><rect x="3" y="2" width="5" height="5"/><path d="M2 3V8H7"/></svg>
+      </button>
+      <button class="win-btn win-btn--close" id="btn-win-close" type="button" aria-label="关闭" title="关闭">
+        <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2L8 8M8 2L2 8"/></svg>
+      </button>
+    </div>
   </header>
 
   <!-- ===== 主体：四个 tab 页 ===== -->
