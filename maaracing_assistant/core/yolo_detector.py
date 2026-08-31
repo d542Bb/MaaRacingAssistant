@@ -4,6 +4,8 @@
 YOLO 目标检测模块：基于 ONNX Runtime 的 YOLOv8 推理封装
 """
 
+from __future__ import annotations
+
 import numpy as np
 import cv2
 import onnxruntime as ort

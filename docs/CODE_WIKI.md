@@ -563,7 +563,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 |------|----------|------|---------------|
 | `_screencap()` | RacingLoop / Navigation | 截图 RGB ndarray（优先 MAA → 失败回退 ctypes GDI）| 返回 BGR/RGB 需核对，推荐走封装好的 `_cap` / `_screenshot` |
 | `_screencap_ctypes()` | Navigation | Win32 GDI 备用截图方案（绕过 MAA 管线回退用）| 窗口句柄和 DPI 需提前确认；非首选 |
-| `_cap(ctrl)` / `_cap_fast(ctrl)` | RacingLoop | **v0.11.1** 截图：默认快速 BitBlt（~3-7ms），失败降级 MAA | 见 [赛车文档 §5.2](../maaracing_assistant/plugins/racing/CODE_WIKI.md) 兜底链路；每步失败 WARNING 日志 |
+| `_cap(ctrl)` | RacingLoop | 截图（按 `capture_backend` 分派：`wgc_latest`=WGC 常驻 `get_latest()` / `maa`=`capture.screenshot()`） | 见 [赛车文档 §5.2](../maaracing_assistant/plugins/racing/CODE_WIKI.md)；BitBlt 快速截图已废弃（GPU 窗口必黑屏） |
 | `_press_button(gpad, button, duration)` | Navigation | 按下 → 保持 → 释放（button=XInput enum） | duration 默认 0.3 s；racing 用 `_apply_trigger`/`_steer` 另封装 |
 | `_interruptible_sleep(seconds)` | Navigation / RacingLoop / Controller | 每 0.1 s 轮询检查 `_running` 的可中断 sleep | stop 能 0.1 s 级响应；**不要用 `time.sleep(>0.2)`** |
 | `_load_template(name)` | Controller / Navigation | 加载模板图片，优先 png → jpg 回退 | 返回 RGB ndarray，不存在返回 None 或 WARNING |

@@ -65,16 +65,16 @@ class ActivityContext:
     # ---------- capability（仅在首访时装配） ----------
 
     @property
-    def capture(self) -> "CaptureCapability | None":
-        """截图能力（可选）"""
+    def capture(self) -> "CaptureCapability":
+        """截图能力（首次访问时装配，恒可用）"""
         if self._capture is None:
             from maaracing_assistant.core.capabilities import CaptureAdapter
             self._capture = CaptureAdapter(self.app)
         return self._capture
 
     @property
-    def gamepad(self) -> "GamepadCapability | None":
-        """虚拟手柄能力（可选）"""
+    def gamepad(self) -> "GamepadCapability":
+        """虚拟手柄能力（首次访问时装配，恒可用）"""
         if self._gamepad is None:
             from maaracing_assistant.core.capabilities import GamepadAdapter
             self._gamepad = GamepadAdapter(self.app)

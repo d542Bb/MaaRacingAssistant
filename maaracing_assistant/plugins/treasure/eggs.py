@@ -192,7 +192,7 @@ class EggRewardRecognizer:
             if isinstance(th, (int, float)) and not isinstance(th, bool) and 0.0 <= th <= 1.0
             else MATCH_THRESHOLD
         )
-        self._entry = (gray, tuple(float(n) for n in rect), threshold)
+        self._entry = (gray, (float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3])), threshold)
 
     @property
     def configured(self) -> bool:

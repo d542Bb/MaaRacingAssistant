@@ -6,6 +6,8 @@ MaaRacingAssistant
 MAA Framework + YOLOv8 ONNX + vgamepad
 """
 
+from __future__ import annotations
+
 import sys
 
 # 禁用字节码写入：本项目进程运行不再到处生成 __pycache__（.gitignore 已忽略，

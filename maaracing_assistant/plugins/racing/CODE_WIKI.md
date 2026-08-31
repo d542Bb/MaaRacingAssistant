@@ -315,7 +315,6 @@ wall_memory：标线存在时记录靠墙状态，标线丢失+无YOLO目标时�
 
 | 参数 | 位置 | 值 | 说明 |
 |------|------|-----|------|
-| `_use_fast_cap` | `RacingLoop.__init__` | 默认 `True` | 是否启用直接 BitBlt 截图（~3-7ms），失败降级 MAA |
 | `_target_fps` | `RacingLoop.__init__` | 默认 `15`（基准后动态改写） | 目标 FPS（钳位 15~30） |
 | `_benchmark_latency` 采样帧 | `_benchmark_latency` | 20 帧（10 帧 YOLO + 10 帧非 YOLO） | 启动前诊断样本量 |
 | 剔帧策略 | 同上 | 剔最慢 1 帧（样本≥5时） | 抗离群值剔除量 |
@@ -327,20 +326,16 @@ wall_memory：标线存在时记录靠墙状态，标线丢失+无YOLO目标时�
 | 结束检测公式 | 同上 | `SLOW_CHECK = fps` | ≈1 Hz 检测频率 |
 | 帧率 sleep 公式 | `_run_impl` 尾 | `sleep(max(0, 1/target_fps - elapsed))` | 精准节奏，补偿前序耗时 |
 
-### 5.2 快速截图（BitBlt）兜底链路
+### 5.2 截图后端（无 BitBlt 兜底）
 
-按优先级从高到低尝试，每步失败打 WARNING 日志指明环节：
+截图统一走两套后端（v0.19.0 起废弃 BitBlt 直接截图——GPU 渲染窗口必黑屏）：
 
-| 步骤 | 调用 | 失败原因 |
-|------|------|----------|
-| 1 | `ctrl.hWnd`（驼峰） | Win32Controller 属性名不叫 hWnd |
-| 2 | `ctrl.hwnd`（小写） | 其他实现用小写 |
-| 3 | `find_game_hwnd()`（window_utils） | 都拿不到 → 扫窗口标题/类名 |
-| 4 | `GetClientRect(hwnd)` | 句柄无效/窗口最小化 |
-| 5 | `GetDC(hwnd)` | 无 GDI 权限 |
-| 6 | `CreateCompatibleDC` / `CreateCompatibleBitmap` | GDI 资源耗尽 |
-| 7 | `GetBitmapBits` | 位图格式不兼容/尺寸异常 |
-| *全部失败* | 降级 MAA `ctrl.post_processor.screenshot` | `_use_fast_cap=False`，不再重试 |
+| 后端 | `capture_backend` 值 | 实现 | 说明 |
+|------|------|------|------|
+| WGC 常驻 | `wgc_latest` | `_init_wgc()` + `_wgc_cap.get_latest()` | 零拷贝回调，`_cap` 直接取最新帧 |
+| MAA FramePool | `maa` | `capture.screenshot()`（capability 接口） | 经 controller 截图链路，内部已做 BGR→RGB 与 ctypes 兜底 |
+
+`capture_backend` 由 sidecar 调试页切换（`set_capture_backend` RPC），`_cap` 按值分派。
 
 ---
 
@@ -359,9 +354,8 @@ wall_memory：标线存在时记录靠墙状态，标线丢失+无YOLO目标时�
    │       自动调优(最低延迟): 15→XX FPS (剔除1帧后YOLO P90=XXms + 5%裕量，预算=XXms/帧)
    │       YOLO 间隔: 每 N 帧一次 (≈XX Hz)
    ├─ 结果写入实例字段：
-   │   ├─ _target_fps  (默认15 → 调优后值)
-   │   └─ _use_fast_cap (默认True → 失败降级False)
-   └─ 失败处理：快速截图失效降级 MAA + WARNING 日志（含具体失效环节）
+   │   └─ _target_fps  (默认15 → 调优后值)
+   └─ 失败处理：所有截图均失败 → 输出「无法统计延迟指标」并返回（不再降级截图后端）
 
 1. 初始化
    ├─ _running=True, frame_id=0
@@ -369,12 +363,9 @@ wall_memory：标线存在时记录靠墙状态，标线丢失+无YOLO目标时�
    └─ 正常模式：_create_pad() + _apply_trigger(255)（按住油门起步）
 
 2. 主循环（while _running，目标由_benchmark_latency动态确定，15~30 FPS）
-   ├─ _cap(ctrl) 截图：
-   │   ├─ _use_fast_cap=True → _cap_fast() 直接 BitBlt（P50≈3~7ms）
-   │   │   ├─ 句柄兜底链：ctrl.hWnd → ctrl.hwnd → find_game_hwnd()
-   │   │   ├─ 每步 GDI 检查：GetClientRect/GetDC/CreateCompatibleDC/CreateCompatibleBitmap/GetBitmapBits
-   │   │   └─ 失败 → WARNING + 置_use_fast_cap=False + 降级 MAA
-   │   └─ 否则 → MAA ctrl.post_processor.screenshot（P50≈25ms）
+   ├─ _cap(ctrl) 截图（按 capture_backend 分派）：
+   │   ├─ wgc_latest → WGC 常驻后端 get_latest()（零拷贝，最稳）
+   │   └─ maa → capture.screenshot()（MAA FramePool，P50≈25ms）
    ├─ frame_id++
    ├─ _detect_lane(img) 每帧检测黄色标线（开销低，P50≈1~2ms）
    ├─ 每 SLOW_CHECK 帧：_is_end(img) 检测结束画面（SLOW_CHECK = fps → ≈1 Hz）

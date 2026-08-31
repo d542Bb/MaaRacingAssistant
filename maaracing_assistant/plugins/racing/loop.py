@@ -4,8 +4,9 @@
 赛车控制模块：YOLO 实时目标检测 + 虚拟手柄赛道控制
 """
 
+from __future__ import annotations
+
 import time
-from typing import Any
 from pathlib import Path
 
 import cv2
@@ -50,8 +51,6 @@ class RacingLoop(CustomAction):
         self._lane_debug: dict | None = None  # 标线检测中间数据（供 debug 可视化）
         # 防碰撞历史
         self._hwnd = hwnd              # 游戏窗口句柄（WGC 捕获需要）
-        self._use_fast_cap = False    # 已废弃：BitBlt 对 GPU 窗口必黑屏，统一走 MAA FramePool (WGC)
-        self._fast_cap_mode = "auto"  # 保留字段，兼容旧代码
         self._target_fps = 15         # 目标帧率（基准测试后自动调优）
         self._wall_memory = 0  # 标线丢失后的防碰撞记忆：0=无, 1=左墙, -1=右墙
         self._wall_pos_history: list[int] = []  # 单边标线位置历史（防碰撞二阶导用）
@@ -194,12 +193,6 @@ class RacingLoop(CustomAction):
         self.gpad.update()
         self._last_rt = value
 
-    def _cap_fast(self, capture) -> np.ndarray | None:
-        """已废弃：BitBlt/GDI 对 GPU 渲染的游戏窗口必黑屏，保留签名兼容调用方。
-        现在统一返回 None，让上层走 MAA FramePool (WGC)。
-        """
-        return None
-
     # ---- WGC 后端 ----
 
     def _init_wgc(self):
@@ -269,12 +262,6 @@ class RacingLoop(CustomAction):
         self._maa_cap_count += 1
         if self._maa_cap_count == 1:
             logger.log(">>> REAL MAA CAP PATH <<<", "WARNING")
-        if self._use_fast_cap:
-            arr = self._cap_fast(capture)
-            if arr is not None:
-                return arr
-            self._use_fast_cap = False
-            logger.log("快速截图失效，降级到 MAA 截图", "WARNING")
         try:
             t_post = time.perf_counter_ns()
             arr = capture.screenshot()
@@ -1262,7 +1249,6 @@ class RacingLoop(CustomAction):
 
         # MAA 后端细分数据收集
         maa_post_wait: list[float] = []
-        maa_get: list[float] = []
         maa_signatures: list[int] = []
         maa_sig_changes = 0
         maa_prev_sig = None
@@ -1298,7 +1284,6 @@ class RacingLoop(CustomAction):
                 wgc_frame_ids.append(self._wgc_frame_id)
             elif self.capture_backend == "maa":
                 maa_post_wait.append(self._maa_post_wait_us)
-                maa_get.append(self._maa_get_us)
                 sig = getattr(self, "_maa_frame_signature", None)
                 if sig is not None:
                     maa_signatures.append(sig)
@@ -1490,13 +1475,6 @@ class RacingLoop(CustomAction):
                     f"   post_screencap.wait: P50={np.median(pw_arr):.3f}μs  "
                     f"P95={np.percentile(pw_arr, 95):.3f}μs  "
                     f"P99={np.percentile(pw_arr, 99):.3f}μs"
-                )
-            if maa_get:
-                g_arr = np.array(maa_get)
-                logger.log(
-                    f"   job.get: P50={np.median(g_arr):.3f}μs  "
-                    f"P95={np.percentile(g_arr, 95):.3f}μs  "
-                    f"P99={np.percentile(g_arr, 99):.3f}μs"
                 )
             if maa_signatures:
                 total_sig = len(maa_signatures)

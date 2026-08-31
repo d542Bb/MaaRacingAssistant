@@ -13,6 +13,8 @@ ndarray 通过 base 链阻止 Unmap，因此 latest_frame 是安全的 immutable
 - 锁内只交换 Python 引用和整数
 """
 
+from __future__ import annotations
+
 import time
 import threading
 

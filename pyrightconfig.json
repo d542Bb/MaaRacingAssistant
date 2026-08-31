@@ -1,5 +1,8 @@
 {
   "reportMissingImports": "warning",
   "venvPath": ".",
-  "venv": ".venv"
+  "venv": ".venv",
+  "extraPaths": [
+    "maaracing_assistant/plugins/treasure"
+  ]
 }

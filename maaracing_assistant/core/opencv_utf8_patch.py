@@ -7,6 +7,8 @@ opencv_utf8_patch.py
 原理：替换 cv2.imwrite/cv2.imread 以支持中文路径。
 """
 
+from __future__ import annotations
+
 import cv2
 import numpy as np
 from pathlib import Path

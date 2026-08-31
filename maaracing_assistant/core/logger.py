@@ -8,7 +8,6 @@ sidecar 启动时的 profile 回读启用。日志根 = user_data_dir()/logs，
 开发版与发行版位置一致（%APPDATA%/MaaRacingAssistant/logs）。
 """
 
-import sys
 from pathlib import Path
 from datetime import datetime
 

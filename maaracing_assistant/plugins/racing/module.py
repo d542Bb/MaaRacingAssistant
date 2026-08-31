@@ -5,6 +5,8 @@
 MAA Resource/Tasker/RacingLoop 归属模块内部创建与管理。
 """
 
+from __future__ import annotations
+
 import time
 from pathlib import Path
 

@@ -4,11 +4,12 @@
 窗口查找与物理手柄检测工具 + Win32 交互原语（DPI / 坐标换算 / 真实点击 / 按键计数 / 窗口调整）。
 """
 
+from __future__ import annotations
+
 import ctypes
 import subprocess
 import time
 from ctypes import wintypes
-from pathlib import Path
 
 from maa.toolkit import Toolkit
 
@@ -124,7 +125,7 @@ def ensure_dpi_aware() -> bool:
     """
     try:
         # PROCESS_PER_MONITOR_DPI_AWARE = 2
-        if _SHCORE.SetProcessDpiAwareness(2) == 0:
+        if _SHcore.SetProcessDpiAwareness(2) == 0:
             return True
     except Exception:
         pass

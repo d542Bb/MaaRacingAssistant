@@ -2,6 +2,20 @@
 
 > 按时间顺序记录每次重大修改。
 
+## 2026-08-31
+
+### v0.19.1 全面 debug 与冗余剔除（Python 3.9 兼容 + 三处真 bug）🔧
+- **版本号：** `v0.19.1`（正式版补丁；基于 v0.19.0，本次为修复+清理，无新功能）
+- **修复 Python 3.9 兼容性崩溃：** `__init__.py` / `core/opencv_utf8_patch` / `core/sidecar` / `core/wgcap` / `core/window_utils` / `core/yolo_detector` / `plugins/racing/loop` / `plugins/racing/module` 共 8 个文件补充 `from __future__ import annotations`。原在 `requires-python >=3.9` 声明下限的 Python 3.9 下整个包 import 即崩（`TypeError: unsupported operand type(s) for |`，注解定义时求值），现已与其余 19 个文件风格统一
+- **修复 `_SHCORE` 大小写 bug：** `core/window_utils.py` 模块级定义 `_SHcore`（小写 h），`ensure_dpi_aware()` 却调用 `_SHCORE`（大写）→ NameError 被 try/except 吞掉，**Per-Monitor DPI 首选分支永远静默失效**回退 System DPI，已改回 `_SHcore`
+- **修复 `DEFAULT_TREASURE_RISK_CAP` 漏 `self.`：** `plugins/treasure/module.py` `set_module_config` 内裸引用类属性常量（实为 `self.DEFAULT_TREASURE_RISK_CAP`），`treasure_risk_cap` 配置值非法（非 int/负数）时 NameError，已补 `self.`
+- **修复 racing 基准测试悬空指标：** `plugins/racing/loop.py` benchmark 采集 `_maa_get_us` 从未被赋值（重构截图链路后遗留），`capture_backend=maa` 时必 AttributeError；该指标已无数据源，删除 `maa_get` 采集与输出段
+- **冗余剔除：** `loop.py` 删除已废弃死代码（`_use_fast_cap`/`_fast_cap_mode` 字段、`_cap_fast` 空壳方法及其调用分支）；删除 5 处未使用导入（logger `sys`、window_utils `Path`、loop `typing.Any`、treasure module `BidDecision`+`DECISION_TARGET_SECOND`、strategy `dataclasses.field`）
+- **类型标注失真修正：** treasure/module.py `_appr_tpls`（3→5 元组）、`_ocr_pending`（4→6 元组）、`_extract_round_from_stage` 参数 `str→str|None`、`opponent_ids` 显式构造 3 元组、`_load_appraiser_templates` 内 rect 显式 4 元组；treasure/eggs.py `_entry` rect 显式 4 元组；core/base.py `ActivityContext.capture/gamepad` 属性标注去除 `|None`（getter 首次访问即装配恒非 None，消除 racing 域 9 处 pyright 误报）
+- **公告规范：** 新增 `docs/announcement.md`（发布时机 + JSON 格式 + 三条红线），`AGENTS.md` 加指针；`docs/announcement.json` 补缺失的 `date` 字段
+- **文档同步：** 赛车 `CODE_WIKI.md` §5.1/§5.2/§6 与主文档 `_cap` 方法索引删除 `_use_fast_cap`/`_cap_fast` 过时描述，改为当前截图后端（`wgc_latest`/`maa` 按 `capture_backend` 分派）；`pyrightconfig.json` 增 `extraPaths` 消除测试导入误报
+- **质量门禁：** `pytest` 22 passed · `compileall` 0 错误 · `pyright` 67→22（余 22 个为已验证运行安全的推断误报，刻意不加 `type: ignore`）
+
 ## 2026-08-24
 
 ### v0.19.0 正式版：入口体验三处修复（提权 / 图标 / 解压目录）🏷️

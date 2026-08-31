@@ -20,6 +20,8 @@ MRA Python sidecar —— 唯一业务后端（stdin/stdout JSONL RPC）。
 运行：python -u -m maaracing_assistant.core.sidecar
 """
 
+from __future__ import annotations
+
 import json
 import os
 import sys

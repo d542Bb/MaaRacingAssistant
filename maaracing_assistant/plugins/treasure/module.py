@@ -34,11 +34,9 @@ from maaracing_assistant.plugins.treasure.store import TreasureStore
 from maaracing_assistant.plugins.treasure.strategy import (
     BALANCE_UNKNOWN,
     BidContext,
-    BidDecision,
     BidStrategy,
     DECISION_OBSERVE,
     DECISION_PASS,
-    DECISION_TARGET_SECOND,
     RoundSnapshot,
     STRATEGY_LABEL,
     VAL_COEF,
@@ -182,7 +180,7 @@ def _load_appraiser_templates(
                     rect = _APPRAISER_SEARCH_ROI
                 th = val.get("threshold")
                 threshold = float(th) if isinstance(th, (int, float)) and not isinstance(th, bool) and 0.0 <= th <= 1.0 else _APPRAISER_MATCH_THRESHOLD
-                from_json.append((prio, key, fname, tuple(rect), threshold))
+                from_json.append((prio, key, fname, (float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3])), threshold))
             if from_json:
                 defs = from_json
     except Exception:
@@ -659,8 +657,8 @@ class TreasureModule(ActivityModule):
         self._ocr_thread: threading.Thread | None = None
         # --- 投递槽（主线程写 / worker 取）---
         self._ocr_lock = threading.Lock()     # 保护两个槽：latest 帧 + 结果
-        self._ocr_pending: tuple[int, int | None, np.ndarray, float] | None = None
-        # (frame_id, round_no, frame, captured_ts)，frame 为副本，captured_ts=投递时刻≈帧捕获时刻
+        self._ocr_pending: tuple[int, int | None, np.ndarray, float, str, frozenset[str] | None] | None = None
+        # (frame_id, round_no, frame, captured_ts, task, keys)，frame 为副本，captured_ts=投递时刻≈帧捕获时刻
         self._ocr_frame_id = 0                # 单调递增投递序号（仅主线程写）
         # --- 结果槽（worker 写 / 主线程消费）---
         # 双槽：关键通道（_ocr_result_critical，第一段 H+P4）与全量通道（_ocr_result，第二段
@@ -731,7 +729,7 @@ class TreasureModule(ActivityModule):
 
         # --------- 鉴宝师选择自动化 ---------
         # 模板缓存：[(priority, key, gray_ndarray)]，顺位升序；空列表 = 未加载或无可用模板
-        self._appr_tpls: list[tuple[int, str, np.ndarray]] = []
+        self._appr_tpls: list[tuple[int, str, np.ndarray, tuple[float, float, float, float], float]] = []
         # 「已选中」对勾模板（黄色√，卡片右上角）：灰度图或 None（未配置/加载失败）
         self._check_tpl: np.ndarray | None = None
         # 对勾扫描区域 rect（归一化，来自 stage.appraiser_selected_check）；随模板一起加载
@@ -906,9 +904,9 @@ class TreasureModule(ActivityModule):
             try:
                 v = int(config["treasure_risk_cap"])
             except (TypeError, ValueError):
-                v = DEFAULT_TREASURE_RISK_CAP
+                v = self.DEFAULT_TREASURE_RISK_CAP
             if v < 0:
-                v = DEFAULT_TREASURE_RISK_CAP
+                v = self.DEFAULT_TREASURE_RISK_CAP
             if v > 10_000_000:
                 v = 10_000_000
             self._treasure_risk_cap = v                    # 先存实例字段（策略实例可能尚未创建）
@@ -2153,7 +2151,8 @@ class TreasureModule(ActivityModule):
         h = self._current_h
         if not h:
             return
-        opponent_ids = tuple(pid for pid in (1, 2, 3, 4) if pid != my_slot)
+        others = [pid for pid in (1, 2, 3, 4) if pid != my_slot]
+        opponent_ids = (others[0], others[1], others[2])
         opponent_bids = tuple(slot_bids[pid] for pid in opponent_ids)
         snap = RoundSnapshot(
             epoch=self._bid_epoch,
@@ -4088,7 +4087,7 @@ class TreasureModule(ActivityModule):
     # ==================================================================
 
     @staticmethod
-    def _extract_round_from_stage(stage: str) -> int | None:
+    def _extract_round_from_stage(stage: str | None) -> int | None:
         """解析「第N回合」原始数字（N 任意，附加回合第6+回合也能提取；不 clamp，
         clamp 由调用方按「附加回合统一写进第5回合槽」的约定处理）。"""
         m = re.search(r"第(\d+)回合", stage or "")
