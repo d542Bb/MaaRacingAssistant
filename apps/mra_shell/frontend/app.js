@@ -1309,6 +1309,29 @@
           </div>
         </div>
 
+        <!-- 运行结束后 -->
+        <div class="card">
+          <div class="card-head"><h3>运行结束后</h3></div>
+          <div class="card-body" style="display:flex;flex-direction:column;gap:16px;">
+            <div class="option-row">
+              <button class="mra-toggle" id="${mid}-toggle-closegame" role="switch" aria-checked="false"></button>
+              <div class="option-main">
+                <div class="option-title">关闭游戏进程</div>
+                <p class="option-desc">流程正常结束（跑完全部目标）后，自动关闭《巅峰极速》进程；报错退出、手动停止不生效</p>
+              </div>
+              <span class="option-note">仅正常完成时触发</span>
+            </div>
+            <div class="option-row">
+              <button class="mra-toggle" id="${mid}-toggle-exitmra" role="switch" aria-checked="false"></button>
+              <div class="option-main">
+                <div class="option-title">退出 MRA 程序</div>
+                <p class="option-desc">关闭游戏后自动退出本程序；报错退出、手动停止不生效</p>
+              </div>
+              <span class="option-note">建议先勾选关闭游戏</span>
+            </div>
+          </div>
+        </div>
+
         <!-- 截图方式 -->
         <div class="card">
           <div class="card-head"><h3>截图方式</h3></div>
@@ -1437,6 +1460,37 @@
       });
     }
 
+    // 运行结束后：关闭游戏进程 / 退出 MRA 程序（仅"流程正常结束"时由后端触发）
+    const tCloseGame = p('toggle-closegame');
+    if (tCloseGame) {
+      tCloseGame.addEventListener('click', async () => {
+        const on = !toggleState(tCloseGame);
+        setToggle(tCloseGame, on); // 先翻转视觉状态
+        try {
+          await mra.call('set_auto_close_game', { enabled: on });
+        } catch (e) {
+          console.error(e);
+          showError(e.message);
+          setToggle(tCloseGame, !on); // 回滚
+        }
+      });
+    }
+
+    const tExitMra = p('toggle-exitmra');
+    if (tExitMra) {
+      tExitMra.addEventListener('click', async () => {
+        const on = !toggleState(tExitMra);
+        setToggle(tExitMra, on); // 先翻转视觉状态
+        try {
+          await mra.call('set_auto_exit_mra', { enabled: on });
+        } catch (e) {
+          console.error(e);
+          showError(e.message);
+          setToggle(tExitMra, !on); // 回滚
+        }
+      });
+    }
+
     // 实时预览卡：播放/暂停（peep 开关）+ 放大/还原（全屏）
     const previewToggle = p('btn-preview-toggle');
     const previewMax = p('btn-preview-max');
@@ -1507,6 +1561,8 @@
       setPreviewPlayState(!!d.peep_enabled);
       safeToggle('toggle-estop', !!d.emergency_stop_enabled);
       safeToggle('toggle-filelog', !!d.file_logging);
+      safeToggle('toggle-closegame', !!d.auto_close_game);
+      safeToggle('toggle-exitmra', !!d.auto_exit_mra);
       // 截图方式选中态
       document.querySelectorAll('.mra-radio-card').forEach((card) => {
         card.classList.toggle('mra-radio-card--selected', card.dataset.backend === d.capture_backend);

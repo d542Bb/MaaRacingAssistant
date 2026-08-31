@@ -40,6 +40,9 @@ public sealed class PythonSidecar : IDisposable
     private bool _backendDown;
     private bool _disposed;
 
+    /// <summary>sidecar 主动推送的事件名（type=event）。由 shell 侧订阅并按需响应，如运行结束自动退出（auto_exit）。</summary>
+    public event Action<string>? SidecarEvent;
+
     /// <summary>便捷构造：脚本直跑（契约测试用）。</summary>
     public PythonSidecar(string pythonExe, string scriptPath)
         : this(pythonExe, $"-u \"{scriptPath}\"", null)
@@ -107,7 +110,19 @@ public sealed class PythonSidecar : IDisposable
                     }
                     // 未知 id 的 response：忽略（可能已超时移除）
                 }
-                // type=event：第二版启用，忽略
+                // type=event：sidecar 主动推送事件（作为 response 分支的 else），上抛给 shell 订阅方处理
+                else
+                {
+                    var evtName = root.TryGetProperty("event", out var ev) &&
+                                  ev.ValueKind == JsonValueKind.String
+                        ? ev.GetString()
+                        : null;
+                    if (evtName is not null)
+                    {
+                        try { SidecarEvent?.Invoke(evtName); }
+                        catch (Exception evEx) { Console.Error.WriteLine($"[sidecar] event handler error: {evEx.Message}"); }
+                    }
+                }
             }
             catch (JsonException ex)
             {

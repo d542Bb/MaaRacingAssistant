@@ -146,6 +146,8 @@ public sealed partial class MainWindow : Window
             try
             {
                 _sidecar = new PythonSidecar(pythonExe, "-u -m maaracing_assistant.core.sidecar", projectRoot);
+                // 运行结束自动退出：sidecar 推 auto_exit → shell 关闭主窗口优雅退出
+                _sidecar.SidecarEvent += OnSidecarEvent;
             }
             catch (Exception ex)
             {
@@ -308,6 +310,14 @@ public sealed partial class MainWindow : Window
     }
 
     private void CloseWindow() => Close();
+
+    // sidecar 主动事件（type=event）。当前仅支持"运行结束自动退出"。
+    private void OnSidecarEvent(string evt)
+    {
+        if (evt != "auto_exit") return;
+        // 事件来自侧car reader 线程：封回 UI 线程再关主窗口，走 OnClosed 优雅关 sidecar
+        DispatcherQueue.TryEnqueue(() => Close());
+    }
 
     // Presenter 变化（最大化/还原）→ 通知前端切换最大化/还原图标；
     // 尺寸变化（拖拽缩放）→ 重算非客户区 Draggable/Passthrough 区域。

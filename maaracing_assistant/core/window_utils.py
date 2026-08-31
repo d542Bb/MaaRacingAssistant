@@ -5,6 +5,7 @@
 """
 
 import ctypes
+import subprocess
 import time
 from ctypes import wintypes
 from pathlib import Path
@@ -413,6 +414,24 @@ def hwnd_from_pid(pid: int) -> int:
 
     user32.EnumWindows(callback, 0)
     return _cache.get("hwnd", 0)
+
+
+def terminate_process_by_hwnd(hwnd: int) -> None:
+    """根据窗口句柄终结其所属进程（含子进程树）。用于「运行结束后自动关闭游戏」。
+
+    经由 GetWindowThreadProcessId 取 PID → taskkill /T 连子树一并杀。
+    """
+    if not hwnd:
+        raise ValueError("hwnd 为空")
+    pid = wintypes.DWORD()
+    _UD.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    if not pid.value:
+        raise RuntimeError("无法由 hwnd 获取 PID")
+    # capture_output 抑制 taskkill 中文输出刷到控制台；check=False 失败时返回非零码由调用方判读
+    subprocess.run(
+        ["taskkill", "/PID", str(pid.value), "/F", "/T"],
+        timeout=15, check=False, capture_output=True,
+    )
 
 
 def has_physical_controller() -> bool:

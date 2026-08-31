@@ -192,6 +192,14 @@ class SidecarService:
             if isinstance(peep, bool):
                 debug = self._controller.debug
                 debug.enable_peep() if peep else debug.disable_peep()
+            acg = dbg.get("auto_close_game")
+            aem = dbg.get("auto_exit_mra")
+            if isinstance(acg, bool) or isinstance(aem, bool):
+                # 运行结束自动关闭开关（GUI「运行结束后」卡片），单独恢复不串扰
+                self._controller.set_auto_shutdown(
+                    close_game=acg if isinstance(acg, bool) else None,
+                    exit_mra=aem if isinstance(aem, bool) else None,
+                )
         # 2) 模块配置（flat dict，含 module_id）→ 只取本程序管理的键，其余未知键忽略
         mc = data.get("module_config")
         if isinstance(mc, dict):
@@ -392,6 +400,10 @@ class SidecarService:
         except Exception as exc:
             logger.log(f"运行异常: {exc}", "ERROR")
         finally:
+            # 运行结束自动退出程序：与「关闭游戏」同源判定（last_run_natural），
+            # 仅"正常完成"生效，报错/手动停止不触发。发 auto_exit 事件 → shell 关闭窗口优雅退出。
+            if self._controller.last_run_natural and self._controller.auto_exit_mra:
+                self.send({"type": "event", "event": "auto_exit"})
             with self._lock:
                 if self._worker is threading.current_thread():
                     self._worker = None
@@ -602,6 +614,8 @@ class SidecarService:
             "capture_backend": self._controller._capture_backend,
             "emergency_stop_enabled": bool(getattr(self._controller, "_emergency_stop_enabled", False)),
             "file_logging": logger.file_logging,
+            "auto_close_game": bool(self._controller.auto_close_game),
+            "auto_exit_mra": bool(self._controller.auto_exit_mra),
         }, None)
 
     def set_debug_mode(self, params):
@@ -656,6 +670,26 @@ class SidecarService:
         self._controller._capture_backend = backend
         logger.log(f"截图方式: {backend}")
         return (True, {"capture_backend": backend}, None)
+
+    def set_auto_close_game(self, params):
+        enabled = bool(params.get("enabled", False))
+        self._controller.set_auto_shutdown(close_game=enabled)
+        cur = _load_profile().get("debug")
+        cur = cur if isinstance(cur, dict) else {}
+        cur["auto_close_game"] = enabled
+        _save_profile({"debug": cur})
+        logger.log(f"运行结束后自动关闭游戏: {'开启' if enabled else '关闭'}")
+        return (True, {"auto_close_game": enabled}, None)
+
+    def set_auto_exit_mra(self, params):
+        enabled = bool(params.get("enabled", False))
+        self._controller.set_auto_shutdown(exit_mra=enabled)
+        cur = _load_profile().get("debug")
+        cur = cur if isinstance(cur, dict) else {}
+        cur["auto_exit_mra"] = enabled
+        _save_profile({"debug": cur})
+        logger.log(f"运行结束后自动退出程序: {'开启' if enabled else '关闭'}")
+        return (True, {"auto_exit_mra": enabled}, None)
 
     def close(self, params):
         """shell 关闭前的业务清理：置 _closed + 停止 worker。"""

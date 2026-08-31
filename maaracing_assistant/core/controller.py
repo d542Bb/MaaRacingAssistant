@@ -28,6 +28,7 @@ from maaracing_assistant.core.window_utils import (
     find_game_hwnd,
     is_window_on_screen,
     resize_game_window_720p,
+    terminate_process_by_hwnd,
 )
 from maaracing_assistant.core.logger import logger
 from maaracing_assistant.core.base import ActivityContext, ModuleDependencyError
@@ -57,6 +58,11 @@ class MaaRacingAssistantController:
         # 紧急停止快捷键开关：开启后同时按下任意 ≥2 个按键 → 立即停止逻辑
         self._emergency_stop_enabled = False
         self._emergency_thread: threading.Thread | None = None
+        # 运行结束后自动关闭（GUI「运行结束后」卡片）：仅在流程"正常完成"时生效，
+        # 报错退出 / 手动停止（stop_event 置位）不触发。
+        self._auto_close_game = False  # 结束后关闭游戏进程
+        self._auto_exit_mra = False    # 结束后退出 MRA 程序
+        self._last_run_natural = False  # 上次 start_module 是否正常跑完（非报错、非手动停止）
 
     # ---------- 模块生命周期 ----------
 
@@ -119,8 +125,12 @@ class MaaRacingAssistantController:
                         logger.log(f"[controller] 模块{module_id!r}配置注入失败: {exc}", "WARNING")
             self.active_module = module
         self._running = True
+        self._last_run_natural = False
         try:
             module.start(start_from)
+            # 仅当 start 正常返回（未抛异常）才标记"自然完成"；
+            # 手动停止（stop_event 置位）或报错退出不满足，避免误触发自动关闭。
+            self._last_run_natural = True
         except Exception as e:
             logger.log(f"模块执行异常: {e}", "ERROR")
         finally:
@@ -140,6 +150,10 @@ class MaaRacingAssistantController:
             with self._lifecycle_lock:
                 self.active_module = None
             self._running = False
+            # 运行结束后行为（GUI「运行结束后」卡片）：仅"正常完成"生效 ——
+            # 报错退出（natural=False）或手动停止（stop_event 置位）不触发。
+            if self._last_run_natural and not self.stop_event.is_set():
+                self._maybe_auto_shutdown()
 
     def stop(self):
         """停止当前活动模块（幂等）"""
@@ -149,6 +163,45 @@ class MaaRacingAssistantController:
                 self.active_module.stop()
             except Exception as e:
                 logger.log(f"停止模块异常: {e}", "ERROR")
+
+    # ---------- 运行结束后自动关闭（GUI「运行结束后」卡片；仅正常完成生效）----------
+
+    @property
+    def auto_close_game(self) -> bool:
+        """是否在流程正常结束后自动关闭游戏进程（设置开关）"""
+        return self._auto_close_game
+
+    @property
+    def auto_exit_mra(self) -> bool:
+        """是否在流程正常结束后自动退出 MRA 程序（设置开关）"""
+        return self._auto_exit_mra
+
+    @property
+    def last_run_natural(self) -> bool:
+        """上次 start_module 是否"正常跑完"（非报错、非手动停止）。供 sidecar 决定是否发退出事件"""
+        return self._last_run_natural and not self.stop_event.is_set()
+
+    def set_auto_shutdown(self, close_game: bool | None = None, exit_mra: bool | None = None) -> None:
+        """设置「运行结束后」自动关闭的开关（GUI 设置卡片）。"""
+        if close_game is not None:
+            self._auto_close_game = bool(close_game)
+        if exit_mra is not None:
+            self._auto_exit_mra = bool(exit_mra)
+
+    def _maybe_auto_shutdown(self) -> None:
+        """流程正常结束后执行：按开关关闭游戏进程（退出 MRA 由 sidecar 依 last_run_natural 发起，以保证时序）"""
+        if not self._auto_close_game:
+            return
+        hwnd = self._hwnd or find_game_hwnd()
+        if not hwnd:
+            logger.log("运行结束自动关闭：未能定位游戏窗口，跳过关闭游戏进程", "WARNING")
+            return
+        try:
+            logger.log(f"运行结束自动关闭：正在关闭游戏进程 (hwnd={hwnd})…", "INFO")
+            terminate_process_by_hwnd(hwnd)
+            logger.log("运行结束自动关闭：游戏进程已关闭", "INFO")
+        except Exception as e:  # noqa: BLE001
+            logger.log(f"运行结束自动关闭：关闭游戏进程失败: {e}", "WARNING")
 
     # ---------- 紧急停止快捷键（GUI 调试选项卡开关控制）----------
 
