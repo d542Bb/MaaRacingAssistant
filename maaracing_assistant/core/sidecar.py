@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import TextIO, cast
 
 from maaracing_assistant import __version__
+from maaracing_assistant.core import opencv_utf8_patch  # noqa: F401  中文路径读写兼容，须先于任何 cv2 存图生效
 from maaracing_assistant.core.controller import MaaRacingAssistantController
 from maaracing_assistant.core.logger import logger
 from maaracing_assistant.core.registry import MODULE_REGISTRY, get_module_info

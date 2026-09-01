@@ -16,4 +16,4 @@ def user_data_dir() -> Path:
     base = os.environ.get("APPDATA")
     if base:
         return Path(base) / "MaaRacingAssistant"
-    return Path(__file__).resolve().parent.parent / "data"
+    return Path(__file__).resolve().parent.parent.parent / "data"

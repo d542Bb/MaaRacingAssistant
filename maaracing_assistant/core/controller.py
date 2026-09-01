@@ -41,7 +41,7 @@ class MaaRacingAssistantController:
     def __init__(self, capture_backend: str = "wgc_latest"):
         # DPI awareness：进程级语义，须在创建窗口 / 初始化坐标 API 前显式建立（不继承 shell 配置）
         ensure_dpi_aware()
-        self.proj = Path(__file__).parent.parent
+        self.proj = Path(__file__).resolve().parent.parent.parent
         self.model_path = self.proj / "assets" / "model" / "model.onnx"
         self.controller = None  # MAA Win32Controller（连接后有效，未连接为 None）
         self._hwnd = 0  # 已连接的游戏窗口句柄（未连接为 0）

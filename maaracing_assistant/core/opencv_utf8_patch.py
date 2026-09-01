@@ -78,5 +78,7 @@ if not getattr(cv2, '_utf8_patched', False):
     cv2.imread = _imread_utf8
     setattr(cv2, '_utf8_patched', True)
 
+    # 必须走 stderr：sidecar 的 stdout 承载 JSONL 协议，任何时机的 stdout 输出都会污染协议流
     if sys.platform == 'win32':
-        print("[opencv_utf8_patch] 已启用中文路径兼容模式 (Windows)")
+        sys.stderr.write("[opencv_utf8_patch] 已启用中文路径兼容模式 (Windows)\n")
+        sys.stderr.flush()

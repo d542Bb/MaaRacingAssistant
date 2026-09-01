@@ -606,9 +606,12 @@ class Navigation:
             arr = None
             button_pos = None
 
-            for attempt in range(30):
+            nav_deadline = time.time() + 45.0  # 长距离导航（900px+ 需 ~11s 移动）留足余量
+            for attempt in range(120):
                 if not self._running:
                     return False
+                if time.time() > nav_deadline:
+                    break
 
                 time.sleep(0.05)
                 arr = self._screencap()
