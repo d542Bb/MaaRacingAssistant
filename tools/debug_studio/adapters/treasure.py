@@ -20,6 +20,8 @@ from pathlib import Path
 from tools.debug_studio.core.categories import CategoryDefs
 from tools.debug_studio.core.session import SessionBrowser
 
+from maaracing_assistant.core.paths import user_data_dir
+
 PROJ = Path(__file__).resolve().parent.parent.parent.parent
 
 CATEGORIES: tuple[str, ...] = ("stage", "actions", "ocr", "appraisers", "eggs")
@@ -51,7 +53,12 @@ def rois_path() -> Path:
 
 
 def session_dir() -> Path:
-    return PROJ / "debug" / "treasure"
+    """鉴宝 debug 截图根：%APPDATA%/MaaRacingAssistant/debug/treasure。
+
+    与 treasure_module._prepare_debug_dirs 的写盘目录（user_data_dir()/debug/treasure）
+    严格一致——旧实现的 `PROJ/debug/treasure` 与用户数据目录解耦才会导致调不到会话。
+    """
+    return user_data_dir() / "debug" / "treasure"
 
 
 def make_session_browser() -> SessionBrowser:
