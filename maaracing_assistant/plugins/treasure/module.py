@@ -2983,17 +2983,15 @@ class TreasureModule(ActivityModule):
             # debug 开启 + peep 也开：同帧同时维护 PEEP 预览（与 save_frame 行为一致）
             if renderer is not None and getattr(self.ctx.debug, "peep_enabled", False):
                 peep_img = renderer.render_peep(img_bgr.copy(), state)
-                with self.ctx.debug._frame_lock:
-                    self.ctx.debug._latest_frame = peep_img
+                self.ctx.debug.update_peep(peep_img)
         elif cmd == "peep":
-            # 仅 PEEP 预览：渲染精简视图并更新 _latest_frame（与 get_peep_jpeg 同锁保护）
+            # 仅 PEEP 预览：渲染精简视图并更新预览（经公开接口，避免直接访问私有成员 P5）
             renderer = self.ctx.debug_renderer.current() if self.ctx else None
             if renderer is not None:
                 from maaracing_assistant.core.debug import DebugState
                 state = DebugState(label=label, **kwargs)
                 peep_img = renderer.render_peep(img_bgr, state)
-                with self.ctx.debug._frame_lock:
-                    self.ctx.debug._latest_frame = peep_img
+                self.ctx.debug.update_peep(peep_img)
 
     def _prepare_debug_dirs(self):
         """创建 debug/treasure/<ts>/ 目录结构（含 raw/）。

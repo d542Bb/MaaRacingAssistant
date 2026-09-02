@@ -140,6 +140,16 @@ class NavigationDebugger:
             return None
         return buf.tobytes()
 
+    def update_peep(self, peep_img) -> None:
+        """更新 PEEP 预览帧（带写锁）。供 IO worker / 模块注入 peep 帧。
+
+        封装 `_frame_lock`/`_latest_frame` 的写入，模块不再直接访问私有成员（P5）。
+        幂等；任意 ndarray 皆可写入，拷贝以避免调用方后续原地修改污染预览。
+        写入与 get_peep_jpeg 的读取共用同一把锁，保证 sidecar 拉取不撕裂。
+        """
+        with self._frame_lock:
+            self._latest_frame = peep_img.copy()
+
     def start_session(self, label: str):
         """开始一次导航调试会话（仅 enabled 时创建目录）"""
         self.frame_count = 0
