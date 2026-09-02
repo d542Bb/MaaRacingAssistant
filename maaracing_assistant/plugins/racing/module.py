@@ -14,6 +14,7 @@ from maa.tasker import Tasker
 from maa.resource import Resource
 
 from maaracing_assistant.core.base import ActivityContext, ActivityModule
+from maaracing_assistant.core.stage_tracker import StageTracker
 from maaracing_assistant.plugins.racing.renderer import RacingDebugRenderer
 from maaracing_assistant.plugins.racing.navigation import ButtonDef, Navigation
 from maaracing_assistant.plugins.racing.loop import RacingLoop
@@ -92,9 +93,12 @@ class RacingModule(ActivityModule):
             self.ctx.debug_renderer.renderer(RacingDebugRenderer(self.ctx.debug)))
 
         try:
-            # 解析断点
+            # 解析断点：断点换算收敛到统一底座 StageTracker（P4 线一）。
+            # 注意保持观测一致——非法 start_from / None 仍走 else 回退 0（起点阶段），
+            # 不像 resolve_start_from 对非法值抛错；先 in 判断保证只对合法值调 index。
+            self._tracker = StageTracker(self.STAGE_ORDER)
             if start_from and start_from in self.STAGE_ORDER:
-                skip_until = self.STAGE_ORDER.index(start_from)
+                skip_until = self._tracker.resolve_start_from(start_from)
                 logger.log(f"从断点开始: 「{start_from}」(跳过前{skip_until}个阶段)")
             else:
                 skip_until = 0
