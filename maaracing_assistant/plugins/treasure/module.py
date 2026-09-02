@@ -8,7 +8,7 @@
   • 独立调试目录：debug/treasure/<时间戳>/ 下保存 0001.png / 0002.png ...（渲染后 + 原始备份）
   • 状态机：阶段(STAGE) / 回合(ROUND) / 系统价 H / 我方出价 / 排名 记录
   • 事件日志：阶段切换 → INFO 日志；关键事件（如 record_event()）→ 额外命名截图 + INFO 日志
-  • 手动阶段切换：set_stage() / set_round() / set_h() / set_our_bid() / set_rank()，方便 OCR 注入 + 外部控制
+  • 手动阶段切换：set_stage() / set_round() / set_h() / set_rank()，方便 OCR 注入 + 外部控制
   • 估值公式：前 3 回合系统报价最大值 sysmax_13 → 真实估值 range = [sysmax*1.33, sysmax*1.44]
     （求稳用 ×1.35，激进用 ×1.4）
   • 纯观察：不做任何点击 / 手柄操作，全程只记录
@@ -30,6 +30,7 @@ import cv2
 import numpy as np
 
 from maaracing_assistant.core.base import ActivityContext, ActivityModule
+from maaracing_assistant.core.stage_tracker import StageTracker
 from maaracing_assistant.plugins.treasure.store import TreasureStore
 from maaracing_assistant.plugins.treasure.strategy import (
     BALANCE_UNKNOWN,
@@ -627,7 +628,7 @@ class TreasureModule(ActivityModule):
         # --------- 观察状态（全部初始为 None/空，OCR 模块逐步填充）---------
         self._round_no: int | None = None            # 1~5 或 None(未进入回合)
         self._h_prices: list[int] = []               # 各回合「系统报价」：点「智能出价」后弹窗中心填入的金额，OCR 读到就 set_h
-        self._our_bids: list[int] = []               # 各回合我方出价（动作层决定后 set_our_bid，点「出价」前可再用 OCR 回读弹窗比对一次）
+        self._our_bids: list[int] = []               # 各回合我方出价（由 _player_bids 我方槽位回退提供实测数据）
         self._player_bids: dict[str, list[int]] = {} # 其他玩家出价 {"玩家1":[R1,R2...], ...}
         self._my_rank: int | None = None             # 当前排名（1最高 / 4最低）
         # 我方槽位识别防抖：候选槽号 + 连续帧数（连续 RANK_STABLE_FRAMES 帧一致才 set_rank）
@@ -726,6 +727,11 @@ class TreasureModule(ActivityModule):
         #   _current_stage 仍停在"选择鉴宝师"，但 _last_raw_stage = None）。
         self._last_raw_stage: str | None = None
         self._last_raw_round: int | None = None
+
+        # --------- 统一底座接入点（P2b+，保留运行时供给，不替换主路径）---------
+        # StageTracker：阶段记录/断点换算的单一事实来源。运行时仍用既有 STAGE_ORDER +
+        # set_stage，本 tracker 供断点解析与未来的 DebugStudio/调试统一口径（P4/P5 迁移）。
+        self._stage_tracker: StageTracker | None = None
 
         # --------- 鉴宝师选择自动化 ---------
         # 模板缓存：[(priority, key, gray_ndarray)]，顺位升序；空列表 = 未加载或无可用模板
@@ -1051,9 +1057,10 @@ class TreasureModule(ActivityModule):
         if self.ctx.debug.enabled or self.ctx.debug.peep_enabled:
             self._start_io_worker()
 
-        # 4. 解析断点
+        # 4. 解析断点（换算收敛到统一底座 StageTracker，先 in 判断保护非法值回退 0）
+        self._stage_tracker = StageTracker(self.STAGE_ORDER)
         if start_from and start_from in self.STAGE_ORDER:
-            skip_until_idx = self.STAGE_ORDER.index(start_from)
+            skip_until_idx = self._stage_tracker.resolve_start_from(start_from)
             self._current_stage = self.STAGE_ORDER[skip_until_idx]
             raw_r = self._extract_round_from_stage(self._current_stage)
             self._round_no = min(raw_r, 5) if raw_r is not None else None
@@ -1332,16 +1339,6 @@ class TreasureModule(ActivityModule):
             extra = f"  (sysmax_13={m13:,} → 估值 {int(m13*1.35):,} ~ {int(m13*1.4):,})"
         logger.log(f"[鉴宝] 回合{self._round_no} 系统报价 = {value:,}{extra}", "INFO")
 
-    def set_our_bid(self, value: int) -> None:
-        """记录当前回合我方出价"""
-        if self._round_no is None:
-            logger.log(f"[鉴宝] set_our_bid({value}) 忽略：未指定回合", "DEBUG")
-            return
-        while len(self._our_bids) < self._round_no:
-            self._our_bids.append(0)
-        self._our_bids[self._round_no - 1] = value
-        logger.log(f"[鉴宝] 回合{self._round_no} 我方出价 = {value:,}", "INFO")
-
     def set_rank(self, rank: int) -> None:
         """设置我方所在面板槽号（1~4，OCR 从带「（我）」标记的玩家名行提取）。
         槽号即行序，_maybe_build_snapshot 用它排除我方槽。同值去重，避免刷屏。"""
@@ -1349,10 +1346,6 @@ class TreasureModule(ActivityModule):
             return
         self._my_rank = rank
         logger.log(f"[鉴宝] 我方槽位 = 槽{rank}", "DEBUG")
-
-    def set_note(self, text: str) -> None:
-        """设置 HUD 备注文字（比如当前策略、风控触发提示等）"""
-        self._note = text
 
     # ==================================================================
     #  鉴宝师选择自动化：模板匹配 + 顺位抉择 + 点击
@@ -4135,13 +4128,14 @@ class TreasureModule(ActivityModule):
 
     @property
     def _current_our_bid(self) -> int | None:
-        # 优先：_our_bids 已记录（动作层 set_our_bid 手动注入）
+        # 优先：_our_bids 已记录（本应经 set_our_bid 手动注入，但那方法真实执行路径无调用点，
+        # 详见下——实际是靠 _player_bids 我方槽位回退提供数据）。
         if self._round_no and 1 <= self._round_no <= len(self._our_bids):
             v = self._our_bids[self._round_no - 1]
             if v > 0:
                 return v
         # 回退：我方出价从 _player_bids 我方槽位读（bid_playerX ROI 累积表，含自己）。
-        # 实测事故：set_our_bid 全代码无调用点 → _our_bids 永远为空 → debug 图"我方出价"一直 "-"。
+        # 实测：_our_bids 在生产中恒为空（无写入调用），若不回退，debug 图"我方出价"一直 "-"。
         # 4 个玩家出价都 OCR 到了 _player_bids（f"玩家{my_rank}" = 我方槽位），直接用它。
         if self._round_no and self._my_rank and 1 <= self._my_rank <= 4:
             lst = self._player_bids.get(f"玩家{self._my_rank}")
