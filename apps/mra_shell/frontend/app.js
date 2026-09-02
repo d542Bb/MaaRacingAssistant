@@ -1306,6 +1306,14 @@
               </div>
               <span class="option-note">默认关闭，排查问题时开启</span>
             </div>
+            <div class="option-row">
+              <button class="mra-toggle" id="${mid}-toggle-intent" role="switch" aria-checked="false"></button>
+              <div class="option-main">
+                <div class="option-title">仅显示意图</div>
+                <p class="option-desc">打开后程序只把光标/手柄导航到目标位置，<strong>不执行点击</strong>，由你自己按下/确认；关闭时按选中的点击方式自动点击</p>
+              </div>
+              <span class="option-note">前台鼠标 / 后台手柄共用此开关</span>
+            </div>
           </div>
         </div>
 
@@ -1349,31 +1357,22 @@
                 <div class="radio-inner">
                   <div class="mra-radio-dot"></div>
                   <div class="option-main">
-                    <div class="radio-title"><strong>真实点击</strong><span class="badge-recommend">推荐</span></div>
-                    <p class="radio-desc">光标移到目标后 SendInput 点击，兼容性最稳；需游戏在前台</p>
+                    <div class="radio-title"><strong>前台(鼠标)</strong><span class="badge-recommend">推荐</span></div>
+                    <p class="radio-desc">光标移到目标后 SendInput 点击；需游戏在前台</p>
                   </div>
                 </div>
               </div>
-              <div class="mra-radio-card" data-clickmode="background">
+              <div class="mra-radio-card" data-clickmode="gamepad">
                 <div class="radio-inner">
                   <div class="mra-radio-dot"></div>
                   <div class="option-main">
-                    <div class="radio-title"><strong>后台点击</strong><span class="badge-wip">开发中</span></div>
-                    <p class="radio-desc">光标就位 + PostMessage 投递；部分按钮仍需游戏在前台才能激活逻辑</p>
-                  </div>
-                </div>
-              </div>
-              <div class="mra-radio-card" data-clickmode="intent">
-                <div class="radio-inner">
-                  <div class="mra-radio-dot"></div>
-                  <div class="option-main">
-                    <div class="radio-title"><strong>意图显示</strong></div>
-                    <p class="radio-desc">只把光标移到目标位置不点击，人工确认后手动操作</p>
+                    <div class="radio-title"><strong>后台(手柄)</strong></div>
+                    <p class="radio-desc">手柄光标导航到目标后按 A 键确认，游戏可留在后台；需 ViGEmBus 虚拟手柄</p>
                   </div>
                 </div>
               </div>
             </div>
-            <p class="capture-note">切换后立即生效；后台点击已实测可穿过其他窗口点击游戏</p>
+            <p class="capture-note">切换后立即生效；开启「仅显示意图」时只导航到目标，由你自己按下</p>
           </div>
         </div>
 
@@ -1505,6 +1504,22 @@
       });
     }
 
+    // 仅显示意图开关：开启后只导航到目标、不确认点击（由用户自己按）
+    const tIntent = p('toggle-intent');
+    if (tIntent) {
+      tIntent.addEventListener('click', async () => {
+        const on = !toggleState(tIntent);
+        setToggle(tIntent, on); // 先翻转视觉状态
+        try {
+          await mra.call('set_intent_mode', { enabled: on });
+        } catch (e) {
+          console.error(e);
+          showError(e.message);
+          setToggle(tIntent, !on); // 回滚
+        }
+      });
+    }
+
     // 运行选项：运行时静音游戏 / 关闭游戏进程 / 退出 MRA 程序
     const tMuteGame = p('toggle-mutegame');
     if (tMuteGame) {
@@ -1631,6 +1646,7 @@
       safeToggle('toggle-closegame', !!d.auto_close_game);
       safeToggle('toggle-exitmra', !!d.auto_exit_mra);
       safeToggle('toggle-mutegame', !!d.mute_game);
+      safeToggle('toggle-intent', !!d.intent_mode);
       // 点击方式 / 截图方式选中态
       document.querySelectorAll('.mra-radio-card').forEach((card) => {
         if (card.dataset.clickmode) {

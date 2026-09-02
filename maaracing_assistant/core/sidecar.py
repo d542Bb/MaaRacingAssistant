@@ -209,6 +209,9 @@ class SidecarService:
                     self._controller.set_click_mode(cm)
                 except ValueError:
                     pass  # 非法值忽略，保持默认
+            im = dbg.get("intent_mode")
+            if isinstance(im, bool):
+                self._controller.set_intent_mode(im)
             mg = dbg.get("mute_game")
             if isinstance(mg, bool):
                 self._controller.set_mute_game(mg)
@@ -625,6 +628,7 @@ class SidecarService:
             "peep_enabled": bool(debug.peep_enabled),
             "capture_backend": self._controller._capture_backend,
             "click_mode": self._controller.click_mode,
+            "intent_mode": self._controller.intent_mode,
             "emergency_stop_enabled": bool(getattr(self._controller, "_emergency_stop_enabled", False)),
             "file_logging": logger.file_logging,
             "auto_close_game": bool(self._controller.auto_close_game),
@@ -686,7 +690,7 @@ class SidecarService:
         return (True, {"capture_backend": backend}, None)
 
     def set_click_mode(self, params):
-        """切换点击方式：intent(意图显示) / real(真实点击) / background(后台点击)。
+        """切换点击方式：real(前台=鼠标 SendInput) / gamepad(后台=手柄导航+A键)。
 
         模式持久化到 profile（debug.click_mode），下次启动由 _restore_profile 回填。
         """
@@ -701,6 +705,20 @@ class SidecarService:
         _save_profile({"debug": cur})
         logger.log(f"点击方式: {mode}")
         return (True, {"click_mode": mode}, None)
+
+    def set_intent_mode(self, params):
+        """切换意图开关（仅显示意图）：开启后程序只导航到目标、不确认点击，由用户自己按。
+
+        持久化到 profile（debug.intent_mode），下次启动由 _restore_profile 回填。
+        """
+        enabled = bool(params.get("enabled", False))
+        self._controller.set_intent_mode(enabled)
+        cur = _load_profile().get("debug")
+        cur = cur if isinstance(cur, dict) else {}
+        cur["intent_mode"] = enabled
+        _save_profile({"debug": cur})
+        logger.log(f"仅显示意图: {'开启' if enabled else '关闭'}")
+        return (True, {"intent_mode": enabled}, None)
 
     def set_auto_close_game(self, params):
         enabled = bool(params.get("enabled", False))

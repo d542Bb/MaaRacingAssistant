@@ -2636,27 +2636,46 @@ class TreasureModule(ActivityModule):
         return {"key": a["key"], "center": center, "hint": a["hint"]}
 
     def _get_clicker(self):
-        """懒创建点击器（绑定窗口句柄）。
+        """懒创建点击器（绑定窗口句柄 + 手柄能力）。
 
         模式不在创建时固定：每次 _execute_click 前会从 ctx.click_mode 同步，
         因此设置页切换点击方式后立即生效，无需重启模块。
+        后台(手柄)方式需额外绑定截图帧源 + 手柄 + A 键确认按钮——仅在有能力时绑定，
+        缺 gamepad 能力时手柄点击自动降级（返回失败，不静默错点）。
         """
         if self._clicker is None:
             from maaracing_assistant.core.clicker import Clicker
+            from maaracing_assistant.core.capabilities import VGamepadAdapter
+            from maaracing_assistant.core.vgamepad_lazy import vg
+
             self._clicker = Clicker(self.ctx.hwnd, self.ctx.click_mode)
+            # 自 ctx 提取截图帧源（CaptureAdapter.screenshot），供手柄闭环导航读帧
+            try:
+                cap = self.ctx.capture
+                frame_src = cap.screenshot  # 帧源 callable → RGB ndarray
+                # 手柄：复用 controller 底层手柄（租约持有期间可用）
+                gpad = VGamepadAdapter(self.ctx.gamepad._app._get_gpad())
+                confirm_btn = vg.XUSB_BUTTON.XUSB_GAMEPAD_A
+                self._clicker.bind_gamepad(frame_src, gpad,
+                                           model_path=None,
+                                           confirm_button=confirm_btn)
+            except Exception as e:  # noqa: BLE001 —— 无 gamepad 能力/手柄不可用时忽略
+                logger.log(f"[鉴宝点击] 手柄点击绑定失败（缺 gamepad 能力时仅手柄方式不可用）: {e}",
+                           "DEBUG")
         return self._clicker
 
     def _execute_click(self, target: dict | None) -> None:
-        """把当前点击意图执行成点击：按设置的点击方式（intent/real/background）执行。
+        """把当前点击意图执行成点击：按设置的点击方式（前台鼠标 / 后台手柄）执行。
 
-        方案见 docs/treasure_real_click_plan.md（评审通过版），安全机制：
+        安全机制：
           • 指纹锁（边沿触发）：持续相同意图只点一次；数字键指纹含输入位锚点
             （_bid_input_progress），区分连续相同数字（如价格 11 的第二个 1）
           • cooldown：不同意图之间最小物理点击间隔（限速，非重复执行的许可）
-          • 前台校验：仅 real 模式要求目标窗口在前台（不抢前台）；background/intent 不需要
+          • 前台校验：仅前台(鼠标) real 模式要求目标窗口在前台（不抢前台）；后台(手柄)不需要
+          • 意图开关（仅显示意图，ctx.intent_mode）：置位后只导航到目标、不确认点击，
+            由用户自己按下。鼠标=只移光标；手柄=只导航到位不按 A。
           • 坐标换算以客户区物理尺寸为锚（与截图帧对齐）+ 像素索引 clamp
-          • 统一走 core.clicker.Clicker：intent=只移光标不点击 / real=SetCursorPos+SendInput
-            / background=SetCursorPos+PostMessage（实测游戏校验光标位置、不校验输入源）；
+          • 统一走 core.clicker.Clicker：real=SetCursorPos+SendInput / gamepad=手柄导航+A键；
             执行失败不算点击成功 → 指纹不更新，下帧重试
         """
         if not target:
@@ -2687,18 +2706,19 @@ class TreasureModule(ActivityModule):
         now = time.time()
         if now - self._last_click_time < self.CLICK_COOLDOWN_S:
             return
-        # 前台校验：仅真实点击模式需要（后台点击/意图显示不需要前台）。
+        # 前台校验：仅前台(鼠标)模式需要（点后台(手柄)不需要前台）。
         # 模式在"首部"（设置页）切换：这里每次执行前同步，运行中切换即时生效。
         clicker = self._get_clicker()
         clicker.set_mode(self.ctx.click_mode)
+        clicker.set_intent(self.ctx.intent_mode)
         if clicker.need_foreground and not is_foreground(self.ctx.hwnd):
             if self._frame_counter % 10 == 0:
                 logger.log(
                     f"[鉴宝点击] 前台校验失败：游戏窗口非前台，取消本次点击 key={key}"
-                    f"（模式={clicker.mode}；安全策略：真实点击不抢前台）", "WARNING",
+                    f"（模式={clicker.mode}；安全策略：前台鼠标点击不抢前台）", "WARNING",
                 )
             return
-        # 坐标换算与点击执行统一走 Clicker（intent 只移光标 / real SendInput / background PostMessage）。
+        # 坐标换算与点击执行统一走 Clicker（real 前台鼠标 SendInput / gamepad 手柄导航+A键）。
         # 失败 → 指纹不更新，下帧同意图自动重试。
         if not clicker.click(
                 center[0], center[1],

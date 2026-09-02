@@ -136,8 +136,13 @@ class ActivityContext:
 
     @property
     def click_mode(self) -> str:
-        """点击方式（intent 意图显示 / real 真实点击 / background 后台点击）"""
+        """点击方式（real 前台鼠标 / gamepad 后台手柄）"""
         return self.app._click_mode
+
+    @property
+    def intent_mode(self) -> bool:
+        """意图开关（仅显示意图）：开启后程序只导航到目标、不确认点击，由用户自己按。"""
+        return self.app._intent_mode
 
     @property
     def hwnd(self) -> int:

@@ -50,7 +50,8 @@ class MaaRacingAssistantController:
         self.debug = NavigationDebugger(debug_dir())
         self._debug_mode = False  # 调试模式开关（由 GUI 控制）
         self._capture_backend = capture_backend
-        self._click_mode = "real"  # 点击方式：intent(意图显示) / real(真实点击) / background(后台点击)
+        self._click_mode = "real"  # 点击方式：real(前台=鼠标 SendInput) / gamepad(后台=手柄导航+A键)
+        self._intent_mode = False  # 意图开关（仅显示意图）：只导航不确认，由用户自己按
         self._running = False  # 模块运行标志（start_module 生命周期内为 True）
         self._active_module = None  # 当前活动模块实例（生命周期由 start_module 管理）
         self._ctx = None  # ActivityContext 懒创建
@@ -96,7 +97,7 @@ class MaaRacingAssistantController:
 
     @property
     def click_mode(self) -> str:
-        """点击方式（intent / real / background），由设置页切换，模块点击统一读取。"""
+        """点击方式（real 前台鼠标 / gamepad 后台手柄），由设置页切换，模块点击统一读取。"""
         return self._click_mode
 
     def set_click_mode(self, mode: str) -> None:
@@ -105,6 +106,15 @@ class MaaRacingAssistantController:
         if mode not in CLICK_MODES:
             raise ValueError(f"非法点击方式: {mode!r}，可选 {CLICK_MODES}")
         self._click_mode = mode
+
+    @property
+    def intent_mode(self) -> bool:
+        """意图开关（仅显示意图）：开启后程序只导航到目标、不确认点击，由用户自己按。"""
+        return self._intent_mode
+
+    def set_intent_mode(self, intent: bool) -> None:
+        """切换意图开关（仅显示意图）。"""
+        self._intent_mode = bool(intent)
 
     @property
     def module_active(self) -> bool:
@@ -353,8 +363,8 @@ class MaaRacingAssistantController:
         self._hwnd = hwnd
         logger.log(f"已连接窗口 (hWnd={hwnd})")
 
-        # 按下开始后的窗口准备：仅「真实点击」模式切前台（用户明确操作）。
-        # 「后台点击/意图显示」模式保留游戏在后台——后台点击的意义就是游戏留在后台，
+        # 按下开始后的窗口准备：仅「前台(鼠标)」模式切前台（用户明确操作）。
+        # 「后台(手柄)」模式保留游戏在后台——后台点击的意义就是游戏留在后台，
         # 前台校验也只在 real 模式生效（见 treasure 模块 _execute_click）。
         if self._click_mode == "real":
             if not activate_window(hwnd):
