@@ -15,10 +15,8 @@ import numpy as np
 from maa.custom_action import CustomAction
 from maa.context import Context
 
-from maaracing_assistant.core.vgamepad_lazy import vg
 from maaracing_assistant.core.yolo_detector import YOLODetector
 from maaracing_assistant.core.logger import logger
-from maaracing_assistant.core.wgcap import WgcCapture
 
 
 class RacingLoop(CustomAction):
@@ -26,22 +24,18 @@ class RacingLoop(CustomAction):
     # 1280×720 下 y=28%~78% → (0, 201, 1280, 561)
     ROI = (0, 201, 1280, 561)
 
-    def __init__(self, model_path: str, debug=None,
-                 capture_backend: str = "wgc_latest", hwnd: int = 0):
+    def __init__(self, model_path: str, debug=None, gpad=None):
         super().__init__()
         self.det = YOLODetector(model_path)
         self.debug = debug
-        self.gpad = None
+        self.gpad = gpad  # VGamepadAdapter（core 下发，复用 controller 手柄）；None=未绑定
         self.last_dir = 0
         self.frame_id = 0
         self._running = True
         self._end_reason = ""  # 最近一次 _is_end 匹配的结果原因
         self._coin_turn_log_count = 0  # 金币转向诊断计数
-        self.capture_backend = capture_backend  # "maa" | "wgc_latest"
-        self._wgc_cap: WgcCapture | None = None
         # 路径审计 counter（benchmark 隔离验证用）
         self._maa_cap_count = 0
-        self._wgc_cap_count = 0
         # 跳帧推理缓存
         self._cached_coins: list = []
         self._cached_cars: list = []
@@ -49,8 +43,6 @@ class RacingLoop(CustomAction):
         self._cached_yolo_debug: list = []
         self._cached_all_raw: list = []
         self._lane_debug: dict | None = None  # 标线检测中间数据（供 debug 可视化）
-        # 防碰撞历史
-        self._hwnd = hwnd              # 游戏窗口句柄（WGC 捕获需要）
         self._target_fps = 15         # 目标帧率（基准测试后自动调优）
         self._wall_memory = 0  # 标线丢失后的防碰撞记忆：0=无, 1=左墙, -1=右墙
         self._wall_pos_history: list[int] = []  # 单边标线位置历史（防碰撞二阶导用）
@@ -99,48 +91,18 @@ class RacingLoop(CustomAction):
                 if tpl is not None:
                     self._end_templates.append((cv2.cvtColor(tpl, cv2.COLOR_BGR2GRAY), label, threshold))
 
-    def _create_pad(self):
-        """创建新的虚拟手柄并发送归零握手，避免残留偏置"""
-        if self.gpad is not None:
-            try:
-                del self.gpad
-            except Exception:
-                pass
-            self.gpad = None
-            time.sleep(0.1)
-        self.gpad = vg.VX360Gamepad()
-        # 发送 3 次全零报告，清掉驱动层可能的残留状态
-        for _ in range(3):
-            self.gpad.reset()
-            self.gpad.right_trigger(value=0)
-            self.gpad.left_trigger(value=0)
-            self.gpad.left_joystick(x_value=0, y_value=0)
-            self.gpad.right_joystick(x_value=0, y_value=0)
-            self.gpad.update()
-            time.sleep(0.05)
-        logger.log("虚拟手柄已创建并归零")
-        self._last_rt: int = 0
-        self._last_stick: tuple[int, int] = (0, 0)
+    def bind_gpad(self, gpad):
+        """注入手柄能力（每局入赛前由外层 module 重新注入）。
 
-    def _destroy_pad(self):
-        """销毁虚拟手柄，释放设备"""
-        if self.gpad is not None:
-            try:
-                self.gpad.reset()
-                self.gpad.update()
-            except Exception:
-                pass
-            try:
-                del self.gpad
-            except Exception:
-                pass
-            self.gpad = None
-            logger.log("虚拟手柄已销毁")
+        RacingLoop 跨局复用，而 controller._gpad 每局会被 reset_device() 销毁，
+        因此不能只在构造注入一次——每局重新取底层手柄并 re-inject，避免指向失效 pad。
+        """
+        self.gpad = gpad
+        self._last_rt = 0
+        self._last_stick = (0, 0)
 
     def stop(self):
         self._running = False
-        self._cleanup_wgc()
-        self._destroy_pad()
         self.last_dir = 0
         self._cached_coins = []
         self._cached_cars = []
@@ -193,72 +155,12 @@ class RacingLoop(CustomAction):
         self.gpad.update()
         self._last_rt = value
 
-    # ---- WGC 后端 ----
-
-    def _init_wgc(self):
-        """初始化 WGC 常驻捕获并等待首帧（幂等）。"""
-        if self._wgc_cap is not None:
-            return
-        if self._hwnd == 0:
-            raise RuntimeError("WGC 初始化需要有效的 hwnd")
-        cap = WgcCapture(self._hwnd)
-        cap.start()
-        # 等待首帧，最多 2 秒
-        for _ in range(40):
-            frame, *_ = cap.get_latest()
-            if frame is not None:
-                break
-            time.sleep(0.05)
-        else:
-            cap.stop()
-            raise RuntimeError("WGC 启动后 2 秒未收到首帧")
-        self._wgc_cap = cap
-        logger.log(f"WGC 后端已就绪（hwnd={self._hwnd}）")
-
-    def _cleanup_wgc(self):
-        """清理 WGC 捕获（幂等）。"""
-        cap = self._wgc_cap
-        self._wgc_cap = None
-        if cap is not None:
-            try:
-                cap.stop()
-            except Exception:
-                pass
-
     def _cap(self, capture):
-        """截图：MAA FramePool (WGC) 或 WGC 常驻后端，根据 capture_backend 选择。
+        """截图：统一走 capture.screenshot()（MAA FramePool → RGB ndarray）。
 
         capture 为 CaptureCapability（经 capability 接口访问截图，不再接收完整 controller）。
+        后处理与旧 WGC 路径对齐：底部锚定 16:9 裁剪 + 4 通道归一化 + 帧签名（保语义一致）。
         """
-        # ── WGC 常驻后端 ──
-        if self.capture_backend == "wgc_latest":
-            self._wgc_cap_count += 1
-            if self._wgc_cap_count == 1:
-                logger.log(">>> REAL WGC LATEST PATH <<<", "WARNING")
-            if self._wgc_cap is None:
-                raise RuntimeError("WGC 未初始化，请先调用 _init_wgc()")
-            t0 = time.perf_counter_ns()
-            result = self._wgc_cap.get_latest()
-            t1 = time.perf_counter_ns()
-            if result is None or result[0] is None:
-                raise RuntimeError("WGC get_latest() 返回空帧")
-            bgra, fid, capture_ts, frame_age = result
-            # 底部锚定 16:9：从底部向上裁，保证车头/路面坐标系不变
-            h, w = bgra.shape[:2]
-            target_h = int(w * 9 / 16)
-            if h > target_h:
-                bgra = bgra[-target_h:, :]
-            rgb = cv2.cvtColor(bgra, cv2.COLOR_BGRA2RGB)
-            t2 = time.perf_counter_ns()
-            # 记录细分耗时（μs），供 benchmark 采集
-            self._wgc_get_latest_us = (t1 - t0) / 1000
-            self._wgc_convert_us = (t2 - t1) / 1000
-            self._wgc_total_us = (t2 - t0) / 1000
-            self._wgc_frame_age = frame_age
-            self._wgc_frame_id = fid
-            return rgb
-
-        # ── MAA FramePool 后端（经 capability.screenshot()，内部已做 BGR→RGB 与 ctypes 兜底）──
         self._maa_cap_count += 1
         if self._maa_cap_count == 1:
             logger.log(">>> REAL MAA CAP PATH <<<", "WARNING")
@@ -273,6 +175,11 @@ class RacingLoop(CustomAction):
             # capability.screenshot() 已返回 RGB；此处仅做 4 通道归一化以兼容旧路径
             if arr.shape[2] == 4:
                 arr = cv2.cvtColor(arr, cv2.COLOR_BGRA2RGB)
+            # 底部锚定 16:9：从底部向上裁，保证车头/路面坐标系不变（沿用旧 WGC 分支语义）
+            h, w = arr.shape[:2]
+            target_h = int(w * 9 / 16)
+            if h > target_h:
+                arr = arr[-target_h:, :]
             # 帧签名（快速校验新鲜度）
             self._maa_frame_signature = hash(arr[:1].tobytes())
             return arr
@@ -1204,24 +1111,10 @@ class RacingLoop(CustomAction):
         if non_yolo_ft:
             logger.log(f"  非YOLO帧: P50={pct(non_yolo_ft,50):.1f}ms  ({len(non_yolo_ft)}帧)")
 
-        # WGC 后端额外检查
-        if self.capture_backend == "wgc_latest" and self._wgc_cap is not None:
-            metrics = self._wgc_cap.get_metrics()
-            if metrics:
-                logger.log(
-                    f"  WGC: callback={metrics['callback_count']}  "
-                    f"interval P50={metrics['callback_interval_p50']:.1f}ms",
-                    "DEBUG",
-                )
-            self._wgc_cap.reset_metrics()
-
     def _benchmark_latency(self, capture) -> None:
         """全链路延迟诊断（1000 帧），含后端隔离审计、YOLO warm-up、新鲜度验证。"""
         # ── 重置审计计数器 ──
         self._maa_cap_count = 0
-        self._wgc_cap_count = 0
-        if self._wgc_cap is not None:
-            self._wgc_cap.reset_metrics()
 
         # ── YOLO warm-up（3 次 dummy 推理，消除 CUDA kernel 初始化 / 模型 warm-up 影响）──
         import numpy as np
@@ -1241,12 +1134,6 @@ class RacingLoop(CustomAction):
         yolo_count = 0
         yolo_times_list: list[float] = []
 
-        # WGC 后端细分数据收集
-        wgc_get_latencies: list[float] = []
-        wgc_convert_latencies: list[float] = []
-        wgc_frame_ages: list[float] = []
-        wgc_frame_ids: list[int] = []
-
         # MAA 后端细分数据收集
         maa_post_wait: list[float] = []
         maa_signatures: list[int] = []
@@ -1254,8 +1141,7 @@ class RacingLoop(CustomAction):
         maa_prev_sig = None
 
         logger.log(
-            f"⏱  延迟基准测试：采集 {n_frames} 帧（含 {n_frames // 2} 次 YOLO）"
-            f"  backend={self.capture_backend}  wgc_init={self._wgc_cap is not None}",
+            f"⏱  延迟基准测试：采集 {n_frames} 帧（含 {n_frames // 2} 次 YOLO）",
             "WARNING",
         )
 
@@ -1276,20 +1162,14 @@ class RacingLoop(CustomAction):
 
             h, w = img.shape[:2]
 
-            # ── 后端专用数据采集 ──
-            if self.capture_backend == "wgc_latest":
-                wgc_get_latencies.append(self._wgc_get_latest_us)
-                wgc_convert_latencies.append(self._wgc_convert_us)
-                wgc_frame_ages.append(self._wgc_frame_age)
-                wgc_frame_ids.append(self._wgc_frame_id)
-            elif self.capture_backend == "maa":
-                maa_post_wait.append(self._maa_post_wait_us)
-                sig = getattr(self, "_maa_frame_signature", None)
-                if sig is not None:
-                    maa_signatures.append(sig)
-                    if maa_prev_sig is not None and sig != maa_prev_sig:
-                        maa_sig_changes += 1
-                    maa_prev_sig = sig
+            # ── 后端数据采集（统一 MAA 路径）──
+            maa_post_wait.append(self._maa_post_wait_us)
+            sig = getattr(self, "_maa_frame_signature", None)
+            if sig is not None:
+                maa_signatures.append(sig)
+                if maa_prev_sig is not None and sig != maa_prev_sig:
+                    maa_sig_changes += 1
+                maa_prev_sig = sig
 
             t_lane0 = time.perf_counter()
             lane = self._detect_lane(img)
@@ -1417,79 +1297,26 @@ class RacingLoop(CustomAction):
         yolo_interval = max(1, round(tuned_fps / 10))
         logger.log(f"   YOLO 间隔: 每 {yolo_interval} 帧一次 (≈{tuned_fps / max(1, yolo_interval):.0f} Hz)")
 
-        # ── WGC 后端特有指标 ──
-        if self.capture_backend == "wgc_latest" and self._wgc_cap is not None:
-            wgc_metrics = self._wgc_cap.get_metrics()
-            if wgc_metrics:
-                logger.log("   ── WGC 后端指标 ──")
-                logger.log(
-                    f"   callback interval: "
-                    f"P50={wgc_metrics['callback_interval_p50']:.3f}ms  "
-                    f"P95={wgc_metrics['callback_interval_p95']:.3f}ms  "
-                    f"P99={wgc_metrics['callback_interval_p99']:.3f}ms  "
-                    f"count={wgc_metrics['callback_count']}"
-                )
-            if wgc_get_latencies:
-                gl_arr = np.array(wgc_get_latencies)
-                cv_arr = np.array(wgc_convert_latencies)
-                caps_wgc = np.array(caps)
-                logger.log(
-                    f"   get_latest: P50={np.median(gl_arr):.3f}μs  "
-                    f"P95={np.percentile(gl_arr, 95):.3f}μs  "
-                    f"P99={np.percentile(gl_arr, 99):.3f}μs"
-                )
-                logger.log(
-                    f"   color convert: P50={np.median(cv_arr):.3f}μs  "
-                    f"P95={np.percentile(cv_arr, 95):.3f}μs  "
-                    f"P99={np.percentile(cv_arr, 99):.3f}μs"
-                )
-                logger.log(
-                    f"   _cap total: P50={np.median(caps_wgc):.3f}ms  "
-                    f"P95={np.percentile(caps_wgc, 95):.3f}ms  "
-                    f"P99={np.percentile(caps_wgc, 99):.3f}ms"
-                )
-            if wgc_frame_ages:
-                fa_arr = np.array(wgc_frame_ages)
-                logger.log(
-                    f"   frame age: P50={np.median(fa_arr):.3f}ms  "
-                    f"P95={np.percentile(fa_arr, 95):.3f}ms  "
-                    f"P99={np.percentile(fa_arr, 99):.3f}ms  "
-                    f"max={fa_arr.max():.3f}ms"
-                )
-            if wgc_frame_ids:
-                unique = len(set(wgc_frame_ids))
-                total = len(wgc_frame_ids)
-                dup = total - unique
-                logger.log(
-                    f"   duplicate ratio (WGC frame_id): {dup}/{total} "
-                    f"({dup / max(total, 1) * 100:.1f}%)  unique frame_ids={unique}"
-                )
-            self._wgc_cap.reset_metrics()
+        # ── 截图链路指标（统一 MAA 路径）──
+        logger.log("   ── 截图链路指标 ──")
+        if maa_post_wait:
+            pw_arr = np.array(maa_post_wait)
+            logger.log(
+                f"   post_screencap.wait: P50={np.median(pw_arr):.3f}μs  "
+                f"P95={np.percentile(pw_arr, 95):.3f}μs  "
+                f"P99={np.percentile(pw_arr, 99):.3f}μs"
+            )
+        if maa_signatures:
+            total_sig = len(maa_signatures)
+            logger.log(
+                f"   frame signature changes: {maa_sig_changes}/{total_sig - 1} "
+                f"({maa_sig_changes / max(1, total_sig - 1) * 100:.1f}%)  "
+                f"total frames={total_sig}"
+            )
 
-        # ── MAA 后端特有指标 ──
-        if self.capture_backend == "maa":
-            logger.log("   ── MAA 后端指标 ──")
-            if maa_post_wait:
-                pw_arr = np.array(maa_post_wait)
-                logger.log(
-                    f"   post_screencap.wait: P50={np.median(pw_arr):.3f}μs  "
-                    f"P95={np.percentile(pw_arr, 95):.3f}μs  "
-                    f"P99={np.percentile(pw_arr, 99):.3f}μs"
-                )
-            if maa_signatures:
-                total_sig = len(maa_signatures)
-                logger.log(
-                    f"   frame signature changes: {maa_sig_changes}/{total_sig - 1} "
-                    f"({maa_sig_changes / max(1, total_sig - 1) * 100:.1f}%)  "
-                    f"total frames={total_sig}"
-                )
-
-        # ── 后端隔离审计 ──
-        logger.log("   ── 后端审计 ──")
-        logger.log(f"   backend requested: {self.capture_backend}")
+        # ── 截图审计 ──
+        logger.log("   ── 截图审计 ──")
         logger.log(f"   MAA path calls: {self._maa_cap_count}")
-        logger.log(f"   WGC path calls: {self._wgc_cap_count}")
-        logger.log(f"   WGC initialized: {self._wgc_cap is not None}")
 
         logger.log("━" * 50)
 
@@ -1505,23 +1332,17 @@ class RacingLoop(CustomAction):
         if self.debug is not None:
             self.debug.start_session("racing")
 
-        self._create_pad()
-
-        # ── WGC 后端初始化（需在 benchmark 前就绪） ──
-        if self.capture_backend == "wgc_latest":
-            self._init_wgc()
-
         # ── 动态常量（基准测试后 _target_fps 已调优） ──
         YOLO_INTERVAL = max(1, round(self._target_fps / 10))  # YOLO ≈ 10 Hz 更新
         SLOW_CHECK = max(1, self._target_fps)                  # 每秒检一次商店/结束
 
-        # 起步：按住 RT 加速（游戏内部有倒计时，车不会立即动）
-        assert self.gpad is not None, "手柄未创建"
+        # 起步：按住 RT 加速（游戏内部有倒计时，车不会立即动）；gpad 由外层 module 每局 bind_gpad 注入
+        assert self.gpad is not None, "手柄未绑定（需先 bind_gpad）"
         self._apply_trigger(230)  # 90% 油门
 
         # ── 启动前快速验证 ──
         self._smoke_test(capture)
-        backend_label = "WGC Latest" if self.capture_backend == "wgc_latest" else "MAA FramePool"
+        backend_label = "MAA FramePool"
         logger.log(
             f"🎯 性能甜点: {self._target_fps} FPS（最低延迟模式） | "
             f"截图={backend_label} | "
@@ -1764,8 +1585,6 @@ class RacingLoop(CustomAction):
                 if sleep:
                     time.sleep(sleep)
         finally:
-            self._cleanup_wgc()
-            self._destroy_pad()
             self.last_dir = 0
             logger.log("赛车控制停止")
         return False

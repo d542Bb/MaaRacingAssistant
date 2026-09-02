@@ -40,7 +40,7 @@
 - 透视梯形车道分界线计算
 - 结束画面检测（商店弹窗/回合1结束模板）
 - 记录模式（读取物理手柄，CSV存盘供分析）
-- 截图后端可配置：wgc_latest（默认） / maa_fallback
+- 截图经 core 下发的 capture.screenshot()（MAA FramePool 统一路径，收敛后不再自建 WGC）
 
 **核心类**：`RacingLoop(CustomAction)`
 
@@ -59,16 +59,15 @@
 
 | 方法/属性 | 说明 |
 |-----------|------|
-| `__init__(model_path, debug, record_mode)` | 初始化YOLO检测器、加载结束模板 |
+| `__init__(model_path, debug, gpad=None)` | 初始化YOLO检测器、加载结束模板；gpad 经 bind_gpad 注入快捷键 |
 | `run(context, argv)` | MAA CustomAction入口 |
-| `run_direct(ctrl)` | 直接运行（绕过MAA Pipeline） |
-| `stop()` | 停止运行、销毁手柄、重置所有状态 |
-| `_run_impl(ctrl)` | 赛车控制核心循环（见 §6） |
-| `_create_pad()` | 创建新手柄+3次归零握手清残留 |
-| `_destroy_pad()` | 销毁手柄 |
-| `_steer(direction)` | 设置左摇杆方向（-1/0/1=全量，±2000~32767=比例） |
+| `run_direct(capture)` | 直接运行（绕过MAA Pipeline，capture 为 CaptureCapability） |
+| `bind_gpad(gpad)` | 每局入赛前由 module 注入 controller 底层手柄（复用同一设备，不自建） |
+| `stop()` | 停止运行、重置所有状态（手柄归零由外层 module 的 reset_device 处理） |
+| `_run_impl(capture)` | 赛车控制核心循环（见 §6） |
+| `_steer(direction)` | 设置左/右摇杆方向（-1/0/1=全量，±2000~32767=比例） |
 | `_apply_trigger(value)` | 设置右扳机油门（0-255） |
-| `_cap(ctrl)` | 截图（MAA PostScreencap，BGR→RGB） |
+| `_cap(capture)` | 截图：统一走 capture.screenshot()（MAA FramePool→RGB）+ 底部16:9裁剪 + 帧签名 |
 | `_detect_lane(img)` | HoughLinesP检测黄色标线，单边选择返回{side, pos} |
 | `_detect_horizon(all_raw, h, w)` | 从低置信度远处小车推断地平线，首次锁死 |
 | `_lane_boundaries_at_y(y, h, w)` | 透视投影计算y深度处的6条车道分界线 |
@@ -326,16 +325,17 @@ wall_memory：标线存在时记录靠墙状态，标线丢失+无YOLO目标时�
 | 结束检测公式 | 同上 | `SLOW_CHECK = fps` | ≈1 Hz 检测频率 |
 | 帧率 sleep 公式 | `_run_impl` 尾 | `sleep(max(0, 1/target_fps - elapsed))` | 精准节奏，补偿前序耗时 |
 
-### 5.2 截图后端（无 BitBlt 兜底）
+### 5.2 截图（统一 core 下发）
 
-截图统一走两套后端（v0.19.0 起废弃 BitBlt 直接截图——GPU 渲染窗口必黑屏）：
+截图统一走 core 下发的 `capture.screenshot()`（MAA FramePool → RGB ndarray），不再自建 WGC：
 
-| 后端 | `capture_backend` 值 | 实现 | 说明 |
-|------|------|------|------|
-| WGC 常驻 | `wgc_latest` | `_init_wgc()` + `_wgc_cap.get_latest()` | 零拷贝回调，`_cap` 直接取最新帧 |
-| MAA FramePool | `maa` | `capture.screenshot()`（capability 接口） | 经 controller 截图链路，内部已做 BGR→RGB 与 ctypes 兜底 |
+| 项 | 说明 |
+|------|------|
+| 接口 | `capture.screenshot()`（`CaptureCapability`，source: controller._screencap） |
+| 后处理 | 4 通道归一化 + 底部锚定 16:9 裁剪（车头/路面坐标系不变）+ `_maa_frame_signature` 帧签名 |
+| 审计 | `_maa_cap_count` / `_maa_post_wait_us` / `_maa_frame_signature`（benchmark 采集） |
 
-`capture_backend` 由 sidecar 调试页切换（`set_capture_backend` RPC），`_cap` 按值分派。
+`_cap()` 不再按 `capture_backend` 分派；旧 WGC 分支已随收敛删除。
 
 ---
 
@@ -360,12 +360,11 @@ wall_memory：标线存在时记录靠墙状态，标线丢失+无YOLO目标时�
 1. 初始化
    ├─ _running=True, frame_id=0
    ├─ 记录模式：打开CSV文件
-   └─ 正常模式：_create_pad() + _apply_trigger(255)（按住油门起步）
+   └─ 正常模式：assert gpad（module 已 bind_gpad）+ _apply_trigger(230)（按住油门起步）
 
 2. 主循环（while _running，目标由_benchmark_latency动态确定，15~30 FPS）
-   ├─ _cap(ctrl) 截图（按 capture_backend 分派）：
-   │   ├─ wgc_latest → WGC 常驻后端 get_latest()（零拷贝，最稳）
-   │   └─ maa → capture.screenshot()（MAA FramePool，P50≈25ms）
+   ├─ _cap(capture) 截图（统一 capture.screenshot()，MAA FramePool）：
+   │   └─ 4通道归一化 + 底部16:9裁剪 + 帧签名（P50≈25ms）
    ├─ frame_id++
    ├─ _detect_lane(img) 每帧检测黄色标线（开销低，P50≈1~2ms）
    ├─ 每 SLOW_CHECK 帧：_is_end(img) 检测结束画面（SLOW_CHECK = fps → ≈1 Hz）
@@ -390,7 +389,7 @@ wall_memory：标线存在时记录靠墙状态，标线丢失+无YOLO目标时�
 
 3. 清理
    ├─ 记录模式：关闭CSV
-   └─ 正常模式：_destroy_pad()
+   └─ 正常模式：gpad 归零由外层 module 的 reset_device() 统一处理（loop 不自建/不销毁手柄）
 ```
 
 ---

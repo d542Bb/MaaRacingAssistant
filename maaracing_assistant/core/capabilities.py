@@ -19,6 +19,22 @@ import numpy as np
 if TYPE_CHECKING:
     import vgamepad as vg
 
+# 按钮语义常量：模块只看到 BUTTON_A/B，不接触 vg 底层枚举。
+# 采用 PEP 562 模块级 __getattr__ **惰性**求值：import 本模块绝不触发 vgamepad，
+# 只有真正访问 BUTTON_A/B 才底层导入——避免净机（无 ViGEmBus 驱动）启动即崩
+# （capabilities 被 sidecar→controller 链路 import，不能在模块级立即访问 XUSB_BUTTON）。
+_BUTTON_CACHE: dict[str, object] = {}
+
+
+def __getattr__(name: str):
+    if name in ("BUTTON_A", "BUTTON_B"):
+        if name not in _BUTTON_CACHE:
+            from maaracing_assistant.core.vgamepad_lazy import vg
+            enum = vg.XUSB_BUTTON.XUSB_GAMEPAD_A if name == "BUTTON_A" else vg.XUSB_BUTTON.XUSB_GAMEPAD_B
+            _BUTTON_CACHE[name] = enum
+        return _BUTTON_CACHE[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 # ==================== Gamepad ====================
 
@@ -27,7 +43,10 @@ class Gamepad(Protocol):
 
     def press_button(self, button) -> None: ...
     def release_button(self, button) -> None: ...
-    def left_joystick(self, x_value: int, y_value: int) -> None: ...
+    def left_joystick(self, x_value: int = 0, y_value: int = 0) -> None: ...
+    def right_joystick(self, x_value: int = 0, y_value: int = 0) -> None: ...
+    def left_trigger(self, value: int = 0) -> None: ...
+    def right_trigger(self, value: int = 0) -> None: ...
     def update(self) -> None: ...
 
 
@@ -77,8 +96,17 @@ class VGamepadAdapter:
     def release_button(self, button) -> None:
         self._pad.release_button(button)
 
-    def left_joystick(self, x_value: int, y_value: int) -> None:
+    def left_joystick(self, x_value: int = 0, y_value: int = 0) -> None:
         self._pad.left_joystick(x_value=x_value, y_value=y_value)
+
+    def right_joystick(self, x_value: int = 0, y_value: int = 0) -> None:
+        self._pad.right_joystick(x_value=x_value, y_value=y_value)
+
+    def left_trigger(self, value: int = 0) -> None:
+        self._pad.left_trigger(value=value)
+
+    def right_trigger(self, value: int = 0) -> None:
+        self._pad.right_trigger(value=value)
 
     def update(self) -> None:
         self._pad.update()

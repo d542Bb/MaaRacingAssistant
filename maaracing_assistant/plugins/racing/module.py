@@ -65,9 +65,9 @@ class RacingModule(ActivityModule):
             return
         tasker = Tasker()
         resource = Resource()
-        self.racing_loop = RacingLoop(
-            str(self.ctx.model_path), debug=self.ctx.debug,
-            capture_backend=self.ctx.capture_backend, hwnd=self.ctx.hwnd)
+        # gpad 不在构造注入：每局入赛前经 ctx.gamepad._get_gpad() 重新取并 bind_gpad
+        # （避免 RacingLoop 跨局复用 + 每局 reset_device 销毁后指向失效 pad）
+        self.racing_loop = RacingLoop(str(self.ctx.model_path), debug=self.ctx.debug)
         resource.register_custom_action("RacingLoop", self.racing_loop)
         resource.post_bundle(str(_RES_DIR)).wait()
         # MAA 绑定经 ctx 窄入口（内部持有 Win32Controller，模块不接触高权限对象）
@@ -233,7 +233,9 @@ class RacingModule(ActivityModule):
                     # ── 比赛（直接运行，绕过 MAA CustomAction）──
                     self._current_stage = self.STAGE_ORDER[6]
                     if self.ctx.lifecycle.running:
-                        # 销毁导航手柄，避免 RacingLoop 创建第二个手柄导致游戏不识別
+                        # 比赛开始前销毁导航/上局手柄，避免第二个手柄导致游戏不识別；随后每局
+                        # 重新取 controller 底层手柄并注入 RacingLoop（reset 后旧 pad 已失效，
+                        # 跨局复用必须不断 re-inject）。
                         self.ctx.gamepad.reset_device()
                         race_ok = False
                         for race_retry in range(3):
@@ -243,6 +245,9 @@ class RacingModule(ActivityModule):
                             try:
                                 self._ensure_pipeline()
                                 assert self.racing_loop is not None  # _ensure_pipeline 已创建
+                                from maaracing_assistant.core.capabilities import VGamepadAdapter
+                                gpad = VGamepadAdapter(self.ctx.gamepad._app._get_gpad())
+                                self.racing_loop.bind_gpad(gpad)
                                 self.racing_loop.run_direct(self.ctx.capture)
                                 elapsed = time.time() - t0
                                 if elapsed < 3:

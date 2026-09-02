@@ -18,7 +18,6 @@ import cv2
 import numpy as np
 
 from maaracing_assistant.core.paths import debug_dir
-from maaracing_assistant.core.vgamepad_lazy import vg
 
 if TYPE_CHECKING:
     from contextlib import AbstractContextManager
@@ -449,7 +448,8 @@ class Navigation:
         """按 A → 验证是否命中"""
         self._stop_stick(gpad)
         time.sleep(0.2)
-        self._press_button(gpad, vg.XUSB_BUTTON.XUSB_GAMEPAD_A, duration=0.3)
+        from maaracing_assistant.core.capabilities import BUTTON_A
+        self._press_button(gpad, BUTTON_A, duration=0.3)
         self._interruptible_sleep(1.0)
 
         if not btn.page_template:
@@ -542,6 +542,7 @@ class Navigation:
         logger.log("开始归位：按 B 直到进入设置页面...")
 
         with self._gpad_lease() as gpad:
+            from maaracing_assistant.core.capabilities import BUTTON_B
             for i in range(15):
                 if not self._running:
                     logger.log("收到停止信号，中断归位")
@@ -573,7 +574,7 @@ class Navigation:
 
                 if arr is not None and template_match:
                     logger.log(f"归位完成：已识别到设置页面（第{i+1}次按B）")
-                    self._press_button(gpad, vg.XUSB_BUTTON.XUSB_GAMEPAD_B, duration=0.3)
+                    self._press_button(gpad, BUTTON_B, duration=0.3)
                     self._interruptible_sleep(2.0)
                     logger.log("已返回主界面，开始正式循环")
                     return True
@@ -583,7 +584,7 @@ class Navigation:
                 else:
                     logger.log(f"第{i+1}次按 B...", "DEBUG")
 
-                self._press_button(gpad, vg.XUSB_BUTTON.XUSB_GAMEPAD_B, duration=0.3)
+                self._press_button(gpad, BUTTON_B, duration=0.3)
                 self._interruptible_sleep(1.5)
 
             logger.log("归位超时（15次按B未识别到设置页面），继续执行", "WARNING")
@@ -713,12 +714,13 @@ class Navigation:
             return False
         logger.log("检测到商店弹窗，按A关闭")
         with self._gpad_lease() as gpad:
-            self._press_button(gpad, vg.XUSB_BUTTON.XUSB_GAMEPAD_A, duration=0.3)
+            from maaracing_assistant.core.capabilities import BUTTON_A
+            self._press_button(gpad, BUTTON_A, duration=0.3)
             self._interruptible_sleep(1.0)
             if not self._check_page_by_template("store_popup_template"):
                 logger.log("商店弹窗已关闭")
                 return True
             logger.log("弹窗仍然存在，再按一次A", "WARNING")
-            self._press_button(gpad, vg.XUSB_BUTTON.XUSB_GAMEPAD_A, duration=0.3)
+            self._press_button(gpad, BUTTON_A, duration=0.3)
             self._interruptible_sleep(0.5)
             return True
