@@ -80,3 +80,8 @@ Thumbs.db
 
 # 本机启动快捷方式（指向机器相关构建产物路径，仅本地使用，不同步）
 *.lnk
+
+# cursor_refactor 光标训练/趋近工具：只入库脚本，忽略采集帧与模型产物（体积大）
+cursor_refactor/captures/
+cursor_refactor/models/
+cursor_refactor/__pycache__/
