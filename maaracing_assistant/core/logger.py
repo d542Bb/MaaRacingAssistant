@@ -11,7 +11,7 @@ sidecar 启动时的 profile 回读启用。日志根 = user_data_dir()/logs，
 from pathlib import Path
 from datetime import datetime
 
-from maaracing_assistant.core.paths import user_data_dir
+from maaracing_assistant.core.paths import logs_dir
 
 
 class Logger:
@@ -74,4 +74,4 @@ class Logger:
 
 
 # 全局日志单例（日志根 = 用户数据目录 / logs，开发版与发行版一致；默认不写盘）
-logger = Logger(user_data_dir() / "logs")
+logger = Logger(logs_dir())

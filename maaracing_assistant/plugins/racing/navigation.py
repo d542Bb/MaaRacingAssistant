@@ -17,7 +17,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from maaracing_assistant.core.paths import user_data_dir
+from maaracing_assistant.core.paths import debug_dir
 from maaracing_assistant.core.vgamepad_lazy import vg
 
 if TYPE_CHECKING:
@@ -194,9 +194,9 @@ class Navigation:
         binary = cv2.bitwise_and(binary, sat_mask)
 
         if debug:
-            debug_dir = user_data_dir() / "debug" / "diagnose"
-            debug_dir.mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(str(debug_dir / "cursor_binary.png"), binary)
+            dbg_dir = debug_dir() / "diagnose"
+            dbg_dir.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(dbg_dir / "cursor_binary.png"), binary)
 
         contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         best_cursor = None

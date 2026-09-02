@@ -14,7 +14,7 @@ from ctypes import wintypes
 from maa.toolkit import Toolkit
 
 from maaracing_assistant.core.logger import logger
-from maaracing_assistant.core.paths import user_data_dir
+from maaracing_assistant.core.paths import framework_dir
 
 # ---- Win32 常量 ----
 _UD = ctypes.windll.user32
@@ -457,10 +457,12 @@ def has_physical_controller() -> bool:
 
 
 def find_game_hwnd() -> int:
-    # MAA user_path 指向用户数据目录：框架日志（maafw.log）与 cache 落 %APPDATA%，
+    # MAA user_path 指向 framework/ 子目录：maafw 产物（maafw.log/cache）与应用数据隔离，
     # 开发/发行一致且不受安装目录权限影响；路径解析失败时退回包根
     try:
-        Toolkit.init_option(str(user_data_dir()))
+        fw = framework_dir()
+        fw.mkdir(parents=True, exist_ok=True)
+        Toolkit.init_option(str(fw))
     except Exception:
         pass
 

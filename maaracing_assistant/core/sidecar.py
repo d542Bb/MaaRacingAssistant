@@ -37,7 +37,7 @@ from maaracing_assistant.core import opencv_utf8_patch  # noqa: F401  中文路�
 from maaracing_assistant.core.controller import MaaRacingAssistantController
 from maaracing_assistant.core.logger import logger
 from maaracing_assistant.core.registry import MODULE_REGISTRY, get_module_info
-from maaracing_assistant.core.paths import user_data_dir
+from maaracing_assistant.core.paths import config_dir, data_dir, user_data_dir
 from maaracing_assistant.core.window_utils import ensure_dpi_aware, has_physical_controller
 
 # 协议转移用 stderr：_StdoutGuard 把误写 stdout 的第三方 print 转移到这里。
@@ -45,7 +45,7 @@ from maaracing_assistant.core.window_utils import ensure_dpi_aware, has_physical
 _STDERR = cast(TextIO, sys.__stderr__)
 
 # --------------------------------------------------------------------------
-# 用户偏好持久化（profile）：%APPDATA%/MaaRacingAssistant/profile.json
+# 用户偏好持久化（profile）：%APPDATA%/MaaRacingAssistant/config/profile.json
 # 只写/读本程序自己管理的键；文件里出现未知类/键一律忽略，绝不因此崩溃。
 # --------------------------------------------------------------------------
 _PROFILE_FILENAME = "profile.json"
@@ -56,8 +56,8 @@ _MODULE_CONFIG_KEYS = ("max_daily_loops", "target_session", "treasure_risk_cap",
 
 
 def _profile_path() -> Path:
-    """profile 文件路径：与数据库同目录（%APPDATA%/MaaRacingAssistant/ 下）。"""
-    return user_data_dir() / _PROFILE_FILENAME
+    """profile 文件路径：配置目录（%APPDATA%/MaaRacingAssistant/config/ 下）。"""
+    return config_dir() / _PROFILE_FILENAME
 
 
 def _load_profile() -> dict:
@@ -575,7 +575,7 @@ class SidecarService:
         now = datetime.now()
         day = now.date() if now.hour >= 5 else now.date() - timedelta(days=1)
         bucket = day.isoformat()
-        db_path = user_data_dir() / "treasure" / "treasure.db"
+        db_path = data_dir() / "treasure" / "treasure.db"
         if not db_path.exists():
             return (True, {"bucket": bucket, "summary": None, "games": []}, None)
         try:
