@@ -36,7 +36,7 @@ _RES_DIR = Path(__file__).resolve().parent / "resources"
 MATCH_THRESHOLD = 0.75  # TM_CCOEFF_NORMED
 
 # 多尺度匹配缩放档（0.70×~1.30×，步长 0.05）。
-# 必须与调试台 tools/treasure_debug_studio/server.py 的 MATCH_SCALES、
+# 必须与调试台 tools/debug_studio/core/reader.py 的 MATCH_SCALES、
 # treasure_module 的 _APPRAISER_MATCH_SCALES 保持完全一致——调试台校准的分数/阈值
 # 要能原样复现于运行时，画面/ROI/模板/算法四者必须同口径（牵一发而动全身原则）。
 MATCH_SCALES: tuple[float, ...] = (
@@ -45,7 +45,7 @@ MATCH_SCALES: tuple[float, ...] = (
 
 # ============================================================
 # 搜索 ROI：从插件资源目录 plugins/treasure/resources/treasure_rois.json 读取
-# （调试台 tools/treasure_debug_studio 负责可视化校准并保存该文件）。
+# （调试台 tools/debug_studio 负责可视化校准并保存该文件）。
 # rect 为归一化坐标 (x1n, y1n, x2n, y2n)，匹配时直接乘当前输入帧 W/H。
 # 注意：不提供硬编码 fallback——JSON 缺失/失败时如实报告并跳过，
 #       避免用残缺默认值掩盖真实配置导致阶段漏检。

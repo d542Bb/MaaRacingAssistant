@@ -186,7 +186,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 │
 ├── tools/                                    # 开发工具脚本（按用途分组）
 │   ├── mouse_overlay.py                      # 独立 Overlay 工具（屏幕十字准星）
-│   ├── treasure_debug_studio/                # 鉴宝 ROI 可视化校准调试台
+│   ├── debug_studio/                         # 通用 ROI 校准调试台（core + adapter，treasure 已认领）
 │   ├── training/                             # 模型训练与数据准备
 │   │   ├── train.py                          # YOLO 训练 + ONNX 导出脚本
 │   │   ├── dataset.yaml                      # 数据集类别配置

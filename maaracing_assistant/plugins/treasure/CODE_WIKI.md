@@ -138,11 +138,11 @@
 
 ---
 
-## 6. treasure_debug_studio ROI 校准调试台
+## 6. DebugStudio ROI 校准调试台
 
-[tools/treasure_debug_studio](file:///d:/maaracing_assistant/tools/treasure_debug_studio)
+[tools/debug_studio](file:///d:/maaracing_assistant/tools/debug_studio)（`python tools/debug_studio/server.py --module treasure`）
 
-**职责**：可视化校准 `treasure_rois.json` 的 ROI（Flask 后端 + 静态前端，独立启动）：
+**职责**：可视化校准 `treasure_rois.json` 的 ROI（通用 server + treasure adapter，独立启动）：
 - 三段分类 tab：`stage`（模板阶段检测）/ `actions`（纯 rect 按钮）/ `ocr`（识别区）/ `unassigned`（未分配模板）
 - ROI 拖拽/缩放/新建/删除、rect 归一化编辑、模板上传/裁剪/多选
 - 匹配分数实时预览（TM_CCOEFF_NORMED）+ 跨帧测试（直方图/达标率）
