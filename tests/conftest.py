@@ -21,3 +21,8 @@ _PROJ = Path(__file__).resolve().parent.parent
 _STRATEGY_DIR = _PROJ / "maaracing_assistant" / "plugins" / "treasure"
 if str(_STRATEGY_DIR) not in sys.path:
     sys.path.insert(0, str(_STRATEGY_DIR))
+
+# 把项目根加入 sys.path，使 `from tools.debug_studio...`（P3）在 CI（`pytest` 不带
+# `python -m`）下也可导入——cwd 非 project root 时不自动在 sys.path。
+if str(_PROJ) not in sys.path:
+    sys.path.insert(0, str(_PROJ))
