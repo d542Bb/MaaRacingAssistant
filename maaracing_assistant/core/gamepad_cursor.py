@@ -24,6 +24,10 @@ from typing import Callable
 import numpy as np
 import cv2
 
+# core 自带的摇杆-光标速度模型（cursor_refactor 标定产物，k/deadzone/resolution）。
+# GamepadClicker(model_path=None) 时默认加载；标定工具归档于 archive/cursor_refactor/。
+_DEFAULT_MODEL_PATH = Path(__file__).resolve().parent / "resources" / "stick_speed_model.json"
+
 
 # ======================================================================
 #  光标三态签名（实测色值，容差见 *_TOL）——从 cursor_monitor 迁移
@@ -341,7 +345,9 @@ class GamepadClicker:
 
     @staticmethod
     def _load_model(model_path: Path | None):
-        if model_path is None or not model_path.is_file():
+        if model_path is None:
+            model_path = _DEFAULT_MODEL_PATH  # 未指定 → 尝试 core 自带标定模型
+        if not model_path.is_file():
             return None
         import json
         try:
