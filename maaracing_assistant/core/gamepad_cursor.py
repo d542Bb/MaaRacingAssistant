@@ -65,11 +65,21 @@ MISS_STREAK_RESET = 15
 KP = 2.0             # P 增益(1/s)：v_des = KP·dist；dist=375px 时满速
 LAG_S = 0.07         # 视觉反馈延迟估计(2帧≈67ms)，停靠提前量
 STOP_MARGIN = 6.0    # 停靠额外余量 px
-MICRO_MAG = 5000     # 微调幅度=最小有效幅度（硬开关死区值）
+MICRO_MAG = 5000     # 微调基础幅度=最小有效幅度（硬开关死区值）
 MICRO_T = 1 / 60.0   # 微调脉冲 1 帧 ≈16.7ms
-TOL = 5.0            # 最终误差容差 px
+MICRO_EFFECTIVE_S = 0.034  # 单次微调脉冲的有效时长（脉冲 1/60s + 游戏 ~1 帧采样拖尾）
+# 距离-力度挡位：按剩余距离选杆量（每步位移 ≈ mag·k·0.034s），远挡大步减少逼近
+# 次数，近挡小步防过冲；配合单步位移上限（≤剩余距离 60%）双向保险。
+MICRO_GEAR_TABLE = (
+    (15.0, 16000),         # 距离 ≥15px：约 13px/步
+    (8.0, 10000),          # 距离 ≥8px：约 8px/步
+    (0.0, MICRO_MAG),      # 其余：约 4px/步（最小有效杆量）
+)
+TOL = 5.0            # 最终误差容差 px（缺省中心精确微调；手柄模式按目标框 70% 放宽）
 MAX_P_STEPS = 200
 MAX_MICRO_STEPS = 25
+MAX_P_MISS = 15      # P 趋近连续识别丢失上限（约2-3s）：超限快速失败，交外层下帧重试
+MAX_MICRO_MISS = 10  # 微调连续识别丢失上限（按A后面板动画期光标可能短暂不可见）
 
 # 归位/安全区
 SAFE_MARGIN = 120
@@ -368,21 +378,35 @@ class GamepadClicker:
         return None
 
     def read_pos(self, n: int = POS_MED_FRAMES, timeout: float = 1.0) -> tuple | None:
+        """读当前光标位置（带跨帧连续性先验）。
+
+        detect_cursor 本身无状态（每帧独立识别）：光标接近按钮时，按钮上的白色
+        高亮元素（hover 态图标/圆点）签名分可能反超真光标，无先验时闭环会追着
+        假候选跑（"快到目标突然飞走"）。连续性由 select_cursor(last_pos,
+        miss_streak) 保护：last_pos 附近(≤JUMP_DIST)候选优先；无附近候选时要求
+        ≥JUMP_MIN_SCORE 高分才接受位置跳变——等价 cursor_monitor 时代的
+        "假光标跨帧对比"防拉飞机制（迁移时先验断线，此处接回）。
+        """
         hist = []
         t0 = time.perf_counter()
         while len(hist) < n and time.perf_counter() - t0 < timeout:
             frame = self._frame()
             if frame is not None:
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB) if frame.shape[2] == 4 else frame
-                _, sel = detect_cursor(rgb)
+                targets, _top = detect_cursor(rgb)
+                sel = select_cursor(targets, self.last_pos, self.miss_streak)
                 if sel is not None:
                     hist.append(sel.pos)
                     continue
             time.sleep(0.02)
         if not hist:
+            self.miss_streak += 1  # 连续失踪计数：≥MISS_STREAK_RESET 后先验失效重信任最高分
             return None
         hist.sort()
-        return hist[len(hist) // 2]
+        pos = hist[len(hist) // 2]
+        self.last_pos = pos
+        self.miss_streak = 0
+        return pos
 
     # ---------- 摇杆 ----------
 
@@ -430,18 +454,28 @@ class GamepadClicker:
 
     # ---------- 归位 ----------
 
-    def recenter(self, max_iters: int = 30, anchor: tuple | None = None) -> bool:
+    def recenter(self, max_iters: int = 30, anchor: tuple | None = None,
+                 on_progress: Callable | None = None,
+                 should_abort: Callable | None = None) -> bool:
         anchor = tuple(anchor) if anchor else (self.res[0] // 2, self.res[1] // 2)
         for _ in range(max_iters):
+            if self._aborted(should_abort):
+                return False
             p = self.read_pos(2)
             if p is None:
+                self._report(on_progress, stage="recenter", pos=None, target=anchor)
                 self.blind_pull(1.0, 1.0, 14000, 0.12, 3)
                 time.sleep(0.1)
                 continue
             dx = anchor[0] - p[0]
             dy = anchor[1] - p[1]
             dist = math.hypot(dx, dy)
+            self._report(on_progress, stage="recenter", pos=p, target=anchor, dist=dist)
             if dist <= CENTER_TOL_POS:
+                # 归中使光标位置剧变：复位连续性先验，允许 select_cursor 直接
+                # 信任最高分候选（否则旧 last_pos 的 near 空集 + 高分门槛会拖慢重新捕获）
+                self.last_pos = None
+                self.miss_streak = 0
                 return True
             ux, uy = dx / dist, dy / dist
             mag = max(6000, min(20000, int(dist * 40)))
@@ -449,6 +483,29 @@ class GamepadClicker:
             T = min(0.25, 0.5 * dist / v_pred)
             self._push(mag, (ux, uy), T)
             time.sleep(0.1)
+        return False
+
+    @staticmethod
+    def _report(cb: Callable | None, **info) -> None:
+        """导航进度上报（approach 每 tick 调用）：回调异常静默吞掉，
+        导航闭环绝不能被 peep 渲染等旁观者打断。"""
+        if cb is None:
+            return
+        try:
+            cb(info)
+        except Exception:  # noqa: BLE001 —— 进度消费方失败不影响导航
+            pass
+
+    def _aborted(self, should_abort: Callable | None) -> bool:
+        """停止信号检查（导航各循环每 tick 调用）。
+
+        置位时立即摇杆归中（防止导航中止后光标持续漂移），返回 True 表示应中止。
+        背景：手柄导航是同步阻塞调用，若不检查停止信号，模块「停止」要等导航
+        自然结束（可达十数秒）才生效——用户体感就是"点停止停不下来"。
+        """
+        if should_abort is not None and should_abort():
+            self.stick_zero()
+            return True
         return False
 
     def blind_pull(self, dx: float, dy: float, mag: int, T: float, steps: int):
@@ -468,21 +525,39 @@ class GamepadClicker:
 
     # ---------- 趋近 ----------
 
-    def _phase_p(self, target) -> dict:
+    def _phase_p(self, target, on_progress: Callable | None = None,
+                 should_abort: Callable | None = None,
+                 tol_px: float | None = None) -> dict:
         n_frames = 0
+        miss = 0
         mag = 0
         last_pos = None
         overshoot_flip = 0
         while n_frames < MAX_P_STEPS:
+            if self._aborted(should_abort):
+                return {"p_frames": n_frames, "osc_flip": overshoot_flip, "aborted": True}
             pos = self.read_pos(1, timeout=0.2)
             if pos is None:
+                # 连续丢失计入独立上限（不占 n_frames）：超限快速失败返回 lost，
+                # 由 approach → click → 指纹不更新 → 主循环下帧重试整次点击。
+                # 无上限的 continue 会在光标持续不可见时无限空转（重试机制空洞）。
+                miss += 1
+                self._report(on_progress, stage="p", pos=None, target=target)
+                if miss > MAX_P_MISS:
+                    return {"p_frames": n_frames, "osc_flip": overshoot_flip, "lost": True}
                 time.sleep(0.02)
                 continue
+            miss = 0
             n_frames += 1
             dx, dy = target[0] - pos[0], target[1] - pos[1]
             dist = math.hypot(dx, dy)
+            self._report(on_progress, stage="p", pos=pos, target=target, dist=dist)
             cur_speed = self._speed(mag)
             stop_dist = cur_speed * LAG_S + STOP_MARGIN
+            if tol_px is not None:
+                # 已进入按 A 容差（目标框中心 70% 区）→ 提前停止趋近，交 micro
+                # 即刻按 A。意图目标仍是按钮正中心，此处只是"足够近就不再挪"。
+                stop_dist = max(stop_dist, tol_px)
             if dist <= stop_dist:
                 break
             if last_pos is not None:
@@ -500,17 +575,33 @@ class GamepadClicker:
         self.stick_zero()
         return {"p_frames": n_frames, "osc_flip": overshoot_flip}
 
-    def _phase_micro(self, target) -> dict:
+    def _phase_micro(self, target, on_progress: Callable | None = None,
+                     should_abort: Callable | None = None,
+                     tol_px: float | None = None) -> dict:
+        # 按 A 容差：调用方提供 tol_px（目标框中心 70% 区域半径）时放宽，
+        # 缺省用 TOL（中心 5px 精确微调）
+        tol = tol_px if tol_px is not None else TOL
         time.sleep(0.1)
         micro_steps = 0
+        miss = 0
         while micro_steps < MAX_MICRO_STEPS:
+            if self._aborted(should_abort):
+                return {"micro_steps": micro_steps, "err": None, "ok": False, "aborted": True}
             pos = self.read_pos(3)
             if pos is None:
+                # 连续丢失独立计数（不占 micro_steps）：超限快速失败交外层重试，
+                # 防止光标持续不可见（如按 A 后面板动画期）时无限空转
+                miss += 1
+                self._report(on_progress, stage="micro", pos=None, target=target)
+                if miss > MAX_MICRO_MISS:
+                    return {"micro_steps": micro_steps, "err": None, "ok": False, "lost": True}
                 time.sleep(0.02)
                 continue
+            miss = 0
             dx, dy = target[0] - pos[0], target[1] - pos[1]
             dist = math.hypot(dx, dy)
-            if dist <= TOL:
+            self._report(on_progress, stage="micro", pos=pos, target=target, dist=dist)
+            if dist <= tol:
                 return {"micro_steps": micro_steps, "err": dist, "ok": True}
             if abs(dx) < 2.0:
                 ux, uy = 0.0, (1.0 if dy > 0 else -1.0)
@@ -518,7 +609,13 @@ class GamepadClicker:
                 ux, uy = (1.0 if dx > 0 else -1.0), 0.0
             else:
                 ux, uy = dx / dist, dy / dist
-            self.set_stick(MICRO_MAG, (ux, uy))
+            # 距离-力度挡位：远挡大步减少逼近次数；单步位移上限 = 剩余距离 60%
+            # （mag ≤ 0.6·dist / (k·有效时长)），速度模型偏差下也不会来回振荡；
+            # 下限 clamp 到最小有效杆量（低于死区推不动）。
+            gear_mag = max(m for th, m in MICRO_GEAR_TABLE if dist >= th)
+            cap = int(0.6 * dist / (self.k * MICRO_EFFECTIVE_S)) if self.k else gear_mag
+            step_mag = max(MICRO_MAG, min(gear_mag, cap))
+            self.set_stick(step_mag, (ux, uy))
             time.sleep(MICRO_T)
             self.stick_zero()
             time.sleep(0.06)
@@ -528,18 +625,57 @@ class GamepadClicker:
         return {"micro_steps": micro_steps, "err": err, "ok": False}
 
     def approach(self, target: tuple, anchor: tuple | None = None,
-                 intent: bool = False) -> dict:
+                 intent: bool = False,
+                 on_progress: Callable | None = None,
+                 should_abort: Callable | None = None,
+                 tol_px: float | None = None) -> dict:
         """导航到目标像素坐标。intent=True → 只导航不按 A 确认。
 
-        target 为像素坐标（x, y）。anchor 为趋近前归位的锚点（默认屏幕中央）。
+        target 为像素坐标（x, y）。anchor 仅在光标丢失走归中兜底时作为归位锚点。
+        一段式导航：闭环 P 趋近不依赖已知起点，光标可见直接趋近目标；
+        仅光标丢失才先归中重建可见性（校准期"先归中再导航"的绕路已移除）。
+        tol_px：按 A 容差半径（像素，可选）。提供时微调阶段落点在目标中心
+          tol_px 内即算到位（手柄模式按目标框 70% 放宽）；缺省 TOL 中心精确微调。
+        on_progress：导航进度回调（可选），每 tick 上报
+          {"stage": start/recenter/p/micro/done/abort/lost, "pos": 光标像素位或
+          None(丢失), "target", "dist"}；供调用方在同步阻塞的导航期间实时刷新 PEEP。
+        should_abort：停止信号检查（可选，每 tick 调用）。置位时立即摇杆归中并
+          中止导航，返回 {"ok": False, "reason": "aborted"}——模块「停止」即时生效。
         """
-        if not self.recenter(max_iters=12, anchor=anchor):
-            return {"ok": False, "reason": "归中失败"}
+        if self._aborted(should_abort):
+            return {"ok": False, "reason": "aborted"}
         t0 = time.perf_counter()
-        p = self._phase_p(target)
-        m = self._phase_micro(target)
+        # 一段式导航（快准狠）：闭环 P 趋近每步重读光标位置，不依赖已知起点——
+        # 光标可见时直接趋近目标，不做"先归中到屏幕中心"的校准期绕路。
+        # 仅光标丢失（签名识别不到）时才走归中兜底（盲拉重建可见性后闭环接管）。
+        start = self.read_pos(2)
+        self._report(on_progress, stage="start", pos=start, target=target)
+        if start is None:
+            if not self.recenter(max_iters=12, anchor=anchor,
+                                 on_progress=on_progress, should_abort=should_abort):
+                if should_abort is not None and should_abort():
+                    self._report(on_progress, stage="abort", pos=None, target=target, done=True)
+                    return {"ok": False, "reason": "aborted"}
+                self._report(on_progress, stage="recenter", pos=None, target=target, done=True)
+                return {"ok": False, "reason": "归中失败"}
+        p = self._phase_p(target, on_progress, should_abort, tol_px=tol_px)
+        if p.get("aborted"):
+            self._report(on_progress, stage="abort", pos=None, target=target, done=True)
+            return {"target": list(target), **p, "ok": False, "reason": "aborted"}
+        if p.get("lost"):
+            # 光标持续不可见：快速失败交外层重试（主循环下帧重新决策+点击）
+            self._report(on_progress, stage="lost", pos=None, target=target, done=True)
+            return {"target": list(target), **p, "ok": False, "reason": "光标丢失"}
+        m = self._phase_micro(target, on_progress, should_abort, tol_px=tol_px)
+        if m.get("aborted"):
+            self._report(on_progress, stage="abort", pos=None, target=target, done=True)
+            return {"target": list(target), **m, "ok": False, "reason": "aborted"}
+        if m.get("lost"):
+            self._report(on_progress, stage="lost", pos=None, target=target, done=True)
+            return {"target": list(target), **m, "ok": False, "reason": "光标丢失"}
         dt = time.perf_counter() - t0
         ok = m.get("ok", False)
+        self._report(on_progress, stage="done", pos=None, target=target, ok=ok)
         if ok and not intent:
             self.press_confirm()
         return {"target": list(target), **p, **m, "total_s": round(dt, 2), "ok": ok}

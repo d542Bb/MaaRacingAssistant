@@ -67,19 +67,24 @@ class ClickRetryExhaustedError(RuntimeError):
     """
 
 
-def _load_action_centers(proj: Path) -> dict[str, tuple[float, float]]:
-    """读 treasure_rois.json 的动作按钮 rect → 归一化中心点 {key: (cx, cy)}。
-    动作按钮分布在 stage（smart_bid_btn）与 actions（bid_confirm_red_btn /
-    confirm_red_btn / settle_collect_red_btn）两个分类；缺失/损坏时返回空 dict。"""
+def _load_action_centers(proj: Path) -> tuple[dict[str, tuple[float, float]], dict[str, tuple[float, float]]]:
+    """读 treasure_rois.json 的动作按钮 rect → 归一化中心点 + 归一化宽高。
+
+    返回 ({key: (cx, cy)}, {key: (rw, rh)})；动作按钮分布在 stage（smart_bid_btn）
+    与 actions（bid_confirm_red_btn / confirm_red_btn / settle_collect_red_btn）
+    两个分类；缺失/损坏时返回空 dict。宽高供手柄模式点击容差用（落点在框中心
+    70% 区域内即可按 A——ROI 本对标整个可交互区域，无需像素级精确到中心）。
+    """
     path = _RES_DIR / "treasure_rois.json"
     if not path.exists():
-        return {}
+        return {}, {}
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
-        return {}
+        return {}, {}
     out: dict[str, tuple[float, float]] = {}
+    sizes: dict[str, tuple[float, float]] = {}
     for cat in ("stage", "actions"):
         for key, val in data.get(cat, {}).items():
             rect = val.get("rect") if isinstance(val, dict) else None
@@ -87,7 +92,8 @@ def _load_action_centers(proj: Path) -> dict[str, tuple[float, float]]:
                 x1, y1, x2, y2 = (float(n) for n in rect)
                 if x2 > x1 and y2 > y1:
                     out[key] = ((x1 + x2) / 2, (y1 + y2) / 2)
-    return out
+                    sizes[key] = (x2 - x1, y2 - y1)
+    return out, sizes
 
 
 # 鉴宝师搜索 ROI（归一化）：头像卡片通常分布在屏幕中部。
@@ -472,6 +478,14 @@ class TreasureModule(ActivityModule):
 
     REQUIRES_GAMEPAD_EXCLUSIVE = False
 
+    # 两套点击方式的日志/peep 标签（与 core.clicker.CLICK_MODES 对齐）
+    CLICK_MODE_LABELS = {"real": "前台鼠标", "gamepad": "后台手柄+A"}
+
+    # 光标避让：主循环每帧调用 _maybe_shoo_cursor，光标（圆盘+hover 高亮）压住
+    # 「当前阶段需识别的 ROI」时让 core.clicker.auto_shoo 挪到邻近空白处，
+    # 防止模板匹配/OCR 掉分失效。半径按圆盘+环+高亮扩散保守取值。
+    SHOO_CURSOR_RADIUS_PX = 30.0
+
     # --------- 可调参数 ---------
     FRAME_INTERVAL_MS     = 300    # 截图周期（毫秒）：主循环 ~3.3Hz，满足「≥3 次/秒」画面采集
     WAIT_RESULT_FAST_MS   = 150    # wait_result 阶段帧间隔（用户拍板「帧率翻倍真双通道」）：
@@ -621,6 +635,11 @@ class TreasureModule(ActivityModule):
         else:
             self.ctx = None
         self._clicker = None  # 点击器（懒创建，绑定 ctx.hwnd；模式每次执行前同步自 ctx.click_mode）
+        self._gp_bind_tried = False  # 手柄能力绑定只尝试一次（real 前台鼠标从不尝试，不呼出虚拟手柄）
+        self._gpad_cursor_pos: tuple[int, int] | None = None  # 手柄光标最近识别位（帧像素，peep 绿圈用）
+        self._last_frame_rgb = None  # 最近一主循环帧（手柄导航进度回调渲染 PEEP 用，浅引用）
+        self._action_rect_sizes: dict[str, tuple[float, float]] = {}  # 动作按钮归一化宽高（手柄点击容差，运行态加载）
+        self._gpad_cursor_pos: tuple[int, int] | None = None  # 手柄光标最近识别位（帧像素，peep 绿圈用）
         self._current_stage: str | None = None
         # 落盘子域（DB 连接管理 + 场次/汇总写入 + 会话总结）
         self._store = TreasureStore(self)
@@ -991,8 +1010,8 @@ class TreasureModule(ActivityModule):
         self._data_dir = data_dir() / "treasure"
         self._store.ensure_db()
 
-        # 2.55 加载动作按钮（准星模式用）：JSON rect → 归一化中心点
-        self._action_centers = _load_action_centers(self.ctx.proj)
+        # 2.55 加载动作按钮（准星模式用）：JSON rect → 归一化中心点 + 宽高（手柄容差用）
+        self._action_centers, self._action_rect_sizes = _load_action_centers(self.ctx.proj)
         if not self._action_centers:
             logger.log("[鉴宝] 未加载到动作按钮 rect，准星模式将不可用", "WARNING")
 
@@ -2622,7 +2641,10 @@ class TreasureModule(ActivityModule):
         # 的非静态按钮 key：优先透传，避免查 _action_centers 返回 None 把 center 丢掉
         # （2026-08-16：游戏大厅阶段升级弹窗盲点穿曾因 center 丢失而无法执行）。
         if a.get("center") is not None:
-            return {"key": a["key"], "center": a["center"], "hint": a.get("hint") or a["key"]}
+            # 决策直接给 center 的非静态按钮（如出价主按钮）同样附加 box——
+            # 否则手柄容差只在"查 _action_centers"分支生效（实测出价按钮漏配）。
+            return self._attach_box(
+                {"key": a["key"], "center": a["center"], "hint": a.get("hint") or a["key"]})
         center = self._action_centers.get(a["key"])
         if center is None:
             # "stage_waiting / session_waiting / appraiser_waiting / dividend_waiting 等
@@ -2633,36 +2655,148 @@ class TreasureModule(ActivityModule):
                 return {"key": a["key"], "hint": a.get("hint") or a["key"]}
             logger.log(f"[鉴宝] 动作按钮 {a['key']} 未在 treasure_rois.json 配置 rect，准星跳过", "DEBUG")
             return None
-        return {"key": a["key"], "center": center, "hint": a["hint"]}
+        return self._attach_box({"key": a["key"], "center": center, "hint": a["hint"]})
+
+    def _attach_box(self, payload: dict) -> dict:
+        """给点击意图附加目标框归一化宽高（box）——手柄模式按「框中心 70% 区域」
+        容差按 A 用；鼠标模式精确点击不使用。JSON 无该 key 的 rect 时原样返回。"""
+        size = self._action_rect_sizes.get(payload.get("key"))
+        if size:
+            payload["box"] = size
+        return payload
 
     def _get_clicker(self):
-        """懒创建点击器（绑定窗口句柄 + 手柄能力）。
+        """懒创建点击器（只绑定窗口句柄；手柄能力按需在 _ensure_gamepad_bound 绑定）。
 
         模式不在创建时固定：每次 _execute_click 前会从 ctx.click_mode 同步，
         因此设置页切换点击方式后立即生效，无需重启模块。
-        后台(手柄)方式需额外绑定截图帧源 + 手柄 + A 键确认按钮——仅在有能力时绑定，
-        缺 gamepad 能力时手柄点击自动降级（返回失败，不静默错点）。
+        前台(鼠标)方式全程不触碰 gamepad 能力——不创建虚拟手柄设备（不呼出手柄）。
         """
         if self._clicker is None:
             from maaracing_assistant.core.clicker import Clicker
-            from maaracing_assistant.core.capabilities import VGamepadAdapter
-            from maaracing_assistant.core.vgamepad_lazy import vg
 
             self._clicker = Clicker(self.ctx.hwnd, self.ctx.click_mode)
-            # 自 ctx 提取截图帧源（CaptureAdapter.screenshot），供手柄闭环导航读帧
-            try:
-                cap = self.ctx.capture
-                frame_src = cap.screenshot  # 帧源 callable → RGB ndarray
-                # 手柄：复用 controller 底层手柄（租约持有期间可用）
-                gpad = VGamepadAdapter(self.ctx.gamepad._app._get_gpad())
-                confirm_btn = vg.XUSB_BUTTON.XUSB_GAMEPAD_A
-                self._clicker.bind_gamepad(frame_src, gpad,
-                                           model_path=None,
-                                           confirm_button=confirm_btn)
-            except Exception as e:  # noqa: BLE001 —— 无 gamepad 能力/手柄不可用时忽略
-                logger.log(f"[鉴宝点击] 手柄点击绑定失败（缺 gamepad 能力时仅手柄方式不可用）: {e}",
-                           "DEBUG")
         return self._clicker
+
+    def _ensure_gamepad_bound(self) -> None:
+        """后台(手柄)方式首次点击前按需绑定手柄能力（截图帧源 + 手柄 + A 键确认）。
+
+        关键设计：只在 click_mode == "gamepad" 时执行，且整个生命周期只尝试一次
+        （_gp_bind_tried 锁）——real(前台鼠标) 从不进入本函数，系统里不会出现
+        ViGEm 虚拟手柄设备；绑定失败不重试（手柄方式返回失败不静默错点，
+        前台鼠标方式不受影响），避免每帧重复尝试刷异常日志。
+        """
+        if self._clicker is None or self._gp_bind_tried or self._clicker.gamepad_bound:
+            return
+        if self.ctx.click_mode != "gamepad":
+            return
+        self._gp_bind_tried = True
+        from maaracing_assistant.core.capabilities import VGamepadAdapter
+        from maaracing_assistant.core.vgamepad_lazy import vg
+
+        try:
+            # 自 ctx 提取截图帧源（CaptureAdapter.screenshot），供手柄闭环导航读帧
+            cap = self.ctx.capture
+            frame_src = cap.screenshot  # 帧源 callable → RGB ndarray
+            # 手柄：复用 controller 底层手柄（首次取用即创建虚拟手柄设备）
+            gpad = VGamepadAdapter(self.ctx.gamepad._app._get_gpad())
+            confirm_btn = vg.XUSB_BUTTON.XUSB_GAMEPAD_A
+            self._clicker.bind_gamepad(frame_src, gpad,
+                                       model_path=None,
+                                       confirm_button=confirm_btn)
+            logger.log("[鉴宝点击] 后台手柄方式：已绑定手柄导航能力（首次点击按需创建虚拟手柄）", "INFO")
+        except Exception as e:  # noqa: BLE001 —— 无 gamepad 能力/手柄不可用时降级
+            logger.log(
+                f"[鉴宝点击] 手柄绑定失败，后台手柄方式不可用（前台鼠标方式不受影响）: {e}",
+                "WARNING")
+
+    def _on_gamepad_nav_progress(self, info: dict) -> None:
+        """手柄导航进度回调（approach 每 tick 上报，主循环线程内同步执行）。
+
+        职责一（始终执行）：记录光标最近识别位（_gpad_cursor_pos，帧像素），
+        供点击后的 ROI 遮挡避让判定与 PEEP 绿圈使用。
+        职责二（peep 开启时）：**每 tick 抓新帧**直接渲染 PEEP（绕过 IO 队列），
+        背景与光标圈同步刷新；抓帧失败回退最近一主循环帧。渲染失败不影响
+        导航本身（GamepadClicker._report 已兜底吞异常）。
+        """
+        gpos = info.get("pos") if info else None
+        if gpos:
+            self._gpad_cursor_pos = (int(gpos[0]), int(gpos[1]))
+        if not getattr(self.ctx.debug, "peep_enabled", False):
+            return
+        renderer = self.ctx.debug_renderer.current() if self.ctx else None
+        if renderer is None:
+            return
+        try:
+            from maaracing_assistant.core.debug import DebugState
+            frame_rgb = None
+            try:
+                frame_rgb = self.ctx.capture.screenshot()  # 实时帧：背景与光标圈同步
+            except Exception:  # noqa: BLE001 —— 抓帧失败回退旧帧
+                frame_rgb = None
+            if frame_rgb is None:
+                frame_rgb = self._last_frame_rgb
+            if frame_rgb is None:
+                return
+            kwargs = self._treasure_kwargs()
+            # 手柄光标实时状态：{"stage","pos"(帧像素|None=丢失),"target","dist"}
+            kwargs["treasure_gamepad_cursor"] = dict(info) if info else None
+            img_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+            state = DebugState(label="鉴宝观察", **kwargs)
+            self.ctx.debug.update_peep(renderer.render_peep(img_bgr, state))
+        except Exception as e:  # noqa: BLE001 —— 进度渲染失败不影响导航
+            if self._frame_counter % 30 == 0:
+                logger.log(f"[鉴宝点击] PEEP 进度渲染失败: {e}", "DEBUG")
+
+    def _collect_guard_rects(self) -> list[tuple[str, tuple[float, float, float, float]]]:
+        """收集当前阶段「需要保持可识别」的 ROI：[(key, rect)]。
+
+        口径：阶段感知激活的 stage 判定锚点 ∪ 全局锚点（被挡 = 阶段判定/回退失效）
+        ∪ 当前阶段 OCR 区。由主循环**每帧**驱动——阶段状态每帧更新，激活集合自然
+        跟随新阶段（修正：此前"点击后一次性 + 全量锚点"导致槽位复用误判——出价面板
+        的智能出价按钮与匹配中的取消匹配按钮是同一屏幕槽位，全量锚点让出价阶段也
+        被误避让；每帧驱动下按当前阶段裁剪即正确）。
+        """
+        rects: list[tuple[str, tuple[float, float, float, float]]] = []
+        keys = set(_GLOBAL_ANCHORS)
+        if self._current_stage:
+            keys |= set(_STAGE_PERCEPTION.get(self._current_stage, ()))
+        for k in keys:
+            r = self._detector.ROI.get(k)
+            if r:
+                rects.append((k, tuple(float(n) for n in r)))
+        schema_ocr = self._detector.schema.get("ocr") or {}
+        for k in _STAGE_OCR_KEYS.get(self._current_stage, ()):
+            val = schema_ocr.get(k)
+            rect = val.get("rect") if isinstance(val, dict) else None
+            if isinstance(rect, list) and len(rect) == 4:
+                rects.append((k, tuple(float(n) for n in rect)))
+        return rects
+
+    def _maybe_shoo_cursor(self, intent: dict | None) -> None:
+        """光标驻留看守（主循环每帧调用，决策更新后）：光标压识别区则让核心避让。
+
+        仅组装宿主领域知识（guard 区域 + 下一意图中心），判定与执行在
+        core.clicker.auto_shoo（冷却/意图感知/避让点选择/只导航不点击/停止信号）。
+        触发时打 DEBUG 日志（带命中区域 key），误避让/漏避让靠它定位。
+        """
+        if self.ctx.click_mode != "gamepad" or self._last_frame_rgb is None:
+            return
+        H, W = self._last_frame_rgb.shape[:2]
+        rects = self._collect_guard_rects()
+        if not rects:
+            return
+        center = intent.get("center") if intent else None
+        result = self._get_clicker().auto_shoo(
+            rects, radius_px=self.SHOO_CURSOR_RADIUS_PX, frame_size=(W, H),
+            next_center=(float(center[0]), float(center[1])) if center else None,
+            on_progress=self._on_gamepad_nav_progress,
+            should_abort=lambda: not self.ctx.lifecycle.running)
+        if result:
+            logger.log(
+                f"[鉴宝点击] 光标压住识别区[{result['key']}]，"
+                f"避让导航到 ({result['point'][0]:.2f},{result['point'][1]:.2f})（不点击）",
+                "DEBUG")
 
     def _execute_click(self, target: dict | None) -> None:
         """把当前点击意图执行成点击：按设置的点击方式（前台鼠标 / 后台手柄）执行。
@@ -2711,11 +2845,13 @@ class TreasureModule(ActivityModule):
         clicker = self._get_clicker()
         clicker.set_mode(self.ctx.click_mode)
         clicker.set_intent(self.ctx.intent_mode)
+        self._ensure_gamepad_bound()  # 仅 gamepad 模式实际绑定；real 模式不触碰手柄能力
         if clicker.need_foreground and not is_foreground(self.ctx.hwnd):
             if self._frame_counter % 10 == 0:
                 logger.log(
                     f"[鉴宝点击] 前台校验失败：游戏窗口非前台，取消本次点击 key={key}"
-                    f"（模式={clicker.mode}；安全策略：前台鼠标点击不抢前台）", "WARNING",
+                    f"（方式={self.CLICK_MODE_LABELS.get(clicker.mode, clicker.mode)}；"
+                    f"安全策略：前台鼠标点击不抢前台）", "WARNING",
                 )
             return
         # 坐标换算与点击执行统一走 Clicker（real 前台鼠标 SendInput / gamepad 手柄导航+A键）。
@@ -2723,10 +2859,18 @@ class TreasureModule(ActivityModule):
         if not clicker.click(
                 center[0], center[1],
                 down_up_gap_ms=self.CLICK_DOWN_UP_GAP_MS,
-                move_pause_s=self.CLICK_MOVE_PAUSE_S):
-            logger.log(
-                f"[鉴宝点击] 执行失败 key={key} state={state} 模式={clicker.mode} "
-                f"归一化=({center[0]:.3f},{center[1]:.3f})", "WARNING")
+                move_pause_s=self.CLICK_MOVE_PAUSE_S,
+                on_progress=self._on_gamepad_nav_progress,
+                should_abort=lambda: not self.ctx.lifecycle.running,
+                box=target.get("box")):
+            if not self.ctx.lifecycle.running:
+                return  # 停止信号中止导航：不算执行失败，主循环即将退出
+            # 失败节流：光标丢失等连续失败场景每 ~10 帧（3s）打一条，不刷屏
+            if self._frame_counter % 10 == 0:
+                logger.log(
+                    f"[鉴宝点击] 执行失败（将自动重试）key={key} state={state} "
+                    f"方式={self.CLICK_MODE_LABELS.get(clicker.mode, clicker.mode)} "
+                    f"归一化=({center[0]:.3f},{center[1]:.3f})", "WARNING")
             return
         sx, sy = clicker.last_pos or (0, 0)
         # 点击成功：更新指纹与时刻（失败时不更新 → 下帧意图相同会重试）
@@ -2757,9 +2901,13 @@ class TreasureModule(ActivityModule):
                 and self._settle_my_income is None and not self._settle_collect_clicked_once):
             self._settle_collect_clicked_once = True
             logger.log("[鉴宝分红] 已点击领取（跳过动画），标记置位，等 OCR 读本场收入...", "INFO")
-        self.record_event("real_click", extra_msg=f"state={state} key={key} 屏幕=({sx},{sy})")
+        # 点击成功日志带「方式」标签：两套点击方式（前台鼠标 / 后台手柄+A）在日志可区分
+        mode_label = self.CLICK_MODE_LABELS.get(clicker.mode, clicker.mode)
+        self.record_event("click",
+                          extra_msg=f"方式={mode_label} state={state} key={key} 屏幕=({sx},{sy})")
         logger.log(
-            f"[鉴宝点击] {state} key={key} 目标=({sx},{sy}) 归一化=({center[0]:.3f},{center[1]:.3f})",
+            f"[鉴宝点击] {state} key={key} 方式={mode_label} "
+            f"目标=({sx},{sy}) 归一化=({center[0]:.3f},{center[1]:.3f})",
             "DEBUG",
         )
 
@@ -2869,6 +3017,8 @@ class TreasureModule(ActivityModule):
             treasure_balance=self._my_balance,
             # 准星模式：程序想点击的位置（peep 覆层用）
             treasure_action=self._resolve_action_target(),  # {"key","center","hint"} | None
+            # 当前点击方式（peep 准星按方式区分显示：前台鼠标=青黄 / 后台手柄+A=紫粉）
+            treasure_click_mode=getattr(self.ctx, "click_mode", "real"),
         )
 
     def record_event(self, name: str, extra_msg: str | None = None) -> Path | None:
@@ -2877,7 +3027,7 @@ class TreasureModule(ActivityModule):
         raw 与 rendered（debug 图）均已全量存盘，无需 event 子目录截图。
         返回 None（兼容旧调用方）。
 
-        事件（stage_change / real_click）属诊断细节：与「进入阶段」「点击意图」重复，
+        事件（stage_change / click）属诊断细节：与「进入阶段」「点击意图」重复，
         降为 DEBUG 仅进文件，保持 GUI 故事线干净。
         """
         msg = f"[鉴宝] 事件: {name}"
@@ -3039,6 +3189,7 @@ class TreasureModule(ActivityModule):
             if self._frame_counter % 10 == 0:
                 logger.log("[鉴宝] 截图失败（可能窗口未就绪）", "DEBUG")
             return
+        self._last_frame_rgb = frame_rgb  # 手柄导航（同步阻塞）期间进度回调渲染 PEEP 用
 
         # 首帧校验：截图帧尺寸 vs 客户区物理尺寸（坐标映射 1:1 前提，偏差时 WARNING）
         if self._frame_counter == 1:
@@ -3156,7 +3307,11 @@ class TreasureModule(ActivityModule):
         # --------- 6. 真实点击：把当前点击意图执行成可见鼠标移动 + 停顿 + 点击 ---------
         # 意图由各阶段决策（_resolve_action_target 统一）给出，含归一化 center；
         # 安全机制（指纹锁/限速/前台校验/坐标换算）见 _execute_click 文档。
-        self._execute_click(self._resolve_action_target())
+        intent = self._resolve_action_target()
+        # 光标驻留看守（手柄模式）：每帧在决策更新后检查——光标若压住本阶段需识别
+        # 的 ROI 且下一意图目标不能自然带离，先避让导航到空白处（不点击）再走点击。
+        self._maybe_shoo_cursor(intent)
+        self._execute_click(intent)
 
     # ==================================================================
     #  内部：阶段检测（模板匹配 → 过滤层 → 同步 set_stage）

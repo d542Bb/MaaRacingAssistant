@@ -643,9 +643,14 @@ class TreasureDebugRenderer:
         任何 HUD 面板，只保留原画面 + 准星，方便用户对照真实游戏窗口手动点击。
         目标位置来自 state.treasure_action（treasure_module._resolve_action_target）。
 
-        两种模式：
+        两种画面形态：
           - 有 center（真实点击目标）→ 画准星 + key 标签 + 顶部提示条
           - center 为 None（纯等待，如"等待出价按钮亮起…"）→ 只画顶部提示条，不画准星
+        两套点击方式区分（state.treasure_click_mode）：
+          - real（前台鼠标）→ 青黄准星 + [前台鼠标] 标签
+          - gamepad（后台手柄+A）→ 紫粉准星 + [后台手柄+A] 标签
+        手柄光标实时位置（state.treasure_gamepad_cursor，导航进度回调注入）：
+        绿圈标出手柄光标当前位置 + 距目标距离；识别丢失时顶部提示。
         """
         canvas = frame_bgr.copy()
         kw = state.to_kwargs()
@@ -671,18 +676,48 @@ class TreasureDebugRenderer:
         except Exception:
             return canvas
         px, py = max(10, int(cx * W)), max(10, int(cy * H))
-        color = (0, 220, 255)  # 青黄准星（与 debug 存盘配色区分）
+        # 两套点击方式区分显示（treasure_click_mode 由 _treasure_kwargs 注入；
+        # 旧 state 缺字段回退 real）。主区分靠颜色 + 中文标签：
+        # real 前台鼠标=青黄（历史配色）/ gamepad 后台手柄=紫粉。
+        # 文案与 module.CLICK_MODE_LABELS 保持一致（renderer 不反向 import 防循环依赖；
+        # cv2 5.0 putText 实测支持中文渲染）。
+        mode = str(kw.get("treasure_click_mode") or "real")
+        if mode == "gamepad":
+            tag = "后台手柄+A"
+            color = (255, 120, 255)
+        else:
+            tag = "前台鼠标"
+            color = (0, 220, 255)
         # 十字线 + 中心圈
         cv2.line(canvas, (px - 34, py), (px - 9, py), color, 2)
         cv2.line(canvas, (px + 9, py), (px + 34, py), color, 2)
         cv2.line(canvas, (px, py - 34), (px, py - 9), color, 2)
         cv2.line(canvas, (px, py + 9), (px, py + 34), color, 2)
         cv2.circle(canvas, (px, py), 6, color, 2)
-        # 按钮 key 标签（准星右上方）
-        _put(canvas, act["key"], px + 14, max(14, py - 14), scale=0.5, color=color)
+        # 按钮 key 标签 + 点击方式标签（准星右上方）
+        _put(canvas, f"{act['key']} [{tag}]", px + 14, max(14, py - 14), scale=0.5, color=color)
+        # 手柄光标实时位置（treasure_gamepad_cursor 由导航进度回调注入，pos=帧像素）：
+        # 绿圈=手柄光标当前位置，与青黄/紫粉「点击目标准星」区分；pos=None=签名识别丢失
+        gcur = kw.get("treasure_gamepad_cursor")
+        if gcur:
+            gpos = gcur.get("pos")
+            if gpos:
+                gx, gy = int(gpos[0]), int(gpos[1])
+                gc = (80, 255, 80)  # 绿色（BGR）
+                cv2.circle(canvas, (gx, gy), 14, gc, 2)
+                cv2.circle(canvas, (gx, gy), 2, gc, -1)
+                dist = gcur.get("dist")
+                label = f"手柄[{gcur.get('stage', '')}]"
+                if dist is not None:
+                    label += f" 距离{dist:.0f}px"
+                _put(canvas, label, gx + 16, gy + 16, scale=0.45, color=gc)
+            else:
+                stage = gcur.get("stage", "")
+                _put(canvas, f"手柄光标丢失[{stage}]", W // 2 - 70, 54, scale=0.5,
+                     color=(80, 80, 255), stroke=2)
         # 顶部提示条
         hint = act.get("hint") or act["key"]
         stage_txt = kw.get("treasure_stage") or "-"
         _alpha_bg(canvas, 0, 0, W, 34, alpha=0.6)
-        _put(canvas, f"[准星] {hint}   （阶段: {stage_txt}）", 10, 20, scale=0.55, color=color)
+        _put(canvas, f"[准星·{tag}] {hint}   （阶段: {stage_txt}）", 10, 20, scale=0.55, color=color)
         return canvas

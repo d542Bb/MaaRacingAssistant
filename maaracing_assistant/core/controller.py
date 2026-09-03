@@ -56,6 +56,7 @@ class MaaRacingAssistantController:
         self._active_module = None  # 当前活动模块实例（生命周期由 start_module 管理）
         self._ctx = None  # ActivityContext 懒创建
         self.stop_event = threading.Event()  # 停止信号（唯一 clear 位置在 start_module）
+        self._manual_stop = False  # 本次运行是否被用户手动停止（区分"模块自然跑完"如到限自动停止）
         self._lifecycle_lock = threading.Lock()  # 生命周期互斥锁
         # 紧急停止快捷键开关：开启后同时按下任意 ≥2 个按键 → 立即停止逻辑
         self._emergency_stop_enabled = False
@@ -128,6 +129,7 @@ class MaaRacingAssistantController:
             if self.active_module is not None:
                 raise RuntimeError("已有模块在运行")
             self.stop_event.clear()          # ★ 唯一 clear 位置
+            self._manual_stop = False
             module = create_module(module_id, self.ctx)
             if start_from and start_from not in module.STAGE_ORDER:
                 raise ValueError(f"断点 {start_from} 不属于模块 {module_id} 的阶段")
@@ -168,6 +170,9 @@ class MaaRacingAssistantController:
                 module.cleanup()
             except Exception:
                 pass
+            # 断开栈帧引用：module 局部变量钉住 模块→点击器→手柄对象 整条链，
+            # 不置 None 的话 _destroy_gpad 里的 gc.collect() 回收不到它们。
+            module = None
             # 释放模块期间 Context 登记的所有资源（renderer 等）。
             # close() 调用权只在编排层；close 后置空，下次 start_module 新建全新 Context/ExitStack，
             # 保证重复启停不累积 renderer/gamepad ownership。
@@ -180,16 +185,28 @@ class MaaRacingAssistantController:
             with self._lifecycle_lock:
                 self.active_module = None
             self._running = False
+            # 运行结束销毁虚拟手柄（懒创建：下次 start_module 首次用到手柄方式时重建）。
+            # 用户要求：GUI 点停止后系统内虚拟手柄应立即消失，不残留干扰手动游戏；
+            # 正常完成/异常退出同样销毁，保持"运行期才存在手柄"的生命周期约定。
+            # 此时模块主循环已退出（含停止信号中止的手柄导航），无并发使用，销毁安全。
+            self._destroy_gpad()
             # 「运行选项」运行时静音游戏：任何停止路径（正常/报错/手动）都恢复 100%
             if self._mute_game_enabled:
                 self._apply_game_volume(1.0, "运行结束：恢复游戏音量为 100%")
-            # 运行结束后行为（GUI「运行选项」卡片）：仅"正常完成"生效 ——
-            # 报错退出（natural=False）或手动停止（stop_event 置位）不触发。
-            if self._last_run_natural and not self.stop_event.is_set():
+            # 运行结束后行为（GUI「运行选项」卡片）：仅"正常跑完"生效 ——
+            # 手动停止（_manual_stop）或报错退出（natural=False）不触发；
+            # 模块自己跑完（含每日循环到限自动停止）算正常完成，开关照常生效。
+            # 注意：不能以 stop_event 判定手动停止——模块到限自动停止也会置位它，
+            # 改用显式 _manual_stop 标志（stop() 置位，start_module 复位）。
+            if self._last_run_natural and not self._manual_stop:
+                logger.log("运行结束：任务正常完成，按「运行结束后」选项执行", "INFO")
                 self._maybe_auto_shutdown()
+            elif self._manual_stop:
+                logger.log("运行结束：手动停止，「运行结束后」开关不生效", "INFO")
 
     def stop(self):
-        """停止当前活动模块（幂等）"""
+        """停止当前活动模块（幂等）。手动停止：自动关闭游戏/退出 MRA 开关不生效"""
+        self._manual_stop = True
         self.stop_event.set()
         if self.active_module:
             try:
@@ -212,7 +229,7 @@ class MaaRacingAssistantController:
     @property
     def last_run_natural(self) -> bool:
         """上次 start_module 是否"正常跑完"（非报错、非手动停止）。供 sidecar 决定是否发退出事件"""
-        return self._last_run_natural and not self.stop_event.is_set()
+        return self._last_run_natural and not self._manual_stop
 
     def set_auto_shutdown(self, close_game: bool | None = None, exit_mra: bool | None = None) -> None:
         """设置「运行选项」自动关闭/退出的开关（GUI 设置卡片）。"""
@@ -420,19 +437,33 @@ class MaaRacingAssistantController:
                 pass
 
     def _destroy_gpad(self):
-        """销毁虚拟手柄，释放资源"""
-        if self._gpad is not None:
-            try:
-                self._gpad.reset()
-                self._gpad.update()
-            except Exception:
-                pass
-            try:
-                del self._gpad
-            except Exception:
-                pass
-            self._gpad = None
-            logger.log("虚拟手柄已销毁", "DEBUG")
+        """销毁虚拟手柄：从 ViGEmBus 确定性移除设备（游戏内光标/手柄立即断开）。
+
+        vgamepad 没有公开的销毁 API，设备移除只发生在对象析构 __del__
+        （vigem_target_remove + free）——但析构时机不可控：模块
+        Clicker→GamepadClicker 循环引用、以及 start_module 栈帧对 module 局部
+        变量的引用，都会让 gc.collect() 回收不掉（实测"停止后游戏内光标仍在，
+        关程序窗口才消失"）。故这里显式 ctypes 调 vigem_target_remove 把设备
+        从总线拔掉（确定性、即时）；对象内存释放仍留给后续 GC 的 __del__
+        （先 remove 后 free，无二次释放问题）。
+        """
+        if self._gpad is None:
+            return
+        try:
+            self._gpad.reset()
+            self._gpad.update()
+        except Exception:
+            pass
+        try:
+            # vgamepad 无公开销毁 API，只能摸 VGamepad 的内部句柄（_busp/_devicep）
+            from vgamepad.win import vigem_client as _vcli
+            _vcli.vigem_target_remove(self._gpad._busp, self._gpad._devicep)
+            logger.log("虚拟手柄已销毁（已从 ViGEmBus 移除）", "DEBUG")
+        except Exception as e:  # noqa: BLE001 —— 驱动缺失/已移除等场景不阻塞收尾
+            logger.log(f"虚拟手柄销毁异常（可能驱动未装或已移除）: {e}", "DEBUG")
+        self._gpad = None
+        import gc
+        gc.collect()  # 兜底：回收模块/点击器链上的手柄对象（free 仍由 __del__ 恰好执行一次）
 
     # ---------- 截图 ----------
 
