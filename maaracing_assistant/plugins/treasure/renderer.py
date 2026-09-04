@@ -715,6 +715,27 @@ class TreasureDebugRenderer:
                 stage = gcur.get("stage", "")
                 _put(canvas, f"手柄光标丢失[{stage}]", W // 2 - 70, 54, scale=0.5,
                      color=(80, 80, 255), stroke=2)
+        # 手柄光标识别候选（treasure_cursor_cands：GamepadClicker.read_pos 每帧快照，
+        # 分数降序）：绿圈=本轮选中候选（与上方 gcur 光标圈同心套外环）；
+        # 黄圈=次选（最多 5 个，含低于置信门槛 0.60 的拒识候选）——诊断
+        # "为什么识别不到光标 / 为什么选错假候选"的分数与位置分布。
+        cands = kw.get("treasure_cursor_cands")
+        if cands:
+            alt_n = 0
+            for i, cd in enumerate(cands.get("list") or []):
+                try:
+                    cx_, cy_, sc_ = float(cd[0]), float(cd[1]), float(cd[2])
+                except Exception:
+                    continue  # 候选数据不完整跳过，不影响其余候选/准星绘制
+                is_sel = (i == cands.get("sel"))
+                if not is_sel:
+                    if alt_n >= 5:
+                        continue  # 次选最多画 5 个
+                    alt_n += 1
+                col = (80, 255, 80) if is_sel else (0, 255, 255)  # BGR：绿=选中 / 黄=次选
+                cv2.circle(canvas, (int(cx_), int(cy_)), 20 if is_sel else 11, col, 2)
+                _put(canvas, f"{sc_:.2f}{' 选中' if is_sel else ''}",
+                     int(cx_) + 12, max(14, int(cy_) - 24), scale=0.42, color=col)
         # 顶部提示条
         hint = act.get("hint") or act["key"]
         stage_txt = kw.get("treasure_stage") or "-"

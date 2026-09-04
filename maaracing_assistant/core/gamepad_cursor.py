@@ -17,6 +17,7 @@ train_stick_speed 速度模型）沉淀而来，供 core.clicker 的「后台(�
 from __future__ import annotations
 
 import math
+import threading
 import time
 from pathlib import Path
 from typing import Callable
@@ -78,12 +79,9 @@ MICRO_GEAR_TABLE = (
 TOL = 5.0            # 最终误差容差 px（缺省中心精确微调；手柄模式按目标框 70% 放宽）
 MAX_P_STEPS = 200
 MAX_MICRO_STEPS = 25
-MAX_P_MISS = 15      # P 趋近连续识别丢失上限（约2-3s）：超限快速失败，交外层下帧重试
-MAX_MICRO_MISS = 10  # 微调连续识别丢失上限（按A后面板动画期光标可能短暂不可见）
+MAX_P_MISS = 8       # P 趋近连续识别丢失上限（约1.8s）：超限快速失败，交外层下帧重试
+MAX_MICRO_MISS = 6   # 微调连续识别丢失上限（约3s；按A后面板动画期光标可能短暂不可见）
 
-# 归位/安全区
-SAFE_MARGIN = 120
-CENTER_TOL_POS = 60
 MAX_AXIS = 32767
 POS_MED_FRAMES = 3
 
@@ -332,13 +330,27 @@ def select_cursor(targets, last_pos, miss_streak):
 # ======================================================================
 
 class GamepadClicker:
-    """手柄光标导航 + 确认点击。
+    """手柄光标导航 + 确认点击（**导航线程化**）。
 
     注入：
       - capture: 返回 RGB ndarray 帧的 callable，或提供 .get_latest() 的帧源。
       - gpad: 提供 .left_joystick(x,y)/.press_button/.release_button/.update 的手柄对象。
       - model_path: stick_speed_model.json 路径（速度模型 k / deadzone / resolution）。
     意图模式：intent 开关置位时只导航到位、不按 A 确认（由用户手动按下）。
+
+    并发模型（2026-09-03 用户拍板：主循环拥有决策权，导航线程只拥有执行权）：
+      - 独立导航线程跑 approach 闭环（33ms/步读光标+推摇杆），**主循环不再被阻塞**。
+      - 任务槽/结果槽经 `_nav_lock` 保护；状态机：IDLE → submit → RUNNING →
+        worker complete → DONE(结果待消费，仍 busy) → consume_result → IDLE。
+      - 契约：
+        1. `_result` 未消费前禁止覆盖（worker 写入前断言 `_result is None`）。
+        2. `is_busy()` = 任务在跑 **或** 结果待消费（DONE 也算 busy）。
+        3. 共享快照采用发布-订阅（snapshot publication）：生产线程只整体替换
+           引用（last_pos/last_cands/_progress），消费线程只读，不原地修改。
+        4. 取消用 `threading.Event`（abort_event），不靠跨线程改普通 bool。
+        5. 光标丢失 → 结果带 `device_lost: True` → worker 回到等待态后，
+           主循环 consume 时才允许重建设备（swap_gpad）。
+      - vgamepad 唯一所有者是导航线程；主循环经 submit/cancel/swap_gpad 控制。
     """
 
     def __init__(self, capture, gpad, model_path: Path | None = None,
@@ -350,8 +362,26 @@ class GamepadClicker:
             (resolution or (1280, 720))
         self.k = self._model["k"] if self._model else 0.02
         self.deadzone = self._model["deadzone"] if self._model else 4260.0
+        self._confirm_btn = None  # 确认按钮（bind 时经 set_confirm_button 注入，缺省 A）
+        # 共享快照（snapshot publication：worker 整体替换，主循环只读）
         self.last_pos: tuple | None = None
         self.miss_streak = 0
+        # 识别候选快照（PEEP 诊断用，read_pos 每帧刷新）：候选按分数降序截前 8 个
+        # [(x, y, score, state)]，含低于置信门槛的拒识候选；sel=选中候选下标或 None。
+        self.last_cands: tuple = ()
+        self.last_cand_sel: int | None = None
+        self.last_cands_ts: float = 0.0  # 快照时间戳（monotonic，消费方做陈旧丢弃）
+        # ---- 任务/结果槽 + 进度快照（经 _nav_lock 保护）----
+        self._nav_lock = threading.Lock()
+        self._task: dict | None = None    # {type, target, intent, tol_px, abort_event}
+        self._result: dict | None = None  # 最近完成结果（DONE 态，consume 后清空）
+        self._progress = {                # 导航进度快照（PEEP 渲染用）
+            "seq": 0, "stage": None, "pos": None, "target": None, "dist": None, "ts": 0.0,
+        }
+        self._shutdown = threading.Event()
+        self._nav_thread = threading.Thread(target=self._nav_loop,
+                                            name="gamepad-nav", daemon=True)
+        self._nav_thread.start()
 
     @staticmethod
     def _load_model(model_path: Path | None):
@@ -364,6 +394,98 @@ class GamepadClicker:
             return json.loads(model_path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001 —— 模型损坏回退线性估计
             return None
+
+    # ---------- 任务/结果槽（主循环↔导航线程协议）----------
+
+    def submit(self, target, *, intent: bool = False, tol_px: float | None = None,
+               task_type: str = "click") -> bool:
+        """提交导航任务（非阻塞）。返回 True=已入队；False=槽忙/结果未消费。
+
+        准入条件：`_task is None and _result is None`（DONE 态也算忙）。
+        """
+        with self._nav_lock:
+            if self._task is not None or self._result is not None:
+                return False
+            self._task = {
+                "type": task_type,
+                "target": tuple(target),
+                "intent": intent,
+                "tol_px": tol_px,
+                "abort_event": threading.Event(),
+            }
+            return True
+
+    def consume_result(self) -> dict | None:
+        """取走最近完成结果（无则 None）。取走即清空 → 允许下一任务。"""
+        with self._nav_lock:
+            res = self._result
+            self._result = None
+            return res
+
+    def is_busy(self) -> bool:
+        """是否有任务在跑 **或** 结果待消费（DONE 态也算 busy，防止覆盖/抢占）。"""
+        with self._nav_lock:
+            return self._task is not None or self._result is not None
+
+    def nav_progress(self) -> dict:
+        """读最近进度快照（PEEP 渲染用）。返回副本，seq 递增=有新进展。"""
+        with self._nav_lock:
+            return dict(self._progress)
+
+    def cancel(self):
+        """置中止标记（导航线程每步检查 abort_event）。"""
+        with self._nav_lock:
+            if self._task is not None:
+                self._task["abort_event"].set()
+
+    def swap_gpad(self, new_gpad):
+        """替换底层手柄（重建设备后换绑）。**仅允许任务槽空闲时调用**——
+        worker 已完全退出设备访问（回到等待态）才可替换，否则抛错。
+        """
+        with self._nav_lock:
+            if self._task is not None:
+                raise RuntimeError("swap_gpad: 导航任务运行中，禁止替换设备")
+            self._gpad = new_gpad
+
+    def shutdown(self):
+        """停止导航线程（模块收尾调用）。置中止 + 唤醒。"""
+        self._shutdown.set()
+        with self._nav_lock:
+            if self._task is not None:
+                self._task["abort_event"].set()
+
+    def _publish_progress(self, stage, pos=None, target=None, dist=None, ok=None,
+                          done=False):
+        with self._nav_lock:
+            self._progress = {
+                "seq": self._progress["seq"] + 1,
+                "stage": stage,
+                "pos": pos,
+                "target": target,
+                "dist": dist,
+                "ok": ok,
+                "done": done,
+                "ts": time.monotonic(),
+            }
+
+    def _nav_loop(self):
+        """导航线程主循环：等任务 → 跑闭环 → 发布结果 → 回等待态。"""
+        while not self._shutdown.is_set():
+            with self._nav_lock:
+                task = self._task
+            if task is None:
+                time.sleep(0.005)
+                continue
+            try:
+                res = self._approach_sync(task)
+            except Exception as e:  # noqa: BLE001 —— 导航异常不杀线程
+                res = {"type": task.get("type"), "ok": False,
+                       "reason": f"导航线程异常: {e!r}"}
+            with self._nav_lock:
+                # 契约1：结果未消费前禁止覆盖（绝不允许 A 完成后 B 又完成覆盖 A）
+                assert self._result is None, "result 未消费前禁止覆盖"
+                self._task = None
+                self._result = res
 
     # ---------- 帧/光标 ----------
 
@@ -395,6 +517,13 @@ class GamepadClicker:
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB) if frame.shape[2] == 4 else frame
                 targets, _top = detect_cursor(rgb)
                 sel = select_cursor(targets, self.last_pos, self.miss_streak)
+                # 候选快照（PEEP 诊断）：分数降序前 8 个（含拒识低分候选）+ 选中下标。
+                # tuple 整体替换（snapshot publication：生产线程只整体替换引用）
+                self.last_cands = tuple((t.pos[0], t.pos[1], t.score, t.state)
+                                        for t in targets[:8])
+                self.last_cand_sel = next(
+                    (i for i, t in enumerate(targets[:8]) if t is sel), None)
+                self.last_cands_ts = time.monotonic()
                 if sel is not None:
                     hist.append(sel.pos)
                     continue
@@ -452,81 +581,21 @@ class GamepadClicker:
         gpad_update(self._gpad)
         return True
 
-    # ---------- 归位 ----------
+    def _aborted_evt(self, abort_event: threading.Event | None) -> bool:
+        """中止检查（导航各循环每 tick 调用，导航线程内执行）。
 
-    def recenter(self, max_iters: int = 30, anchor: tuple | None = None,
-                 on_progress: Callable | None = None,
-                 should_abort: Callable | None = None) -> bool:
-        anchor = tuple(anchor) if anchor else (self.res[0] // 2, self.res[1] // 2)
-        for _ in range(max_iters):
-            if self._aborted(should_abort):
-                return False
-            p = self.read_pos(2)
-            if p is None:
-                self._report(on_progress, stage="recenter", pos=None, target=anchor)
-                self.blind_pull(1.0, 1.0, 14000, 0.12, 3)
-                time.sleep(0.1)
-                continue
-            dx = anchor[0] - p[0]
-            dy = anchor[1] - p[1]
-            dist = math.hypot(dx, dy)
-            self._report(on_progress, stage="recenter", pos=p, target=anchor, dist=dist)
-            if dist <= CENTER_TOL_POS:
-                # 归中使光标位置剧变：复位连续性先验，允许 select_cursor 直接
-                # 信任最高分候选（否则旧 last_pos 的 near 空集 + 高分门槛会拖慢重新捕获）
-                self.last_pos = None
-                self.miss_streak = 0
-                return True
-            ux, uy = dx / dist, dy / dist
-            mag = max(6000, min(20000, int(dist * 40)))
-            v_pred = max(50.0, self._speed(mag) or mag * 0.02)
-            T = min(0.25, 0.5 * dist / v_pred)
-            self._push(mag, (ux, uy), T)
-            time.sleep(0.1)
-        return False
-
-    @staticmethod
-    def _report(cb: Callable | None, **info) -> None:
-        """导航进度上报（approach 每 tick 调用）：回调异常静默吞掉，
-        导航闭环绝不能被 peep 渲染等旁观者打断。"""
-        if cb is None:
-            return
-        try:
-            cb(info)
-        except Exception:  # noqa: BLE001 —— 进度消费方失败不影响导航
-            pass
-
-    def _aborted(self, should_abort: Callable | None) -> bool:
-        """停止信号检查（导航各循环每 tick 调用）。
-
-        置位时立即摇杆归中（防止导航中止后光标持续漂移），返回 True 表示应中止。
-        背景：手柄导航是同步阻塞调用，若不检查停止信号，模块「停止」要等导航
-        自然结束（可达十数秒）才生效——用户体感就是"点停止停不下来"。
+        abort_event 置位（cancel/shutdown）时立即摇杆归中，返回 True 表示应中止。
+        背景：导航已线程化，但「停止」必须仍即时生效——模块停止走
+        shutdown/cancel 置位 Event，worker 每步检查后快速退出，不拖满导航自然结束。
         """
-        if should_abort is not None and should_abort():
+        if abort_event is not None and abort_event.is_set():
             self.stick_zero()
             return True
         return False
 
-    def blind_pull(self, dx: float, dy: float, mag: int, T: float, steps: int):
-        for _ in range(steps):
-            self._push(mag, (dx, dy), T)
-            time.sleep(0.08)
-
-    def _push(self, mag: int, dir_xy: tuple, T: float):
-        dx, dy = dir_xy
-        lx = int(round(dx * mag))
-        ly = int(round(-dy * mag))
-        self._gpad.left_joystick(x_value=lx, y_value=ly)
-        gpad_update(self._gpad)
-        time.sleep(T)
-        self._gpad.left_joystick(x_value=0, y_value=0)
-        gpad_update(self._gpad)
-
     # ---------- 趋近 ----------
 
-    def _phase_p(self, target, on_progress: Callable | None = None,
-                 should_abort: Callable | None = None,
+    def _phase_p(self, target, abort_event: threading.Event | None = None,
                  tol_px: float | None = None) -> dict:
         n_frames = 0
         miss = 0
@@ -534,16 +603,19 @@ class GamepadClicker:
         last_pos = None
         overshoot_flip = 0
         while n_frames < MAX_P_STEPS:
-            if self._aborted(should_abort):
+            if self._aborted_evt(abort_event):
                 return {"p_frames": n_frames, "osc_flip": overshoot_flip, "aborted": True}
             pos = self.read_pos(1, timeout=0.2)
             if pos is None:
                 # 连续丢失计入独立上限（不占 n_frames）：超限快速失败返回 lost，
-                # 由 approach → click → 指纹不更新 → 主循环下帧重试整次点击。
+                # 由 approach → 结果槽 → 主循环 consume → 指纹不更新 → 下帧重试。
                 # 无上限的 continue 会在光标持续不可见时无限空转（重试机制空洞）。
                 miss += 1
-                self._report(on_progress, stage="p", pos=None, target=target)
+                self._publish_progress(stage="p", pos=None, target=target)
                 if miss > MAX_P_MISS:
+                    # lost 路径不经过循环末尾的 stick_zero：先归零摇杆再快速
+                    # 失败，否则残余杆量会让光标持续漂飞（自愈重建雪上加霜）
+                    self.stick_zero()
                     return {"p_frames": n_frames, "osc_flip": overshoot_flip, "lost": True}
                 time.sleep(0.02)
                 continue
@@ -551,7 +623,7 @@ class GamepadClicker:
             n_frames += 1
             dx, dy = target[0] - pos[0], target[1] - pos[1]
             dist = math.hypot(dx, dy)
-            self._report(on_progress, stage="p", pos=pos, target=target, dist=dist)
+            self._publish_progress(stage="p", pos=pos, target=target, dist=dist)
             cur_speed = self._speed(mag)
             stop_dist = cur_speed * LAG_S + STOP_MARGIN
             if tol_px is not None:
@@ -575,8 +647,7 @@ class GamepadClicker:
         self.stick_zero()
         return {"p_frames": n_frames, "osc_flip": overshoot_flip}
 
-    def _phase_micro(self, target, on_progress: Callable | None = None,
-                     should_abort: Callable | None = None,
+    def _phase_micro(self, target, abort_event: threading.Event | None = None,
                      tol_px: float | None = None) -> dict:
         # 按 A 容差：调用方提供 tol_px（目标框中心 70% 区域半径）时放宽，
         # 缺省用 TOL（中心 5px 精确微调）
@@ -585,14 +656,14 @@ class GamepadClicker:
         micro_steps = 0
         miss = 0
         while micro_steps < MAX_MICRO_STEPS:
-            if self._aborted(should_abort):
+            if self._aborted_evt(abort_event):
                 return {"micro_steps": micro_steps, "err": None, "ok": False, "aborted": True}
-            pos = self.read_pos(3)
+            pos = self.read_pos(3, timeout=0.5)
             if pos is None:
                 # 连续丢失独立计数（不占 micro_steps）：超限快速失败交外层重试，
                 # 防止光标持续不可见（如按 A 后面板动画期）时无限空转
                 miss += 1
-                self._report(on_progress, stage="micro", pos=None, target=target)
+                self._publish_progress(stage="micro", pos=None, target=target)
                 if miss > MAX_MICRO_MISS:
                     return {"micro_steps": micro_steps, "err": None, "ok": False, "lost": True}
                 time.sleep(0.02)
@@ -600,7 +671,7 @@ class GamepadClicker:
             miss = 0
             dx, dy = target[0] - pos[0], target[1] - pos[1]
             dist = math.hypot(dx, dy)
-            self._report(on_progress, stage="micro", pos=pos, target=target, dist=dist)
+            self._publish_progress(stage="micro", pos=pos, target=target, dist=dist)
             if dist <= tol:
                 return {"micro_steps": micro_steps, "err": dist, "ok": True}
             if abs(dx) < 2.0:
@@ -624,61 +695,72 @@ class GamepadClicker:
         err = math.hypot(target[0] - pos[0], target[1] - pos[1]) if pos else float("nan")
         return {"micro_steps": micro_steps, "err": err, "ok": False}
 
-    def approach(self, target: tuple, anchor: tuple | None = None,
-                 intent: bool = False,
+    def _approach_sync(self, task: dict) -> dict:
+        """导航闭环执行体（**导航线程内运行**）。
+
+        task：submit 时的任务字典 {type, target, intent, tol_px, abort_event}。
+        同步跑完 P 趋近 + 微调 +（非意图）按 A；进度经 _publish_progress 发布，
+        中止经 abort_event（cancel/shutdown 置位）即时生效。
+        光标丢失（lost）快速失败返回 device_lost=True —— 由主循环 consume 后
+        累计并触发设备重建（worker 已回到等待态，重建不冲突）。
+        """
+        target = tuple(task["target"])
+        intent = bool(task.get("intent"))
+        tol_px = task.get("tol_px")
+        abort_event = task.get("abort_event")
+        if self._aborted_evt(abort_event):
+            return {"type": task.get("type"), "target": list(target),
+                    "ok": False, "reason": "aborted"}
+        t0 = time.perf_counter()
+        self._publish_progress(stage="start", pos=self.last_pos, target=target)
+        p = self._phase_p(target, abort_event, tol_px=tol_px)
+        if p.get("aborted"):
+            self._publish_progress(stage="abort", pos=None, target=target, done=True)
+            return {"type": task.get("type"), "target": list(target), **p,
+                    "ok": False, "reason": "aborted"}
+        if p.get("lost"):
+            # 光标持续不可见：快速失败 → 主循环 consume 后累计丢失 + 重建设备
+            self._publish_progress(stage="lost", pos=None, target=target, done=True)
+            return {"type": task.get("type"), "target": list(target), **p,
+                    "ok": False, "reason": "光标丢失", "device_lost": True}
+        m = self._phase_micro(target, abort_event, tol_px=tol_px)
+        if m.get("aborted"):
+            self._publish_progress(stage="abort", pos=None, target=target, done=True)
+            return {"type": task.get("type"), "target": list(target), **m,
+                    "ok": False, "reason": "aborted"}
+        if m.get("lost"):
+            self._publish_progress(stage="lost", pos=None, target=target, done=True)
+            return {"type": task.get("type"), "target": list(target), **m,
+                    "ok": False, "reason": "光标丢失", "device_lost": True}
+        dt = time.perf_counter() - t0
+        ok = m.get("ok", False)
+        self._publish_progress(stage="done", pos=None, target=target, ok=ok)
+        if ok and not intent:
+            self.press_confirm()
+        return {"type": task.get("type"), "target": list(target), **p, **m,
+                "total_s": round(dt, 2), "ok": ok}
+
+    def approach(self, target: tuple, intent: bool = False,
                  on_progress: Callable | None = None,
                  should_abort: Callable | None = None,
                  tol_px: float | None = None) -> dict:
-        """导航到目标像素坐标。intent=True → 只导航不按 A 确认。
+        """同步兼容壳（已弃用）：submit + 自旋 consume_result，语义与旧 approach 一致。
 
-        target 为像素坐标（x, y）。anchor 仅在光标丢失走归中兜底时作为归位锚点。
-        一段式导航：闭环 P 趋近不依赖已知起点，光标可见直接趋近目标；
-        仅光标丢失才先归中重建可见性（校准期"先归中再导航"的绕路已移除）。
-        tol_px：按 A 容差半径（像素，可选）。提供时微调阶段落点在目标中心
-          tol_px 内即算到位（手柄模式按目标框 70% 放宽）；缺省 TOL 中心精确微调。
-        on_progress：导航进度回调（可选），每 tick 上报
-          {"stage": start/recenter/p/micro/done/abort/lost, "pos": 光标像素位或
-          None(丢失), "target", "dist"}；供调用方在同步阻塞的导航期间实时刷新 PEEP。
-        should_abort：停止信号检查（可选，每 tick 调用）。置位时立即摇杆归中并
-          中止导航，返回 {"ok": False, "reason": "aborted"}——模块「停止」即时生效。
+        仅供外部同步调用方（本项目已改 submit/consume 异步协议）。
+        内部走导航线程执行，on_progress/should_abort 参数已不生效——进度读
+        nav_progress()，中止走 cancel()。
         """
-        if self._aborted(should_abort):
-            return {"ok": False, "reason": "aborted"}
-        t0 = time.perf_counter()
-        # 一段式导航（快准狠）：闭环 P 趋近每步重读光标位置，不依赖已知起点——
-        # 光标可见时直接趋近目标，不做"先归中到屏幕中心"的校准期绕路。
-        # 仅光标丢失（签名识别不到）时才走归中兜底（盲拉重建可见性后闭环接管）。
-        start = self.read_pos(2)
-        self._report(on_progress, stage="start", pos=start, target=target)
-        if start is None:
-            if not self.recenter(max_iters=12, anchor=anchor,
-                                 on_progress=on_progress, should_abort=should_abort):
-                if should_abort is not None and should_abort():
-                    self._report(on_progress, stage="abort", pos=None, target=target, done=True)
-                    return {"ok": False, "reason": "aborted"}
-                self._report(on_progress, stage="recenter", pos=None, target=target, done=True)
-                return {"ok": False, "reason": "归中失败"}
-        p = self._phase_p(target, on_progress, should_abort, tol_px=tol_px)
-        if p.get("aborted"):
-            self._report(on_progress, stage="abort", pos=None, target=target, done=True)
-            return {"target": list(target), **p, "ok": False, "reason": "aborted"}
-        if p.get("lost"):
-            # 光标持续不可见：快速失败交外层重试（主循环下帧重新决策+点击）
-            self._report(on_progress, stage="lost", pos=None, target=target, done=True)
-            return {"target": list(target), **p, "ok": False, "reason": "光标丢失"}
-        m = self._phase_micro(target, on_progress, should_abort, tol_px=tol_px)
-        if m.get("aborted"):
-            self._report(on_progress, stage="abort", pos=None, target=target, done=True)
-            return {"target": list(target), **m, "ok": False, "reason": "aborted"}
-        if m.get("lost"):
-            self._report(on_progress, stage="lost", pos=None, target=target, done=True)
-            return {"target": list(target), **m, "ok": False, "reason": "光标丢失"}
-        dt = time.perf_counter() - t0
-        ok = m.get("ok", False)
-        self._report(on_progress, stage="done", pos=None, target=target, ok=ok)
-        if ok and not intent:
-            self.press_confirm()
-        return {"target": list(target), **p, **m, "total_s": round(dt, 2), "ok": ok}
+        if not self.submit(target, intent=intent, tol_px=tol_px, task_type="click"):
+            return {"ok": False, "reason": "busy"}
+        if should_abort is not None and should_abort():
+            self.cancel()
+        while True:
+            res = self.consume_result()
+            if res is not None:
+                return res
+            if should_abort is not None and should_abort():
+                self.cancel()
+            time.sleep(0.02)
 
 
 def gpad_update(gpad):

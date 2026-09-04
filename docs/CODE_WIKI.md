@@ -36,10 +36,11 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 | 层级 | 技术组件 | 用途 |
 |------|----------|------|
-| 流程编排 | MAA Framework 5.11.1 | UI 流程编排 + 窗口控制 + 截图 |
-| 视觉识别 | YOLOv8 + ONNX Runtime (DirectML) | 实时目标检测（金币/障碍车/跳板车） |
+| 流程编排 | MAA Framework 5.12.x | UI 流程编排 + 窗口控制 + 截图 |
+| 视觉识别 | YOLO11 + ONNX Runtime (DirectML) | 实时目标检测（金币/障碍车/跳板车） |
 | 手柄模拟 | vgamepad 0.1.x | Xbox 360 虚拟手柄，摇杆精确控制 |
-| 图像处理 | OpenCV 4.x | 模板匹配、Hough 直线检测、可视化 |
+| 图像处理 | OpenCV 5.x | 模板匹配、Hough 直线检测、可视化 |
+| OCR | RapidOCR 3.9.x | 鉴宝金额 / 出价按钮文字识别 |
 | GUI 框架 | WinUI 3 (Windows App SDK 1.8) + WebView2 | 原生窗口 + HTML 三 Tab 前端 |
 | 系统交互 | XInput API (Win32) | 物理手柄检测，避免冲突 |
 
@@ -61,16 +62,16 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 │        WinUI 3 窗口 + HTML 前端 + sidecar 进程托管                │
 ├─────────────────────────────────────────────────────────────────┤
 │                      主控层 (controller.py)                     │
-│          MAA 框架绑定 + 阶段编排 + 导航调度 + 手柄生命周期        │
+│      能力门面 ActivityContext + 模块生命周期 + 全局设置           │
+│      （MAA 对象 Tasker/Resource 归插件模块创建，主控不再持有）     │
 ├─────────────────────────────────────────────────────────────────┤
 │  ┌─────────────────────┐  ┌──────────────────────────────────┐  │
-│  │  导航引擎            │  │  赛车自动驾驶循环                 │  │
-│  │  (navigation.py)    │  │  (racing_loop.py)                │  │
-│  │  - 模板匹配         │  │  - YOLO 推理调度                 │  │
-│  │  - 光标识别追踪     │  │  - 标线检测 (Hough)              │  │
-│  │  - 摇杆导航控制     │  │  - 防撞三区体系                  │  │
-│  │  - 归位/弹窗处理    │  │  - 贪婪决策算法                  │  │
-│  │  - 假光标过滤       │  │  - 前馈瞄准 + 车道保持           │  │
+│  │  racing 插件         │  │  treasure 插件                   │  │
+│  │  (plugins/racing/)   │  │  (plugins/treasure/)            │  │
+│  │  - 导航引擎 module   │  │  - 12阶段状态机                │  │
+│  │  - RacingLoop 循环   │  │  - RapidOCR 金额识别            │  │
+│  │  - 标线检测/防撞     │  │  - 智能出价策略                 │  │
+│  │  - YOLO 决策         │  │  - 结算/彩蛋/分红               │  │
 │  └─────────────────────┘  └──────────────────────────────────┘  │
 ├─────────────────────────────────────────────────────────────────┤
 │  ┌─────────────────────┐  ┌──────────────────────────────────┐  │
@@ -93,39 +94,18 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 ### 2.2 阶段流程
 
-项目采用**大厅层/对局层**双层循环结构，防止异常回退：
+项目采用**模块插件化**架构：主控（controller）只做生命周期与能力门面，活动流程由插件模块承载。
 
-```
-┌──────────────────────────────────────────────────┐
-│                  大厅层                            │
-│  ① 归位 ──→ ② 导航一(极速狂飙入口)               │
-│                          │                       │
-│                     ┌────┘  (失败回大厅重试)      │
-│                     ▼                            │
-│                  对局层                            │
-│  ③ 导航二(开始挑战) → 标记进入对局               │
-│      │                                           │
-│      ▼                                           │
-│  ④ 导航三(寻找对手) → ⑤ 商店弹窗 → ⑥ 确认上阵    │
-│                     │                            │
-│                     ▼                            │
-│  ⑦ RacingLoop 自动驾驶 ←──┐ (异常重试≤3次)       │
-│                     │      │                      │
-│                     ▼      │                      │
-│  ⑧ 结束处理 ───────────────┘                      │
-│      │                                           │
-│      └──→ 回到③（对局层循环）                    │
-└──────────────────────────────────────────────────┘
-```
+- **极速狂飙**（racing 插件）：大厅层/对局层双层循环（归位 → 导航 → 比赛循环），详见 [赛车文档 §2](../maaracing_assistant/plugins/racing/CODE_WIKI.md)。
+- **巅峰鉴宝**（treasure 插件）：12 阶段状态机（游戏大厅 → 活动页 → 鉴宝大厅 → 场次 → 鉴宝师 → 出价 → 结算 → 分红），详见 [鉴宝文档 §1](../maaracing_assistant/plugins/treasure/CODE_WIKI.md)。
 
-> 流程编排已模块化：`maaracing_assistant/plugins/racing/module.py`（RacingModule）承载上述流程，`controller.py` 保留主控调度与活动分发，详见 [赛车文档 §2](../maaracing_assistant/plugins/racing/CODE_WIKI.md)。
+主控不再持有活动流程编排：`MaaRacingAssistantController` 仅负责窗口连接、能力门面（`ActivityContext`）、模块生命周期与全局设置，活动阶段流转全部在模块内部。
 
 ---
 
 ## 3. 目录结构详解
 
 ```
-├── MaaRacingAssistant.lnk                    # 本机 GUI 启动快捷方式（指向编译产物，不提交）
 ├── pyproject.toml                            # setuptools-scm 包配置
 ├── requirements.txt                          # Python 依赖清单
 ├── AGENTS.md                                 # AI 助手项目配置
@@ -135,54 +115,50 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 │   ├── __init__.py                           # 版本号导出（setuptools-scm 自动生成）
 │   ├── __main__.py                           # python -m 入口
 │   ├── core/                                 # 主程序（应用层）
-│   │   ├── controller.py                     # 主控编排器（MAA 集成 + 阶段调度）
+│   │   ├── controller.py                     # 主控编排（生命周期 + 能力门面 ActivityContext，已不直接持有 MAA 对象）
 │   │   ├── sidecar.py                        # JSONL RPC 业务后端（供 mra_shell.exe 托管）
 │   │   ├── registry.py                       # 插件自动扫描注册表（扫 plugins/*/manifest.py）
 │   │   ├── base.py                           # ActivityContext / ActivityModule 基类
 │   │   ├── capabilities.py                   # typed capability 窄接口 + adapter
-│   │   ├── debug.py / logger.py / pipeline_logger.py / window_utils.py
-│   │   ├── paths.py / opencv_utf8_patch.py / vgamepad_lazy.py / wgcap.py
+│   │   ├── clicker.py / gamepad_cursor.py / audio_volume.py    # 点击方式 / 手柄光标 / 静音
+│   │   ├── render_plan.py / stage_tracker.py / roi_config.py   # 渲染计划 / 阶段记录 / ROI 底座
+│   │   ├── debug.py / debug_io.py            # PEEP 预览 + 调试落盘 IO worker
+│   │   ├── module_config.py / registry.py    # 模块配置契约 / 插件扫描注册
+│   │   ├── paths.py                          # 用户数据目录（%APPDATA%/MaaRacingAssistant，五目录）
+│   │   ├── opencv_utf8_patch.py / vgamepad_lazy.py / wgcap.py
 │   │   └── yolo_detector.py                  # 跨活动视觉基础设施
 │   └── plugins/                              # 活动插件（一活动 = 一自包含目录）
 │       ├── racing/                           # 极速狂飙
+│       │   ├── CODE_WIKI.md                  # 赛车域文档
 │       │   ├── manifest.py                   # ID + MODULE_CLASS（registry 扫描用）
 │       │   ├── module.py / loop.py / navigation.py / renderer.py
 │       │   └── resources/                    # 该模块专属模板图
+│       │       ├── image/                    # settings/activity/find_opponent/round1_end/store_popup 模板
+│       │       └── pipeline/tasks.json       # MAA Pipeline 任务定义（备用）
 │       └── treasure/                         # 巅峰鉴宝
+│           ├── CODE_WIKI.md                  # 鉴宝域文档
 │           ├── manifest.py                   # ID + MODULE_CLASS（registry 扫描用）
 │           ├── module.py / detector.py / ocr.py / strategy.py
 │           ├── eggs.py / renderer.py / store.py
 │           └── resources/                    # treasure_rois.json + 全部鉴宝模板
 │
 ├── assets/                                   # 资源文件
-│   ├── model/
-│   │   └── model.onnx                        # YOLOv8 模型（3类：coin/car/bonus_car）
-│   ├── resource/
-│   │   ├── image/                            # 模板匹配图片（racing 专属，暂留主程序）
-│   │   │   ├── settings_page_template.jpg    # 设置页面（归位用）
-│   │   │   ├── activity_page_template.jpg    # 活动页面
-│   │   │   ├── find_opponent_template.jpg    # 寻找对手页面
-│   │   │   ├── round1_end_template.jpg       # 回合1结束画面
-│   │   │   └── store_popup_template.jpg      # 商店弹窗
-│   │   └── pipeline/
-│   │       └── tasks.json                    # MAA Pipeline 任务定义（备用）
-│   ├── config/
-│   │   └── maa_option.json                   # MAA 框架配置
+│   ├── model/model.onnx                      # YOLOv8 模型（3类：coin/car/bonus_car）
+│   ├── config/maa_option.json                # MAA 框架配置
+│   ├── demo/                                 # 界面截图（shot_*.png）
 │   ├── icon.ico                              # 应用图标
 │   └── mra_icon.png                          # README 展示图标
 │
 ├── apps/
-│   └── mra_shell/                            # 🖥️ 正式 GUI（WinUI 3 shell + WebView2）
-│       ├── MainWindow.xaml(.cs)              # 窗口 + sidecar 生命周期 + 消息转发
-│       ├── PythonSidecar.cs                  # JSONL transport 契约实现
-│       ├── App.xaml(.cs)                     # 应用入口（DISABLE_XAML_GENERATED_MAIN）
-│       └── frontend/                         # HTML 前端（三 Tab：控制/调试/关于）
-│           ├── index.html                    # 页面结构 + 元素 id
-│           ├── style.css                     # 纯 CSS 样式（无 CDN）
-│           └── app.js                        # mra.call RPC + 页面交互逻辑
-│
-├── archive/                                  # 归档（旧 ttkbootstrap GUI、历史 spike）
-│   └── legacy_gui/                           # 已废弃：gui/（ttkbootstrap）、gui_webview/
+│   │   └── mra_shell/                        # 🖥️ 正式 GUI（WinUI 3 shell + WebView2）
+│   │       ├── MainWindow.xaml(.cs)          # 窗口 + sidecar 生命周期 + 消息转发
+│   │       ├── PythonSidecar.cs              # JSONL transport 契约实现
+│   │       ├── App.xaml(.cs)                 # 应用入口（DISABLE_XAML_GENERATED_MAIN）
+│   │       └── frontend/                     # HTML 前端（三 Tab：控制/调试/关于）
+│   │           ├── index.html                # 页面结构 + 元素 id
+│   │           ├── style.css                 # 纯 CSS 样式（无 CDN）
+│   │           └── app.js                    # mra.call RPC + 页面交互逻辑
+│   └── mra_launcher/                         # C 启动器（提权 + 定位 shell）
 │
 ├── tools/                                    # 开发工具脚本（按用途分组）
 │   ├── mouse_overlay.py                      # 独立 Overlay 工具（屏幕十字准星）
@@ -191,23 +167,24 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 │   │   ├── train.py                          # YOLO 训练 + ONNX 导出脚本
 │   │   ├── dataset.yaml                      # 数据集类别配置
 │   │   └── auto_label.py                     # 自动标注工具
-│   └── debug/                                # 诊断 / 回放 / 模板开发
-│       ├── diagnose_treasure.py              # 鉴宝调试诊断
-│       ├── test_stage_detector_replay.py     # 阶段检测回放验证
-│       └── extract_treasure_templates.py     # 模板裁剪提取
 │
-├── dataset/                                  # YOLO 训练数据集（188张）
-│   ├── images/train/ (150张)
-│   ├── images/val/ (38张)
-│   ├── labels/train/ (150个)
-│   └── labels/val/ (38个)
+├── tests/                                    # 单元测试（纯逻辑，CI 矩阵 3.10/3.11）
+├── scripts/                                  # 发布打包 / 启动脚本
+│   ├── release/assemble.ps1                  # 发布打包脚本
+│   └── start_debug_studio.ps1                # DebugStudio 启动
 │
+├── .github/workflows/                        # CI：test.yml（单测）、release.yml（发布）
 ├── docs/
 │   ├── update_log.md                         # 版本更新日志
+│   ├── MAAFW_GUIDE.md / SELF_CHECK.md / announcement.md
 │   └── CODE_WIKI.md                          # 本文档（主文档）；赛车/鉴宝域文档随插件（plugins/&lt;id&gt;/CODE_WIKI.md）
 │
-├── logs/                                     # 运行日志（自动生成，gitignore）
-└── debug/                                    # 调试截图（自动生成，gitignore）
+# 运行期数据（自动生成，gitignore）：已迁至 %APPDATA%/MaaRacingAssistant/
+# ├── config/                                 # profile.json、maa_option.json
+# ├── data/                                   # data/treasure/treasure.db
+# ├── logs/                                   # MRA_*.log
+# ├── framework/                              # MAA 框架自产物（maafw.log、cache）
+# └── debug/                                  # debug/<module>/<会话>/（调试台契约）
 ```
 
 ---
@@ -220,28 +197,26 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 ### 4.1 [controller.py](file:///d:/maaracing_assistant/maaracing_assistant/core/controller.py) — 主控编排器
 
-**职责**：
-- MAA Framework 初始化与绑定（Tasker / Resource / Win32Controller）
-- 7阶段流程编排与断点续跑
-- 虚拟手柄生命周期管理（懒创建/复位/销毁）
-- 双模式截图（MAA PostScreencap + ctypes BitBlt 备用）
-- 大厅层/对局层双层循环隔离
-- RacingLoop 异常重试机制（<3秒判定异常，最多3次）
+**职责**（v0.14+ 已去流程化，专注生命周期与能力门面）：
+- 窗口连接（幂等，仅创建 `Win32Controller`，MAA Tasker/Resource 归活动模块）
+- 能力门面 `ActivityContext`（capture / gamepad / debug_renderer 等窄接口 + ExitStack 生命周期托管）
+- 模块生命周期（`start_module(module_id, start_from)` 分发到插件 `ActivityModule.start`）
+- 点击方式（`real` 前台鼠标 / `background` 后台手柄导航+A / `intent` 仅意图）与独立真实点击开关
+- 运行时静音游戏（audio_volume）、运行结束自动关游戏/退出程序、急停循环
+- 虚拟手柄租约管理（`_get_gpad` 懒创建 / `_reset_gpad` / `_destroy_gpad` ctypes 从总线拔除）
 
 **核心类**：`MaaRacingAssistantController`
 
 **关键属性**：
 | 属性 | 类型 | 说明 |
 |------|------|------|
-| `STAGE_ORDER` | list[str] | 7个阶段名称（GUI断点选择用） |
-| `tasker` | Tasker | MAA 任务执行器 |
-| `resource` | Resource | MAA 资源包 |
-| `controller` | Win32Controller | MAA 窗口控制器 |
-| `racing_loop` | RacingLoop | 自动驾驶实例 |
-| `nav` | Navigation | 光标导航引擎 |
-| `_gpad` | VX360Gamepad | 虚拟手柄（懒创建，复用不销毁） |
-| `_in_match` | bool | 是否已进入对局（防止异常回退大厅） |
-| `debug` | NavigationDebugger | 调试器实例 |
+| `controller` | Win32Controller | 游戏窗口控制器（connect 时创建，幂等） |
+| `ctx` | ActivityContext | 能力门面（模块经窄接口办事） |
+| `active_module` | ActivityModule | 当前活动模块（racing / treasure） |
+| `click_mode` | str | 点击方式：`real`（前台） / `background`（后台手柄）/ `intent`（仅意图） |
+| `intent_mode` | bool | 是否仅准星意图（不真实点击） |
+| `gamepad_available` | bool | vgamepad 驱动是否可用（ViGEmBus） |
+| `module_active` | bool | 模块是否在运行 |
 
 ---
 
@@ -254,8 +229,9 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 - 归位（Homing）：持续按B直到识别设置页面
 - 商店弹窗自动关闭
 - 盲操兜底（光标丢失时按估算方向推杆）
+- 经 `ctx` 能力门面访问截图/手柄（不再反向引用 controller 的私有 `_screencap`/`_gpad`）
 
-**核心类**：
+**核心类**：`ButtonDef` / `Navigation`（构造签名 `__init__(proj: Path, debug, ctx: ActivityContext)`，详见 [赛车文档 §2](../maaracing_assistant/plugins/racing/CODE_WIKI.md)）
 
 #### `ButtonDef`（按钮配置类）
 纯配置数据类，一行定义一个导航按钮：
@@ -298,7 +274,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 ---
 
-### 4.3 [yolo_detector.py](file:///d:/maaracing_assistant/maaracing_assistant/yolo_detector.py) — YOLO 检测器
+### 4.3 [yolo_detector.py](file:///d:/maaracing_assistant/maaracing_assistant/core/yolo_detector.py) — YOLO 检测器
 
 **职责**：
 - ONNX Runtime 会话初始化（DirectML优先 → CUDA → CPU）
@@ -323,7 +299,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 ### 4.4 [mra_shell](file:///d:/maaracing_assistant/apps/mra_shell) — GUI 宿主（WinUI 3 + HTML 前端）
 
-> v0.13.0 起 GUI 定案为 WinUI 3 shell + WebView2 HTML 前端（详见 §11）。旧 ttkbootstrap GUI（`gui.py` MRAGUI）已归档至 `archive/legacy_gui/`，以下历史记录仅供参考。
+> v0.13.0 起 GUI 定案为 WinUI 3 shell + WebView2 HTML 前端（详见 §11）。旧 ttkbootstrap GUI（`gui.py` MRAGUI）已在重构时移除，以下历史记录仅供参考。
 
 **进程模型**：
 - `mra_shell.exe`（C# WinUI 3）：唯一 GUI，只做窗口 + sidecar 进程生命周期 + 消息转发
@@ -347,7 +323,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 #### 4.4.1 旧 ttkbootstrap GUI 历史记录（已归档，仅存档）
 
-> 原 `gui.py` MRAGUI（ttkbootstrap）的改进历史，代码已移至 `archive/legacy_gui/gui/`。
+> 原 `gui.py` MRAGUI（ttkbootstrap）的改进历史，代码已在重构时移除，此处仅存档。
 
 | 改进项 | 说明 | 核心实现 |
 |--------|------|----------|
@@ -359,7 +335,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 ---
 
-### 4.5 [debug.py](file:///d:/maaracing_assistant/maaracing_assistant/debug.py) — 调试可视化
+### 4.5 [debug.py](file:///d:/maaracing_assistant/maaracing_assistant/core/debug.py) — 调试可视化
 
 **职责**：
 - 两套渲染模式：全量存盘（enabled）/ 精简PEEP预览（peep_enabled）
@@ -444,13 +420,13 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 ---
 
-### 4.9 [opencv_utf8_patch.py](file:///d:/maaracing_assistant/maaracing_assistant/opencv_utf8_patch.py) — 中文路径补丁
+### 4.9 [opencv_utf8_patch.py](file:///d:/maaracing_assistant/maaracing_assistant/core/opencv_utf8_patch.py) — 中文路径补丁
 
 **职责**：Monkey-patch `cv2.imread`/`cv2.imwrite`，支持中文Windows路径。ASCII路径走原生API，中文路径用 `np.frombuffer`/`cv2.imencode`+Python文件IO绕过。程序启动时import一次即全局生效。
 
 ---
 
-### 4.10 [wgcap.py](file:///d:/maaracing_assistant/maaracing_assistant/wgcap.py) — WGC 持久化后台截图
+### 4.10 [wgcap.py](file:///d:/maaracing_assistant/maaracing_assistant/core/wgcap.py) — WGC 持久化后台截图
 
 **职责**：
 - Windows Graphics Capture (WGC) 持久化后台截图，替代 MAA FramePool 的同步截图
@@ -468,9 +444,9 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 - callback interval P50 ≈ 14ms（~70Hz 游戏帧率）
 - 帧缓存重复率 ~48.5%（正常现象：consumer 比 producer 快）
 
-**架构决策**：
-- 生产默认后端 = `wgc_latest`，MAA FramePool = fallback 兼容
-- 通过 `RacingLoop.capture_backend` 切换（`"wgc_latest"` / `"maa"`）
+**架构决策（v0.14 截图收敛后）**：
+- **生产默认后端 = MAA FramePool**（`capture.screenshot()` 统一能力接口，见 [赛车文档 §5.2](../maaracing_assistant/plugins/racing/CODE_WIKI.md)）
+- WGC（`wgcap.py` `WgcCapture`）曾作为 racing 生产截图后端（`capture_backend` 分派），**已随 v0.14 截图收敛移除**，此模块保留为可选工具（后台/遮挡场景备选）
 - 线程安全：锁内仅交换 Python 引用和整数，NumPy 操作在锁外
 - 帧所有权：NativeMappedFrame → bytes → ndarray，回调结束后 ndarray 地址复用但仍安全
 
@@ -484,18 +460,22 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 | 方法 | 说明 |
 |------|------|
-| `__init__()` | 初始化项目路径、导航引擎、调试器 |
-| `connect(record_mode)` | 连接游戏窗口、初始化MAA、注册RacingLoop自定义动作 |
-| `start(start_from, record_mode)` | 主循环入口，支持断点续跑和记录模式 |
-| `stop()` | 停止运行、中断Pipeline、销毁手柄 |
-| `set_debug_mode(enabled)` | 切换DEBUG存盘模式 |
-| `check_model()` | 检查YOLO模型文件是否存在 |
-| `_get_gpad()` | 懒创建并返回虚拟手柄（复用，不销毁） |
+| `__init__(capture_backend="wgc_latest")` | 初始化能力门面、点击方式、急停等 |
+| `connect()` | 幂等窗口连接：仅创建 `Win32Controller(hWnd=...)`，连接超时 10s 保护 + 720p 窗口统一 + 屏幕内校验 |
+| `start_module(module_id, start_from)` | 分发到插件模块（racing / treasure）并启动（断点 `start_from` 由模块自己解析） |
+| `stop()` | 停止模块、中断 Pipeline、销毁手柄 |
+| `set_click_mode(mode)` / `intent_mode` | 点击方式切换：前台鼠标 / 后台手柄 / 仅意图 |
+| `set_auto_shutdown(close_game, exit_mra)` | 运行结束后自动关游戏 / 退出程序（仅自然完成时） |
+| `set_mute_game(enabled)` | 运行时静音游戏（音频音量控制） |
+| `set_emergency_stop(enabled)` | 急停开关（后台轮询回路） |
+| `set_auto_close_game` / `set_auto_exit` | 自动收尾开关 |
+| `check_model()` | 检查 YOLO 模型文件是否存在 |
+| `gamepad_available()` | vgamepad / ViGEmBus 驱动可用性探测（缓存） |
+| `_get_gpad()` | 懒创建并返回虚拟手柄（复用，不销毁重建） |
 | `_reset_gpad()` | 摇杆归零+按钮释放（不销毁） |
-| `_destroy_gpad()` | 销毁虚拟手柄实例 |
-| `_screencap()` | MAA截图（BGR→RGB），失败时自动降级到ctypes截图 |
-| `_screencap_ctypes()` | Win32 GDI BitBlt截图备用方案 |
-| `_interruptible_sleep(s)` | 可中断睡眠（每0.1s检查_running） |
+| `_destroy_gpad()` | 销毁虚拟手柄：显式 ctypes `vigem_target_remove` 从总线拔除（确定性） |
+| `_screencap()` | 截图（FramePool → BGR→RGB），失败返回 None（主编排层；模块侧走 `ctx.capture.screenshot()`） |
+| `_interruptible_sleep(s)` | 可中断睡眠（每 0.1s 检查 `_running`） |
 
 ### 5.2 navigation.ButtonDef
 
@@ -505,7 +485,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 | 方法 | 说明 |
 |------|------|
-| `__init__(proj, debug, ctrl)` | 初始化，持有父控制器引用 |
+| `__init__(proj, debug, ctx)` | 初始化，持有项目路径、调试器与能力门面 `ctx` |
 | `homing()` | 归位：按B直到识别设置页面，再按B返回主界面 |
 | `navigate_to_button(btn)` | 光标导航到按钮并按A，验证成功返回True |
 | `handle_store_popup()` | 等待商店弹窗出现，按A关闭 |
@@ -561,9 +541,8 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 
 | 方法 | 所属模块 | 说明 | 关键参数/坑点 |
 |------|----------|------|---------------|
-| `_screencap()` | RacingLoop / Navigation | 截图 RGB ndarray（优先 MAA → 失败回退 ctypes GDI）| 返回 BGR/RGB 需核对，推荐走封装好的 `_cap` / `_screenshot` |
-| `_screencap_ctypes()` | Navigation | Win32 GDI 备用截图方案（绕过 MAA 管线回退用）| 窗口句柄和 DPI 需提前确认；非首选 |
-| `_cap(ctrl)` | RacingLoop | 截图（按 `capture_backend` 分派：`wgc_latest`=WGC 常驻 `get_latest()` / `maa`=`capture.screenshot()`） | 见 [赛车文档 §5.2](../maaracing_assistant/plugins/racing/CODE_WIKI.md)；BitBlt 快速截图已废弃（GPU 窗口必黑屏） |
+| `_screencap()` | Controller（模块侧走 `ctx.capture`） | 截图 RGB ndarray（FramePool → BGR→RGB）| 主编排层方法；模块经 `capture.screenshot()` 能力接口统一取值 |
+| `_cap(capture)` | RacingLoop | 截图：统一走 `capture.screenshot()`（MAA FramePool→RGB）+ 底部16:9裁剪 + 帧签名 | 见 [赛车文档 §5.2](../maaracing_assistant/plugins/racing/CODE_WIKI.md)；WGC 分支已随 v0.14 收敛删除 |
 | `_press_button(gpad, button, duration)` | Navigation | 按下 → 保持 → 释放（button=XInput enum） | duration 默认 0.3 s；racing 用 `_apply_trigger`/`_steer` 另封装 |
 | `_interruptible_sleep(seconds)` | Navigation / RacingLoop / Controller | 每 0.1 s 轮询检查 `_running` 的可中断 sleep | stop 能 0.1 s 级响应；**不要用 `time.sleep(>0.2)`** |
 | `_load_template(name)` | Controller / Navigation | 加载模板图片，优先 png → jpg 回退 | 返回 RGB ndarray，不存在返回 None 或 WARNING |
@@ -591,7 +570,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 core/sidecar.py（JSONL RPC handler）
   ├── core.controller.MaaRacingAssistantController
   ├── core.logger.logger
-  └── core.window_utils.has_physical_controller
+  ├── core.window_utils.has_physical_controller
   └── core.registry（插件自动扫描注册）
 
 mra_shell（C#，不导入 Python）
@@ -599,42 +578,32 @@ mra_shell（C#，不导入 Python）
         └── 子进程：python -m maaracing_assistant（core/sidecar.py）
 
 core/controller.py
-  ├── plugins/racing.navigation.ButtonDef, Navigation
-  ├── plugins/racing.loop.RacingLoop
-  ├── core.pipeline_logger.PipelineLogger
-  ├── core.debug.NavigationDebugger
-  ├── core.window_utils.find_game_hwnd
+  ├── core.sidecar（handler） / core.registry
+  ├── core.base.ActivityContext / core.base.ActivityModule
+  ├── core.clicker（点击方式）/ core.gamepad_cursor / core.audio_volume
+  ├── core.window_utils.find_game_hwnd / resize_game_window_720p / is_window_on_screen
   ├── core.logger.logger
-  └── maa.* (Tasker, Resource, Win32Controller, ...)
+  └── plugins.<id>.module（ActivityModule 启动分发）
 
-plugins/racing/navigation.py
-  └── core.logger.logger
-  (TYPE_CHECKING: core.controller.MaaRacingAssistantController)
-
-plugins/racing/loop.py
+plugins/racing/module.py
+  ├── plugins.racing.navigation.ButtonDef, Navigation（经 ctx 门面）
+  ├── plugins.racing.loop.RacingLoop
   ├── core.yolo_detector.YOLODetector
-  ├── core.logger.logger
-  └── maa.custom_action.CustomAction, maa.context.Context
+  ├── core.stage_tracker.StageTracker
+  └── ctx（Tasker/Resource 经 ctx.bind_tasker 绑定，模块不接触高权限 Win32Controller）
+
+plugins/treasure/module.py
+  └── treasure_detector / treasure_ocr / strategy / eggs / renderer / store（同目录）
 
 core/yolo_detector.py
   └── core.logger.logger
 
-core/debug.py
-  └── (无内部依赖，纯OpenCV/numpy)
-
-core/pipeline_logger.py
-  └── core.logger.logger
-  └── maa.context.ContextEventSink, maa.event_sink.NotificationType
+core/debug.py / core/debug_io.py
+  └── （纯 OpenCV/numpy，IO worker 生产-消费者）
 
 core/window_utils.py
   ├── maa.toolkit.Toolkit
   └── core.logger.logger
-
-core/logger.py
-  └── (无内部依赖)
-
-core/opencv_utf8_patch.py
-  └── cv2 (monkey-patch)
 ```
 
 ### 6.2 运行时对象持有关系
@@ -661,73 +630,37 @@ core/sidecar.py（mra_shell 托管）
 ### 7.1 启动流程
 
 ```
-双击根目录 MaaRacingAssistant.lnk（定位 mra_shell.exe，exe manifest 自动 UAC 提权）
+双击根目录 mra_shell.exe / MaaRacingAssistant.lnk（exe manifest 自动 UAC 提权）
   → WinUI 3 shell 创建窗口（AppWindowTitleBar）并展示 HTML 前端
   → shell 拉起 Python sidecar（python -m maaracing_assistant）
     → sidecar 初始化 Controller，等待 stdin JSONL RPC
   → 前端通过 mra.call(method, params) 与 sidecar 通信
 ```
 
-独立调试 sidecar（不经 GUI）：`python -m maaracing_assistant`（等待 stdin JSONL RPC）。
+独立调试 sidecar（不经 GUI）：`python -u -m maaracing_assistant.core.sidecar`（等待 stdin JSONL RPC）。
 
 ### 7.2 用户点击"开始"后流程
 
 ```
 前端按钮 #btn-start（app.js）
-  → mra.call('start', {start_from}) → C# → sidecar.py 的 start handler
-  → 检查模型存在
-  → 检查物理手柄 → 有则拒绝启动
-  → 读取断点选择（start_from）
-  → controller.start(start_from)
+  → mra.call('start', {module_id, start_from}) → C# → sidecar 的 start handler
+  → controller.start_module(module_id, start_from)
+    → 模块 ActivityModule.start(start_from)：模块内部解析断点并进入活动循环
 ```
 
-### 7.3 controller.start() 主流程
+活动循环细节（极速狂飙 / 巅峰鉴宝）见各自插件 CODE_WIKI，主控层不再编排阶段。
+
+### 7.3 controller.start_module() 主机编排
 
 ```
-1. connect(record_mode)
-   ├─ find_game_hwnd() → Win32Controller(hWnd=hwnd)
-   ├─ controller.post_connection().wait()
-   ├─ 窗口准备：activate_window(hwnd) 切前台（还原最小化 + F13 注入解除锁定 + SetForegroundWindow）；
-   │   is_window_on_screen(hwnd) 校验窗口完整可见（四角均在显示器内），部分/完全拖出 → ERROR 报错退出
-   ├─ Tasker() + Resource()
-   ├─ RacingLoop(model_path, debug, record_mode)
-   ├─ resource.register_custom_action("RacingLoop", racing_loop)
-   ├─ resource.post_bundle(plugins/racing/resources).wait()   # 模块资源自包含（_RES_DIR）
-   ├─ tasker.bind(resource, controller)
-   └─ tasker.add_context_sink(PipelineLogger())
-
-2. 解析断点 skip_until
-
-3. 记录模式 → racing_loop.run_direct() → 返回
-
-4. 归位（skip_until<=0时）
-   └─ nav.homing() → 按B直到匹配settings模板 → 再按B返回
-
-5. 大厅层循环（while _running）
-   └─ 导航一（极速狂飙入口），最多3次重试
-      ├─ 失败 → 销毁手柄 → sleep(2) → 重新归位 → 重试
-      └─ 成功 → 进入对局层循环
-
-6. 对局层循环（while _running）
-   ├─ 导航二（开始挑战），最多6次重试
-   │  ├─ 连续3次失败且首次进入 → 回大厅重新导航一
-   │  └─ 失败 → _running=False 或 回大厅
-   ├─ 标记 _in_match = True
-   ├─ 导航三（寻找对手），最多6次重试
-   │  └─ 先等待find_opponent模板出现15秒
-   ├─ 商店弹窗处理 handle_store_popup()
-   ├─ 确认上阵（_ensure_cursor + navigate_to_button）
-   ├─ 销毁导航手柄！（避免RacingLoop创建第二个手柄冲突）
-   ├─ 比赛（racing_loop.run_direct），最多3次重试
-   │  ├─ <3秒判定异常 → 重试
-   │  ├─ 结束原因="商店弹窗" → handle_store_popup()
-   │  └─ 成功 → sleep(2)
-   ├─ skip_until=0（断点只首轮生效）
-   ├─ _in_match=False
-   └─ continue（回到导航二，循环对局）
+start_module(module_id, start_from)
+  ├─ connect()：幂等窗口连接（Win32Controller(hWnd=...)；超时10s保护；
+  │   Window 720p 统一（resize_game_window_720p）；屏幕内校验失败→ERROR终止）
+  ├─ 每次启动执行静音/自动收尾等全局设置
+  ├─ 按 module_id 从 registry 选插件模块
+  └─ module.start(start_from)（worker 线程运行，阻塞直到模块 stop/完成）
+     └─ 模块自己：装渲染器 → 初始化检测/OCR → 主循环；exit 时 ctx 托管资源自动释放
 ```
-
-> 该流程已由 [RacingModule（赛车文档 §2）](../maaracing_assistant/plugins/racing/CODE_WIKI.md) 承载（MAA 对象模块自有）；`RacingLoop._run_impl()` 帧级核心循环见 [赛车文档 §6](../maaracing_assistant/plugins/racing/CODE_WIKI.md)。
 
 ---
 
@@ -777,10 +710,10 @@ core/sidecar.py（mra_shell 托管）
 
 | 文件 | 尺寸 | 用途 | 匹配阈值 | 状态 | 引用/对应场景 |
 |------|------|------|----------|------|--------------|
-| `settings_page_template.jpg` | ~484×300 | 归位：识别设置页面（左上角 ROI 50%，彩色多尺度）| 0.65 | ✅ 正常 | §7.3 homing()；§8.3 "设置页面（归位）"行 |
-| `activity_page_template.jpg` | 1100×550 | 导航：识别活动页面 / 检测页面已离开（导航二"开始挑战"消失验证正反逻辑）| 0.70 | ✅ 正常 | §7.3 导航二；ButtonDef；§8.3 "页面验证（导航）"行 |
-| `find_opponent_template.jpg` | 374×195 | 导航三：识别"寻找对手"页面，按钮消失=成功验证（`template_should_match=False`）| 0.55 | ✅ v0.5.0 | §7.3 导航三；ButtonDef；§8.3 "页面验证（导航）"行；scales=0.5/0.7/0.9/1.0/1.2/1.5/1.8 |
-| `store_popup_template.jpg` | 159×262 | 商店弹窗检测 + `RacingLoop._is_end()` 结束画面检测（任一模板命中即返回 True）| 0.55 | ✅ v0.6.0 | §7.3 商店弹窗步骤；[赛车文档 §4](../maaracing_assistant/plugins/racing/CODE_WIKI.md) RacingLoop._is_end；§8.3 "结束检测（商店）"行（阈值 0.90 是新版加强）|
+| `settings_page_template.jpg` | ~484×300 | 归位：识别设置页面（左上角 ROI 50%，彩色多尺度）| 0.65 | ✅ 正常 | [赛车文档 §2](../maaracing_assistant/plugins/racing/CODE_WIKI.md) homing()；§8.3 "设置页面（归位）"行 |
+| `activity_page_template.jpg` | 1100×550 | 导航：识别活动页面 / 检测页面已离开（导航二"开始挑战"消失验证正反逻辑）| 0.70 | ✅ 正常 | [赛车文档 §2](../maaracing_assistant/plugins/racing/CODE_WIKI.md) 导航二；ButtonDef；§8.3 "页面验证（导航）"行 |
+| `find_opponent_template.jpg` | 374×195 | 导航三：识别"寻找对手"页面，按钮消失=成功验证（`template_should_match=False`）| 0.55 | ✅ v0.5.0 | [赛车文档 §2](../maaracing_assistant/plugins/racing/CODE_WIKI.md) 导航三；ButtonDef；§8.3 "页面验证（导航）"行；scales=0.5/0.7/0.9/1.0/1.2/1.5/1.8 |
+| `store_popup_template.jpg` | 159×262 | 商店弹窗检测 + `RacingLoop._is_end()` 结束画面检测（任一模板命中即返回 True）| 0.55 | ✅ v0.6.0 | [赛车文档 §2](../maaracing_assistant/plugins/racing/CODE_WIKI.md) 商店弹窗步骤；[赛车文档 §4](../maaracing_assistant/plugins/racing/CODE_WIKI.md) RacingLoop._is_end；§8.3 "结束检测（商店）"行（阈值 0.90 是新版加强）|
 | `round1_end_template.jpg` | — | 回合 1 结束画面检测；`_is_end` 模板列表中的主模板（用户截图重命名）| 0.55 | ✅ v0.6.0 | [赛车文档 §6](../maaracing_assistant/plugins/racing/CODE_WIKI.md) RacingLoop 结束检测；§8.3 "结束检测（回合1）"行 |
 | `cursor_template.jpg` | 168×176 | 旧光标模板匹配 → 已废弃，现改为 §10.3 "双中心面积评分"几何形状识别（灰白 S<30 + 面积 310/420 + area<240 硬过滤）| — | ❌ 已废弃 | §10.3 光标导航坑点；§4.2 Navigation._find_cursor_by_shape |
 | `button_main_template.jpg` | ~242×67 | 旧按钮位置模板 → 已废弃，现改为 ButtonDef.pct 百分比硬编码 + 页面模板验证 | — | ❌ 已废弃 | §4.2 navigation.py；§5.2 ButtonDef 定义 |
@@ -816,15 +749,15 @@ pip install -r requirements.txt
 ### 9.2 运行
 
 ```bash
-python -m maaracing_assistant  # 独立调试 sidecar（等待 stdin JSONL RPC）
+python -u -m maaracing_assistant.core.sidecar  # 独立调试 sidecar（等待 stdin JSONL RPC）
 ```
 
 ### 9.3 调试模式
 
-1. **DEBUG 存盘模式**：GUI勾选"DEBUG 每帧截图"，每帧全量标注保存到 `debug/navigate/<按钮名>_<时间戳>/` 目录
-2. **PEEP 实时预览**：GUI勾选"PEEP 实时预览"，弹出OpenCV窗口实时显示精简标注画面（~30fps）
-3. **断点调试**：GUI断点列表双击选择起始阶段，跳过前面的导航步骤
-4. **📹记录模式**：不拦截手柄，记录人工操作+画面数据到 `logs/record_*.csv`，用于分析人工驾驶策略
+1. **DEBUG 存盘模式**：GUI 勾选"DEBUG 每帧截图"，每帧全量标注保存到 `%APPDATA%/MaaRacingAssistant/debug/<module>/<会话>/` 目录
+2. **PEEP 实时预览**：GUI 勾选"PEEP 实时预览"，弹出 OpenCV 窗口实时显示精简标注画面（~30fps）
+3. **断点调试**：GUI 断点列表双击选择起始阶段，跳过前面的导航步骤
+4. **DebugStudio**：`tools/debug_studio`（`scripts/start_debug_studio.ps1 -Module treasure`）浏览落盘会话并校准 ROI
 
 ### 9.4 YOLO模型训练
 
@@ -832,20 +765,25 @@ python -m maaracing_assistant  # 独立调试 sidecar（等待 stdin JSONL RPC�
 python tools/training/train.py  # 训练+自动导出ONNX+复制到assets/model/
 ```
 
-数据集位于 `dataset/`，类别配置见 `tools/training/dataset.yaml`（3类：coin/car/bonus_car）
+数据集治理见 `tools/training/`（`dataset.yaml` 3类：coin/car/bonus_car）。训练依赖（`ultralytics`/`torch`）为可选 extra `pip install -e .[train]`，不随运行时发布。
 
-### 9.5 日志位置
+### 9.5 日志位置（%APPDATA%/MaaRacingAssistant/）
 
-- 运行日志：`logs/MRA_YYYYMMDD_HHMMSS.log`（含DEBUG级别全量日志）
-- GUI日志：只显示 INFO 及以上
-- 调试截图：`debug/navigate/` 和 `debug/diagnose/`（DEBUG模式开启时）
-- 记录数据：`logs/record_YYYYMMDD_HHMMSS.csv`（记录模式开启时）
+用户数据目录 `user_data_dir()` 五目录结构（[paths.py](file:///d:/maaracing_assistant/maaracing_assistant/core/paths.py)）：
+
+- `config/`：`profile.json`（用户偏好）、`maa_option.json`
+- `data/`：结构化业务数据（`data/treasure/treasure.db`）
+- `logs/`：运行日志 `MRA_YYYYMMDD_HHMMSS.log`（含 DEBUG 级全量）
+- `framework/`：MAA 框架自产物（`maafw.log`、cache）
+- `debug/`：调试截图会话 `debug/<module>/<会话>/`（DebugStudio 契约）
+
+GUI 只显示 INFO 及以上；记录数据（历史 CSV）同随用户数据目录管理。
 
 ### 9.6 物理手柄检测
 
-- 非记录模式下启动时检测，有物理手柄连接则弹窗阻止
-- 检测方法：XInputGetState遍历端口0-3
-- 记录模式需要物理手柄，不拦截操作只采集数据
+- 前台点击（real）/ 后台手柄（background）模式检测到物理手柄可能冲突；intent 模式仅算意图不干扰
+- 检测方法：XInputGetState遍历端口0-3（`XInputGetState(i, buf) == 0` 表示已连接）
+- 历史"记录模式"（读取物理手柄采集数据）已随 v0.14 重构移除，不再适用
 
 ---
 
@@ -858,7 +796,7 @@ python tools/training/train.py  # 训练+自动导出ONNX+复制到assets/model/
 | 坑点 | 说明 | 解决方案 |
 |------|------|----------|
 | 截图需要管理员权限 | PrintWindow/BitBlt需要提升权限 | mra_shell.exe manifest 自动 UAC 提权（一次，child 继承） |
-| ~~ttkbootstrap 相关坑~~（已归档） | 旧 GUI 遗留 | 代码已移至 `archive/legacy_gui/`，不再适用 |
+| ~~ttkbootstrap 相关坑~~（已移除） | 旧 GUI 遗留 | 代码已重构移除，不再适用 |
 | cv2不支持中文路径 | imread/imwrite在中文路径下失败 | opencv_utf8_patch.py monkey-patch |
 | messagebox不继承图标 | tk.messagebox弹窗无图标 | 用tk.Toplevel自行创建+iconbitmap |
 | YOLO ONNX 导出 | `onnx.export(simplify=True)` 可能产生损坏模型（推理结果错乱） | 导出时关闭 simplify，或导出后校验精度 |
@@ -993,15 +931,15 @@ python tools/training/train.py  # 训练+自动导出ONNX+复制到assets/model/
 
 | 类名 | 文件 | 核心职责 |
 |------|------|----------|
-| `MaaRacingAssistantController` | core/controller.py | 主控编排、MAA绑定、阶段调度 |
+| `MaaRacingAssistantController` | core/controller.py | 主控编排：能力门面 + 模块生命周期 + 全局设置 |
+| `ActivityModule` / `ActivityContext` | core/base.py | 模块基类 / 能力门面（窄接口 + ExitStack 生命周期） |
+| `Registry` | core/registry.py | 插件自动扫描注册（扫 `plugins/*/manifest.py`） |
 | `ButtonDef` | plugins/racing/navigation.py | 导航按钮配置数据类 |
-| `Navigation` | plugins/racing/navigation.py | 光标识别追踪、模板匹配、摇杆导航 |
-| `RacingLoop` | plugins/racing/loop.py → [赛车文档](../maaracing_assistant/plugins/racing/CODE_WIKI.md) | 自动驾驶YOLO循环、决策、手柄控制 |
-| `YOLODetector` | core/yolo_detector.py | ONNX推理、per-class NMS |
+| `Navigation` | plugins/racing/navigation.py | 光标识别追踪、模板匹配、摇杆导航（经 ctx 门面） |
 | `RacingModule` | plugins/racing/module.py → [赛车文档 §2](../maaracing_assistant/plugins/racing/CODE_WIKI.md) | 极速狂飙活动流程（导航+比赛） |
+| `RacingLoop` | plugins/racing/loop.py → [赛车文档](../maaracing_assistant/plugins/racing/CODE_WIKI.md) | 自动驾驶YOLO循环、决策、手柄控制 |
 | `TreasureModule` | plugins/treasure/module.py → [鉴宝文档 §1](../maaracing_assistant/plugins/treasure/CODE_WIKI.md) | 巅峰鉴宝活动模块（12阶段状态机） |
-| `MRAGUI` | ~~gui.py~~ → `archive/legacy_gui/` | 旧 ttkbootstrap 图形界面（已归档） |
+| `MRAGUI` | ~~gui.py~~（已归档移除） | 旧 ttkbootstrap 图形界面（已废弃，代码已删） |
 | `Sidecar` | core/sidecar.py | JSONL RPC 业务后端（mra_shell 托管） |
-| `NavigationDebugger` | core/debug.py | PEEP预览、截图标注存盘 |
-| `Logger` | core/logger.py | 内存+文件双写日志 |
-| `PipelineLogger` | core/pipeline_logger.py | MAA Pipeline事件日志 |
+| `NavigationDebugger` | core/debug.py | PEEP预览、截图标注（存盘走 debug_io IO worker） |
+| `Logger` | core/logger.py | 内存+文件双写日志（用户数据目录） |

@@ -26,7 +26,7 @@
 [racing_loop.py](file:///d:/maaracing_assistant/maaracing_assistant/plugins/racing/loop.py)
 
 **职责**：
-- WGC 持久化后台截图（wgcap.py 零拷贝帧访问，~0.5ms/帧）
+- 截图统一走 core 下发的 `capture.screenshot()`（MAA FramePool 统一路径，已收敛不再自建 WGC）
 - YOLO 跳帧推理（每2帧推理1次，中间帧复用缓存）
 - HSV 黄色标线检测（HoughLinesP，单边选择）
 - 三区防碰撞体系（A区安全/B区警戒/C区强制）
@@ -40,7 +40,6 @@
 - 透视梯形车道分界线计算
 - 结束画面检测（商店弹窗/回合1结束模板）
 - 记录模式（读取物理手柄，CSV存盘供分析）
-- 截图经 core 下发的 capture.screenshot()（MAA FramePool 统一路径，收敛后不再自建 WGC）
 
 **核心类**：`RacingLoop(CustomAction)`
 
@@ -411,7 +410,7 @@ wall_memory：标线存在时记录靠墙状态，标线丢失+无YOLO目标时�
 | _lane_boundaries_at_y透视 | 消失点(cx,horizon)经测量点线性外推，L2c/R2c在(0.22,1.00)测量 |
 | 标线单边选择 | side_score=总长度×角度一致性，择优选一侧，只返回{side, pos} |
 | 侧区金币扣分 | 紧贴墙壁侧的金币权重扣分，鼓励往安全侧转向 |
-| 转向平滑 | alpha=0.6固定值（校准模块已删除，受干扰性太强） |
+| 转向平滑 | alpha=0.80（`_steer_alpha`）固定值（校准模块已删除，受干扰性太强） |
 | C区cum3位移过滤 | 3帧累计位移>10px才触发，防止车道1正常行驶误触 |
 | HSV阴影标线检测 | S/V下限从150降至80，可识别阴影下的暗黄色标线 |
 | 导航手柄销毁 | 进入RacingLoop前必须销毁导航手柄，避免创建第二个手柄游戏不识别 |

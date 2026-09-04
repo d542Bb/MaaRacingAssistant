@@ -67,6 +67,7 @@ class MaaRacingAssistantController:
         self._auto_exit_mra = False    # 结束后退出 MRA 程序
         self._last_run_natural = False  # 上次 start_module 是否正常跑完（非报错、非手动停止）
         self._mute_game_enabled = False  # 「运行选项」运行时静音游戏（结束恢复 100%）
+        self._wgc_capture = None  # WGC 中心采集器（单生产者，全模块读缓存；运行期存在）
 
     # ---------- 模块生命周期 ----------
 
@@ -158,6 +159,7 @@ class MaaRacingAssistantController:
         # hwnd 取 self._hwnd（二次运行复用上次句柄）或 find_game_hwnd 兜底（首次运行）。
         if self._mute_game_enabled:
             self._apply_game_volume(0.0, "运行开始：静音游戏", verify=True)
+        self._start_wgc_capture()  # WGC 中心采集器（启动失败回退 MAA 截图，不阻断）
         try:
             module.start(start_from)
             # 仅当 start 正常返回（未抛异常）才标记"自然完成"；
@@ -190,6 +192,7 @@ class MaaRacingAssistantController:
             # 正常完成/异常退出同样销毁，保持"运行期才存在手柄"的生命周期约定。
             # 此时模块主循环已退出（含停止信号中止的手柄导航），无并发使用，销毁安全。
             self._destroy_gpad()
+            self._stop_wgc_capture()  # 运行结束停止 WGC 中心采集（资源不常驻，下次运行再启动）
             # 「运行选项」运行时静音游戏：任何停止路径（正常/报错/手动）都恢复 100%
             if self._mute_game_enabled:
                 self._apply_game_volume(1.0, "运行结束：恢复游戏音量为 100%")
@@ -337,6 +340,53 @@ class MaaRacingAssistantController:
         """开启/关闭调试截图模式"""
         self._debug_mode = enabled
         self.debug.enabled = enabled
+
+    def _start_wgc_capture(self) -> None:
+        """启动 WGC 中心采集器（幂等）：全模块截图统一读缓存，不再各自 post_screencap。
+
+        失败不阻断（回退 MAA FramePool post_screencap），WARNING 提示——WGC 是
+        增强通道，MAA 兜底保证功能不缺失。
+        """
+        if not self._hwnd:
+            return
+        if self._wgc_capture is not None and self._wgc_capture.is_running:
+            return
+        # 窗口被最小化时 WGC 无帧可采（GraphicsCaptureItem 最小化无渲染内容）：
+        # 还原窗口再启动。connect 幂等短路时 resize 的还原不会重复执行，这里兜底。
+        try:
+            from maaracing_assistant.core.window_utils import ensure_window_restored
+
+            ensure_window_restored(self._hwnd)
+        except Exception:  # noqa: BLE001 —— 还原失败不阻断启动
+            pass
+        try:
+            from maaracing_assistant.core.wgcap import WgcCapture
+
+            cap = WgcCapture(self._hwnd, max_fps=60)
+            cap.start()
+            for _ in range(40):  # 等首帧（最多 2s）
+                frame, *_ = cap.get_latest()
+                if frame is not None:
+                    break
+                time.sleep(0.05)
+            else:
+                cap.stop()
+                raise RuntimeError("WGC 启动后 2 秒未收到首帧")
+            self._wgc_capture = cap
+            logger.log("WGC 中心采集器已就绪（全模块截图统一走缓存）", "INFO")
+        except Exception as e:  # noqa: BLE001 —— 启动失败回退 MAA 截图
+            self._wgc_capture = None
+            logger.log(f"WGC 中心采集启动失败（回退 MAA FramePool 截图）: {e}", "WARNING")
+
+    def _stop_wgc_capture(self) -> None:
+        """停止 WGC 中心采集器（幂等）。"""
+        cap = self._wgc_capture
+        self._wgc_capture = None
+        if cap is not None:
+            try:
+                cap.stop()
+            except Exception:
+                pass
 
     def check_model(self) -> bool:
         return self.model_path.exists()

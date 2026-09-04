@@ -136,12 +136,26 @@ class Lifecycle(Protocol):
 # ==================== Adapters（最薄包装，朝向 controller 私有接口） ====================
 
 class CaptureAdapter:
-    """把 controller._screencap 包装成 CaptureCapability。"""
+    """把 controller 的截图能力包装成 CaptureCapability。
+
+    screenshot() 路由：**WGC 中心采集器优先**（读缓存，零阻塞，全模块共享同一
+    时间线），WGC 未启动/不可用时回退 MAA FramePool（post_screencap 同步路径）。
+    所有消费者（treasure 主循环 / 导航线程 / racing / OCR）经此接口取帧，
+    无需感知后端差异。返回 RGB ndarray（WGC 侧为标准 16:9 720p 帧）。
+    """
 
     def __init__(self, app):  # app: MaaRacingAssistantController
         self._app = app
 
     def screenshot(self) -> np.ndarray | None:
+        wgc = getattr(self._app, "_wgc_capture", None)
+        if wgc is not None and wgc.is_running:
+            try:
+                rgb, _fid, _ts, _age = wgc.get_latest_rgb()
+                if rgb is not None:
+                    return rgb
+            except Exception:  # noqa: BLE001 —— WGC 读帧异常回退 MAA
+                pass
         return self._app._screencap()
 
 

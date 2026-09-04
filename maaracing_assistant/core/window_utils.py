@@ -170,12 +170,17 @@ def norm_to_screen(hwnd: int, cx: float, cy: float, client_w: int, client_h: int
 
 
 def verify_frame_client(hwnd: int, frame_w: int, frame_h: int) -> None:
-    """启动时校验「截图帧尺寸 vs 客户区物理尺寸」：不等则映射可能偏移，WARNING 提示。"""
+    """校验「截图帧尺寸 vs 客户区物理尺寸」：显著不等则映射可能偏移，WARNING 提示。
+
+    WGC 中心采集固定输出 1280x720 标准帧；客户区经 AdjustWindowRectEx 取整后可能
+    为 1281x721（±1px，映射偏移 <0.1% 可忽略）——仅在差异 ≥2px 时告警，避免每帧
+    误报刷屏（2026-09-04 WGC 中心化后适配）。
+    """
     size = window_client_size(hwnd)
     if size is None:
         return
     cw, ch = size
-    if cw != frame_w or ch != frame_h:
+    if abs(cw - frame_w) >= 2 or abs(ch - frame_h) >= 2:
         logger.log(
             f"[坐标] 截图帧尺寸({frame_w}x{frame_h}) ≠ 客户区物理尺寸({cw}x{ch})，"
             "归一化→屏幕映射可能偏移（本链路应 1:1）", "WARNING",
@@ -362,6 +367,19 @@ def check_game_window_aspect(hwnd: int, tol: float = 0.05) -> bool:
 # SWP 组合标志：保留位置与 Z 序、不激活；FRAMECHANGED 让系统重算边框
 _SWP_FRAMECHANGED = 0x0020
 _SW_RESTORE = 9
+
+
+def ensure_window_restored(hwnd: int) -> bool:
+    """窗口若处于最小化则还原（幂等）。用于 WGC 采集启动前——最小化窗口无
+    渲染内容可捕获（GraphicsCaptureItem 无帧）。"""
+    if not hwnd:
+        return False
+    try:
+        if _UD.IsIconic(hwnd):
+            return bool(_UD.ShowWindow(hwnd, _SW_RESTORE))
+        return True
+    except Exception:
+        return False
 
 
 def resize_game_window_720p(hwnd: int, client_w: int = 1280, client_h: int = 720) -> bool:

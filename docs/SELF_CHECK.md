@@ -53,7 +53,7 @@ python -m venv .venv
 
 预期：命令行前缀出现 `(.venv)`，且 `.venv\Scripts\python.exe` 存在。
 
-> **GUI 需要 venv 在 `d:\maaracing_assistant\.venv`**（预编译 shell 硬编码该路径）。仓库不在该路径时，GUI 后端可能连不上，可先用 D/E 自检确认逻辑层可用，详见 README 快速开始第 2 步的警告。
+> **GUI 自动定位 venv**：前台 `mra_shell.exe` 会从自身基目录向上定位仓库根（`pyproject.toml`）并拼接 `.venv`，**不再硬编码本机路径**，仓库可 clone 到任意磁盘位置运行。若仓库根 `.venv` 缺失，GUI 后端可能连不上，可先用 D/E 自检确认逻辑层可用，详见 README 快速开始第 2 步的警告。
 
 ### B3. 安装依赖
 
@@ -65,7 +65,7 @@ pip install -r requirements.txt
 预期：无 `ERROR`，末尾提示 requirements 已满足。抽查几项：
 
 ```bash
-pip show maafw vgamepad onnxruntime-directml rapidocr numpy ultralytics opencv-python
+pip show maafw vgamepad onnxruntime-directml rapidocr numpy opencv-python
 ```
 
 | 依赖 | 缺失时的现象 |
@@ -74,6 +74,8 @@ pip show maafw vgamepad onnxruntime-directml rapidocr numpy ultralytics opencv-p
 | `rapidocr` | 鉴宝金额识别失效 |
 | `onnxruntime-directml` | 极速狂飙 YOLO 推理不可用 |
 | `vgamepad` | 极速狂飙虚拟手柄不可用 |
+
+> `ultralytics`/`torch` 仅训练用（`pip install -e .[train]`），不属于运行时依赖，无需在此验证。
 
 ---
 
@@ -124,7 +126,7 @@ dir assets\model\model.onnx
 dotnet build apps\mra_shell\mra_shell.csproj -c Debug
 ```
 
-编译成功后，双击根目录 **`MaaRacingAssistant.lnk`**，或在命令行：
+编译成功后，双击根目录 **`MaaRacingAssistant.lnk`**（若存在，本机快捷方式，指向编译产物路径，`.gitignore` 排除），或在命令行：
 
 ```bash
 start apps\mra_shell\bin\x64\Debug\net8.0-windows10.0.19041.0\win-x64\mra_shell.exe
@@ -172,7 +174,7 @@ echo {"id":1,"method":"get_initial_state","params":{}}
 | `python -m venv` 报错 | Python 未安装 / 未加入 PATH / 是 Store 别名 | 安装 Python 3.11 并勾选「Add to PATH」 |
 | `pip install` 网络失败 | 代理 / 镜像问题 | 换国内镜像 `pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt` |
 | pytest 报 `No module named pytest` | 未装 test 依赖 | `pip install "pytest>=7.0"` |
-| GUI 版本号一直不出现 / 后端 unavailable | venv 不在 `d:\maaracing_assistant\.venv` | 见 B2 警告 | 
+| GUI 版本号一直不出现 / 后端 unavailable | 仓库根 `.venv` 缺失或不在仓库根 | 见 B2 警告 | 
 | 极速狂飙点「开始」提示模型未找到 | `assets/model/model.onnx` 缺失 | 见 C |
 | 鉴宝一直「等待」、阶段不动 | 前台校验失败或窗口未就绪 | 切游戏到前台；确认分辨率 1280×720 |
 
