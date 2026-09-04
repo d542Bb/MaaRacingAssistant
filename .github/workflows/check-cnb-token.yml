@@ -1,0 +1,35 @@
+# 临时诊断：验证 secrets.CNB_TOKEN 对 CNB OpenAPI 的权限范围（repo-release:r/rw）
+# 用法：gh workflow run check-cnb-token.yml，然后查 Actions 日志输出。
+name: Check CNB Token
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 验证 CNB_TOKEN 权限
+        env:
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+        run: |
+          set -uo pipefail
+          API="https://api.cnb.cool/MaaRacingAssistant/MAIN"
+          AUTH="Authorization: Bearer ${CNB_TOKEN}"
+
+          echo "== 1) 仓库基本信息（repo-basic-info:r）=="
+          curl -s -o /tmp/r1.json -w 'HTTP %{http_code}\n' -H "$AUTH" "${API}"
+          head -c 200 /tmp/r1.json; echo
+
+          echo "== 2) Release by tag v0.19.1（repo-release:r）=="
+          code=$(curl -s -o /tmp/r2.json -w '%{http_code}' -H "$AUTH" "${API}/-/releases/tags/v0.19.1")
+          echo "HTTP ${code}"
+          head -c 200 /tmp/r2.json; echo
+
+          echo "== 3) Release 列表（repo-release:r）=="
+          code=$(curl -s -o /tmp/r3.json -w '%{http_code}' -H "$AUTH" "${API}/-/releases?page=1&page_size=3")
+          echo "HTTP ${code}"
+          head -c 200 /tmp/r3.json; echo
+
+          echo "判定：以上若全部 200 → token 可读（r）；"
+          echo "上传资产需 repo-release:rw（创建 token 时勾选范围决定），最终以发版时 cnb-release job 实际上传为准。"
