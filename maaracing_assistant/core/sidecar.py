@@ -16,6 +16,8 @@ MRA Python sidecar —— 唯一业务后端（stdin/stdout JSONL RPC）。
 方法（JSONL RPC，供 mra_shell.exe 前端调用）：
     get_initial_state / select_module / get_status / start / stop / fetch_logs / close / shutdown
     get_debug_state / set_debug_mode / set_peep / set_capture_backend（调试页）
+    get_registry_optimizations / set_registry_optimization（启动体检：注册表权限优化中心）
+    set_optimization_prompt_ignored（按项忽略/恢复启动提醒，profile 持久化）
 
 运行：python -u -m maaracing_assistant.core.sidecar
 """
@@ -53,6 +55,111 @@ _PROFILE_FILENAME = "profile.json"
 _DEFAULT_MODULE_ID = "treasure"
 # 本程序目前持久化的模块配置键（treasure 模块）——回填时只取这些，其余忽略。
 _MODULE_CONFIG_KEYS = ("max_daily_loops", "target_session", "treasure_risk_cap", "treasure_mode")
+
+# 注册表权限优化项注册表（数据驱动：新增优化项只改这里，前后端体检/设置页自动生效）。
+# 字段语义：
+#   kind = "dword"（写 DWORD 值，单 path）| "noopenwith"（写/删 NoOpenWith REG_SZ，paths 多路径，
+#          用于屏蔽已卸载应用的协议链接弹窗）。
+#   optimized = 期望写入的"优化值"（本程序推荐态）；default = 系统默认值（值缺失时按此判定）。
+#   options/apply_label/restore_label = 前端展示文案（不同 kind 的可选值语义不同，由后端下发）。
+#   needs_admin = 写入是否需要管理员（HKLM 项）；发布版 sidecar 经 mra_shell UAC 提权可写，
+#   开发模式非管理员终端写入会失败并返回明确错误。
+_REGISTRY_OPTIMIZATIONS = (
+    {
+        "id": "gamedvr_appcapture",
+        "kind": "dword",
+        "name": "Xbox 后台捕获（ms-gamebar 弹窗）",
+        "effect": "关闭 Xbox Game Bar 后台捕获，杜绝游戏启动时 ms-gamebar 窗口抢焦点",
+        "hive": "HKCU",
+        "path": r"SOFTWARE\Microsoft\Windows\CurrentVersion\GameDVR",
+        "value_name": "AppCaptureEnabled",
+        "optimized": 0,
+        "default": 1,
+        "needs_admin": False,
+        "options": {"0": "关闭（推荐）", "1": "开启（系统默认）"},
+        "apply_label": "优化（写 0）",
+        "restore_label": "恢复系统默认（写 1）",
+        "detail": "写 0 后 Game Bar 后台录制停用；Win+G 手动打开不受影响；不涉及 Xbox 服务。",
+    },
+    {
+        "id": "controller_nav",
+        "kind": "dword",
+        "name": "手柄 UI 导航（打字弹手柄虚拟键盘）",
+        "effect": "关闭 Windows「手柄→界面按键」映射，杜绝文本框聚焦时自动弹手柄虚拟键盘",
+        "hive": "HKLM",
+        "path": r"SOFTWARE\Microsoft\Input\Settings\ControllerProcessor\ControllerToVKMapping",
+        "value_name": "Enabled",
+        "optimized": 0,
+        "default": 1,
+        "needs_admin": True,
+        "options": {"0": "关闭（推荐）", "1": "开启（系统默认）"},
+        "apply_label": "优化（写 0）",
+        "restore_label": "恢复系统默认（写 1）",
+        "detail": "写 0 后开始菜单/任务栏等 Windows 界面不再响应手柄导航；游戏内手柄操作不受影响；"
+                  "想恢复手柄操作 Windows 可改回 1。",
+    },
+    {
+        "id": "msgamebar_protocol",
+        "kind": "noopenwith",
+        "name": "ms-gamebar 协议弹窗（获取应用对话框）",
+        "effect": "屏蔽已卸载的 Xbox Game Bar 协议链接，杜绝游戏启动时弹『获取打开此 ms-gamebar 链接的应用』",
+        "hive": "HKCU",
+        "path": r"Software\Classes\ms-gamebar",
+        "paths": (
+            r"Software\Classes\ms-gamebar",
+            r"Software\Classes\ms-gamebarservices",
+        ),
+        "value_name": "NoOpenWith",
+        "optimized": 0,
+        "default": 1,
+        "needs_admin": False,
+        "options": {"0": "屏蔽弹窗（推荐）", "1": "恢复系统默认"},
+        "apply_label": "屏蔽弹窗",
+        "restore_label": "恢复默认（会弹窗）",
+        "detail": "本机 Xbox Game Bar 已卸载但协议注册残留，游戏/系统仍尝试打开该链接。"
+                  "写入 NoOpenWith 后系统静默忽略不再弹窗；重新安装 Game Bar 后可恢复默认。",
+    },
+)
+
+
+def _read_reg_dword(hive: str, path: str, value_name: str):
+    """读注册表 DWORD 值；键/值缺失返回 None，其他 OSError 抛给调用方处理。"""
+    try:
+        import winreg
+    except ImportError:
+        return None  # 非 Windows：调用方按"无优化项"处理
+    h = winreg.HKEY_CURRENT_USER if hive == "HKCU" else winreg.HKEY_LOCAL_MACHINE
+    try:
+        with winreg.OpenKey(h, path) as key:
+            value, _vtype = winreg.QueryValueEx(key, value_name)
+    except FileNotFoundError:
+        return None
+    return value
+
+
+def _reg_value_exists(hive: str, path: str, value_name: str) -> bool:
+    """检查注册表值是否存在（用于 NoOpenWith 等空 REG_SZ 标记值）。"""
+    try:
+        import winreg
+    except ImportError:
+        return False
+    h = winreg.HKEY_CURRENT_USER if hive == "HKCU" else winreg.HKEY_LOCAL_MACHINE
+    try:
+        with winreg.OpenKey(h, path) as key:
+            winreg.QueryValueEx(key, value_name)
+    except (FileNotFoundError, OSError):
+        return False
+    return True
+
+
+def _get_ignored_prompt_ids() -> list:
+    """已忽略启动提醒的优化项 id 列表（profile 持久化）。按项忽略：新增优化项不受影响。"""
+    ids = _load_profile().get("ignored_optimization_prompts")
+    return [i for i in ids if isinstance(i, str)] if isinstance(ids, list) else []
+
+
+def _set_ignored_prompt_ids(ids: list) -> None:
+    _save_profile({"ignored_optimization_prompts": ids})
 
 
 def _profile_path() -> Path:
@@ -471,6 +578,126 @@ class SidecarService:
             return (True, {"path": str(path)}, None)
         except Exception as exc:  # noqa: BLE001
             return (False, None, f"打开文件夹失败: {exc}")
+
+    def get_registry_optimizations(self, params):
+        """读取全部注册表优化项的当前状态（启动体检 + 设置页优化中心共用）。
+
+        判定：值缺失按 default（系统默认）判定 —— default 非 0 即视为未优化，
+        与"Windows 默认行为 = 功能开启"的语义一致（写入一次后值恒存在，不再打扰）。
+        非 Windows 平台返回空列表，前端静默跳过。
+        """
+        items = []
+        ignored_ids = set(_get_ignored_prompt_ids())
+        for opt in _REGISTRY_OPTIMIZATIONS:
+            if opt.get("kind") == "noopenwith":
+                # NoOpenWith 标记型：全部路径存在标记 = 已优化；current 归一化为 0/1 供前端展示
+                all_present = all(
+                    _reg_value_exists(opt["hive"], p, opt["value_name"]) for p in opt["paths"]
+                )
+                current = 0 if all_present else 1
+                optimized = all_present
+            else:  # dword
+                current = _read_reg_dword(opt["hive"], opt["path"], opt["value_name"])
+                effective = opt["default"] if current is None else current
+                optimized = effective == opt["optimized"]
+            items.append({
+                "id": opt["id"],
+                "kind": opt["kind"],
+                "name": opt["name"],
+                "effect": opt["effect"],
+                "hive": opt["hive"],
+                "path": opt["path"],
+                "paths": list(opt.get("paths", (opt["path"],))),
+                "value_name": opt["value_name"],
+                "current": current,
+                "optimized": optimized,
+                "default": opt["default"],
+                "optimized_value": opt["optimized"],
+                "needs_admin": opt["needs_admin"],
+                "detail": opt["detail"],
+                "options": opt["options"],
+                "apply_label": opt["apply_label"],
+                "restore_label": opt["restore_label"],
+                "prompt_ignored": opt["id"] in ignored_ids,
+            })
+        return (True, {"items": items}, None)
+
+    def set_optimization_prompt_ignored(self, params):
+        """忽略/恢复某优化项的启动提醒（按项持久化到 profile）。
+
+        只影响启动体检弹窗；权限优化中心仍可见可手动操作——新增优化项 id
+        不在忽略列表，照常提醒（用户顾虑：全局忽略会误伤未来新增项，故按项记录）。
+        """
+        opt_id = params.get("id")
+        ignored = bool(params.get("ignored"))
+        if not any(o["id"] == opt_id for o in _REGISTRY_OPTIMIZATIONS):
+            return (False, None, f"未知优化项: {opt_id}")
+        ids = [i for i in _get_ignored_prompt_ids() if i != opt_id]
+        if ignored:
+            ids.append(opt_id)
+        _set_ignored_prompt_ids(ids)
+        logger.log(f"优化项 {opt_id} 启动提醒{'已忽略' if ignored else '已恢复'}", "DEBUG")
+        return (True, {"id": opt_id, "ignored": ignored}, None)
+
+    def set_registry_optimization(self, params):
+        """写入指定优化项的注册表值（id + value），写后回读确认。
+
+        HKLM 项需要管理员权限：发布版 sidecar 经 mra_shell UAC 提权可写；
+        开发模式非管理员终端会收到带指引的明确错误。
+        """
+        import winreg
+
+        opt_id = params.get("id")
+        value = params.get("value")
+        opt = next((o for o in _REGISTRY_OPTIMIZATIONS if o["id"] == opt_id), None)
+        if opt is None:
+            return (False, None, f"未知优化项: {opt_id}")
+        if not isinstance(value, int):
+            return (False, None, f"value 必须为整数，收到: {value!r}")
+        hive = winreg.HKEY_CURRENT_USER if opt["hive"] == "HKCU" else winreg.HKEY_LOCAL_MACHINE
+        if opt.get("kind") == "noopenwith":
+            # 标记型：0 = 在全部路径写 NoOpenWith（屏蔽）；1 = 删除标记（恢复默认弹窗）
+            try:
+                for path in opt["paths"]:
+                    with winreg.CreateKey(hive, path) as key:
+                        if value == 0:
+                            winreg.SetValueEx(key, opt["value_name"], 0, winreg.REG_SZ, "")
+                        else:
+                            try:
+                                winreg.DeleteValue(key, opt["value_name"])
+                            except FileNotFoundError:
+                                pass  # 已不存在 = 目标状态，幂等
+            except OSError as exc:
+                logger.log(f"[sidecar] 优化项 {opt_id} 写入失败: {exc!r}", "WARNING")
+                return (False, None, f"写入注册表失败: {exc}")
+            if value == 0:
+                confirmed = all(
+                    _reg_value_exists(opt["hive"], p, opt["value_name"]) for p in opt["paths"]
+                )
+            else:
+                confirmed = not any(
+                    _reg_value_exists(opt["hive"], p, opt["value_name"]) for p in opt["paths"]
+                )
+            if not confirmed:
+                return (False, None, f"写入后回读异常（{opt['value_name']} 未达目标状态）")
+            state = "已优化" if value == opt["optimized"] else "已恢复系统默认"
+            logger.log(f"注册表优化项 {opt_id} {state}（{opt['value_name']}={value}）", "INFO")
+            return (True, {"id": opt_id, "value": value, "optimized": value == opt["optimized"]}, None)
+        # dword 型：CreateKey 补建 + 写值 + 回读确认
+        try:
+            with winreg.CreateKey(hive, opt["path"]) as key:
+                winreg.SetValueEx(key, opt["value_name"], 0, winreg.REG_DWORD, value)
+                confirm, _vtype = winreg.QueryValueEx(key, opt["value_name"])
+        except OSError as exc:
+            logger.log(f"[sidecar] 优化项 {opt_id} 写入失败: {exc!r}", "WARNING")
+            if opt["needs_admin"] and getattr(exc, "winerror", None) == 5:
+                return (False, None, "该项位于 HKLM，需要管理员权限（请以管理员身份运行程序后重试）")
+            return (False, None, f"写入注册表失败: {exc}")
+        if confirm != value:
+            return (False, None, f"写入后回读异常（{opt['value_name']}={confirm}）")
+        state = "已优化" if value == opt["optimized"] else "已恢复系统默认"
+        logger.log(f"注册表优化项 {opt_id} {state}（{opt['value_name']}={value}）", "INFO")
+        return (True, {"id": opt_id, "value": value, "optimized": value == opt["optimized"]}, None)
 
     # ---------- 关于页：检查更新 / 公告 ----------
 

@@ -73,13 +73,15 @@
     card.style.cssText =
       'background:var(--mra-surface,#1c1f26);border:1px solid var(--mra-border,#2a2f3a);' +
       'border-radius:12px;padding:22px 24px;max-width:' + (opts.maxWidth || 420) + 'px;width:92%;' +
-      'box-shadow:0 12px 40px rgba(0,0,0,0.4);';
+      'box-shadow:0 12px 40px rgba(0,0,0,0.4);display:flex;flex-direction:column;max-height:86vh;';
     const h3 = document.createElement('h3');
-    h3.style.cssText = 'margin:0 0 10px;font-size:15px;color:' +
+    h3.style.cssText = 'margin:0 0 10px;font-size:15px;flex-shrink:0;color:' +
       (opts.titleColor || 'var(--mra-foreground,#e5e7eb)') + ';';
     h3.textContent = opts.title || '';
     card.appendChild(h3);
     const body = document.createElement('div');
+    // 内容区滚动：标题/按钮固定，超出 86vh 只滚 body；长串（注册表路径等）强制断行防溢出
+    body.style.cssText = 'overflow-y:auto;min-height:0;word-break:break-word;';
     body.innerHTML = opts.bodyHtml || '';
     card.appendChild(body);
     const modal = {
@@ -94,7 +96,7 @@
     };
     if (Array.isArray(opts.buttons) && opts.buttons.length) {
       const row = document.createElement('div');
-      row.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;align-items:center;margin-top:14px;';
+      row.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;align-items:center;margin-top:14px;flex-shrink:0;';
       opts.buttons.forEach((b) => {
         let el;
         if (b.asLink) {
@@ -161,6 +163,168 @@
       ],
     });
     void detailMsg;
+  }
+
+  // ---------- 注册表权限优化（启动体检 + 设置页优化中心） ----------
+  // 渲染单个优化项卡片（优化中心用）：名称/状态徽章/性质/值/可选值/路径与后果（灰字）
+  // 可选值与按钮文案由后端下发（dword/noopenwith 两种 kind 的语义不同）
+  function optimizerItemHtml(it) {
+    const badge = it.optimized
+      ? '<span style="font-size:12px;color:#22c55e;white-space:nowrap;">已优化 ✓</span>'
+      : '<span style="font-size:12px;color:#f59e0b;white-space:nowrap;">未优化</span>';
+    const ignoredMark = it.prompt_ignored
+      ? '<span style="font-size:11px;color:var(--mra-foreground-secondary,#8b93a3);white-space:nowrap;">启动提醒已忽略</span>'
+      : '';
+    const optsText = it.options
+      ? Object.keys(it.options).map((k) => k + ' = ' + it.options[k]).join(' · ')
+      : '';
+    const currentTxt = (it.current === null || it.current === undefined)
+      ? '未设置（系统默认）'
+      : (it.options && it.options[String(it.current)]
+          ? it.options[String(it.current)] + '（值 ' + it.current + '）'
+          : String(it.current));
+    const pathLines = (it.paths && it.paths.length ? it.paths : [it.path])
+      .map((p) => it.hive + '\\' + p + '\\' + it.value_name)
+      .join('<br>');
+    return '<div style="border:1px solid var(--mra-border,#2a2f3a);border-radius:10px;padding:12px 14px;margin-bottom:12px;">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px;">'
+      + '<b style="font-size:13px;color:var(--mra-foreground,#e5e7eb)">' + it.name + '</b>'
+      + '<span style="display:flex;gap:10px;align-items:center;flex-shrink:0;">' + badge + ignoredMark + '</span></div>'
+      + '<p style="margin:0 0 8px;font-size:12px;line-height:1.6;color:var(--mra-foreground,#e5e7eb);word-break:break-word;">' + it.effect + '</p>'
+      + '<p style="margin:0 0 3px;font-size:11px;line-height:1.6;color:var(--mra-foreground-secondary,#8b93a3);word-break:break-word;">'
+      + '值：<b>' + it.value_name + '</b>　可选值：' + optsText + '　当前：' + currentTxt + '</p>'
+      + '<p style="margin:0 0 3px;font-size:11px;line-height:1.6;color:var(--mra-foreground-secondary,#8b93a3);word-break:break-all;">'
+      + pathLines + '</p>'
+      + '<p style="margin:0 0 10px;font-size:11px;line-height:1.6;color:var(--mra-foreground-secondary,#8b93a3);word-break:break-word;">'
+      + '后果：' + it.detail + '</p>'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">'
+      + (it.optimized ? '' : '<button class="opt-apply" data-id="' + it.id + '" style="cursor:pointer;border:none;'
+        + 'border-radius:8px;font-size:12px;padding:6px 14px;background:var(--mra-primary,#2563eb);color:#fff;">'
+        + (it.apply_label || '优化（写 0）') + '</button>')
+      + '<button class="opt-restore" data-id="' + it.id + '" style="cursor:pointer;border-radius:8px;font-size:12px;'
+        + 'padding:6px 14px;border:1px solid var(--mra-border,#2a2f3a);background:transparent;'
+        + 'color:var(--mra-foreground-secondary,#8b93a3);">' + (it.restore_label || '恢复系统默认（写 1）') + '</button>'
+      + (it.prompt_ignored ? '<button class="opt-unignore" data-id="' + it.id + '" style="cursor:pointer;border-radius:8px;'
+        + 'font-size:12px;padding:6px 14px;border:1px solid var(--mra-border,#2a2f3a);background:transparent;'
+        + 'color:var(--mra-foreground-secondary,#8b93a3);">恢复启动提醒</button>' : '')
+      + '</div></div>';
+  }
+
+  // 写入单个优化项，返回错误信息（null = 成功）
+  async function applyOptimization(id, value) {
+    try {
+      await mra.call('set_registry_optimization', { id: id, value: value });
+      return null;
+    } catch (e) {
+      return e.message;
+    }
+  }
+
+  // 设置单个优化项的启动提醒忽略状态（true=忽略，false=恢复），返回错误信息
+  async function applyPromptIgnore(id, ignored) {
+    try {
+      await mra.call('set_optimization_prompt_ignored', { id: id, ignored: ignored });
+      return null;
+    } catch (e) {
+      return e.message;
+    }
+  }
+
+  // 权限优化中心（设置页入口）：列出全部优化项，可单项优化/恢复系统默认
+  async function openOptimizerCenter() {
+    let items;
+    try {
+      const d = await mra.call('get_registry_optimizations');
+      items = d.items || [];
+    } catch (e) {
+      showError('读取优化项失败: ' + e.message);
+      return;
+    }
+    if (!items.length) {
+      showError('当前系统没有可用的注册表优化项');
+      return;
+    }
+    const modal = openModal({
+      title: '权限优化中心',
+      bodyHtml: '<div id="opt-center-list"></div>',
+      buttons: [{ text: '关闭', primary: true, onClick: (m) => m.close() }],
+    });
+    const listEl = modal.card.querySelector('#opt-center-list');
+    async function refresh() {
+      try {
+        const d = await mra.call('get_registry_optimizations');
+        listEl.innerHTML = (d.items || []).map(optimizerItemHtml).join('');
+      } catch (e) {
+        listEl.innerHTML = '<p style="margin:0;font-size:12px;color:var(--mra-danger,#ef4444)">刷新失败: ' + e.message + '</p>';
+      }
+    }
+    listEl.addEventListener('click', async (ev) => {
+      const applyBtn = ev.target.closest('.opt-apply');
+      const restoreBtn = ev.target.closest('.opt-restore');
+      const unignoreBtn = ev.target.closest('.opt-unignore');
+      const btn = applyBtn || restoreBtn || unignoreBtn;
+      if (!btn) return;
+      btn.disabled = true;
+      let err;
+      if (applyBtn) err = await applyOptimization(applyBtn.dataset.id, 0);
+      else if (restoreBtn) err = await applyOptimization(restoreBtn.dataset.id, 1);
+      else err = await applyPromptIgnore(unignoreBtn.dataset.id, false);
+      if (err) showError(err);
+      await refresh(); // 无论成败都刷新（失败项状态不变，按钮随重渲染恢复可用）
+    });
+    refresh();
+  }
+
+  // 启动体检：存在未优化且未忽略的项则弹一键优化引导（按项忽略，新增优化项不受影响）
+  async function checkRegistryOptimizations() {
+    let pending;
+    try {
+      const d = await mra.call('get_registry_optimizations');
+      pending = (d.items || []).filter((it) => !it.optimized && !it.prompt_ignored);
+    } catch (e) {
+      console.error('权限体检失败:', e);
+      return;
+    }
+    if (!pending.length) return;
+    openModal({
+      title: '检测到 ' + pending.length + ' 项系统权限可优化',
+      titleColor: 'var(--mra-warning,#f59e0b)',
+      bodyHtml: pending.map((it) =>
+        '<p style="margin:0 0 8px;font-size:13px;line-height:1.6;color:var(--mra-foreground,#e5e7eb);">'
+        + '<b>' + it.name + '</b>：' + it.effect + '</p>').join('')
+        + '<p style="margin:0;font-size:12px;line-height:1.6;color:var(--mra-foreground-secondary,#8b93a3);">'
+        + '详情与手动调整见 设置 → 权限优化。</p>',
+      buttons: [
+        {
+          text: '一键优化（推荐）', primary: true,
+          onClick: async (modal) => {
+            const fails = [];
+            for (const it of pending) {
+              const err = await applyOptimization(it.id, it.optimized_value);
+              if (err) fails.push(it.name + '：' + err);
+            }
+            if (fails.length) showError('部分优化失败：' + fails.join('；'));
+            else showError('已完成 ' + pending.length + ' 项权限优化');
+            modal.close();
+          }
+        },
+        {
+          // 按项忽略（持久化 profile）：这些项不再弹启动提醒；以后新增的优化项照常提醒
+          text: '下次不再提醒',
+          onClick: async (modal) => {
+            const fails = [];
+            for (const it of pending) {
+              const err = await applyPromptIgnore(it.id, true);
+              if (err) fails.push(it.name + '：' + err);
+            }
+            if (fails.length) showError('部分忽略失败：' + fails.join('；'));
+            else showError('已忽略启动提醒，可随时在 设置 → 权限优化 中心重新开启');
+            modal.close();
+          }
+        },
+        { text: '暂不', onClick: (modal) => modal.close() },
+      ],
+    });
   }
 
   // ---------- Tab 切换 ----------
@@ -497,6 +661,7 @@
       console.error(e);
       showError('初始化失败: ' + e.message);
     }
+    checkRegistryOptimizations(); // 注册表权限体检（独立于初始化成败，内部自捕获异常）
     setTimeout(pollStatus, 250);
     setTimeout(pollLogs, 300);
     setInterval(pollTodayBoard, 3000); // 今日看板（仅数据页可见时刷新）
@@ -1430,6 +1595,17 @@
             </div>
           </div>
         </div>
+
+        <!-- 权限优化 -->
+        <div class="card">
+          <div class="card-head"><h3>权限优化</h3></div>
+          <div class="card-body">
+            <p class="capture-note" style="margin:0 0 12px;">体检并修复 Windows 层面对自动化运行的干扰（ms-gamebar 弹窗、打字时弹手柄虚拟键盘等）；每项均可单独优化或恢复系统默认，附值路径与后果说明</p>
+            <button class="mra-tool-btn" id="btn-optimizer" style="width:100%;justify-content:center;">
+              <span class="mra-tool-btn-label">打开权限优化中心</span>
+            </button>
+          </div>
+        </div>
       </div>`;
   }
 
@@ -1459,6 +1635,10 @@
 
   // 绑定当前模块卡片上的控件事件（渲染后调用；旧节点随 innerHTML 替换一并销毁，无重复绑定）
   function bindModulePages(moduleId) {
+    // 权限优化中心入口（设置页重渲染后按钮重建，须在此重绑；置于卫语句前防提前 return 漏绑）
+    const btnOptimizer = document.getElementById('btn-optimizer');
+    if (btnOptimizer) btnOptimizer.addEventListener('click', () => { openOptimizerCenter(); });
+
     const p = (suffix) => $(moduleId + '-' + suffix);
     const tDebug = p('toggle-debug');
     const tEstop = p('toggle-estop');

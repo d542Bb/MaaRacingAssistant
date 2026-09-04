@@ -4,6 +4,18 @@
 
 ## 2026-09-04
 
+### v0.21.0-dev.1 注册表权限优化中心 + 启动体检 + ms-gamebar 协议弹窗修复 🔧
+- **版本号：** `v0.21.0-dev.1`（预发布；基于 v0.20.0-dev.2 新开 minor 系列）
+- **注册表权限优化中心（设置页新增入口）：** 数据驱动的优化项注册表 `_REGISTRY_OPTIMIZATIONS`，新增泛化 RPC `get_registry_optimizations` / `set_registry_optimization`；设置页右侧新增「权限优化」卡片 → 打开优化中心弹窗，每项展示状态徽章/影响性质/值名/可选值/完整注册表路径与后果（灰字），可单独优化或恢复系统默认，操作后自动刷新状态
+- **三项优化项：** ① Xbox GameDVR 后台捕获（`AppCaptureEnabled`，杜绝 ms-gamebar 抢焦点）；② 手柄 UI 导航（`ControllerToVKMapping\Enabled`，杜绝打字弹手柄虚拟键盘）；③ ms-gamebar 协议弹窗（写 `NoOpenWith` 屏蔽「获取打开此链接的应用」对话框，支持多路径标记值 kind）
+- **启动体检弹窗：** 启动时检测未优化且未忽略项并弹一键优化引导；新增「下次不再提醒」按项忽略（持久化 profile `ignored_optimization_prompts`，未来新增优化项不受影响），忽略项可在优化中心「恢复启动提醒」
+- **优化项类型体系：** 区分 `dword`（写数值）与 `noopenwith`（写/删 `NoOpenWith` 标记值，多路径）；可选值与按钮文案由后端下发，前端不硬编码语义
+- **UI 通用修复：** `openModal` 组件升级支持弹窗内容滚动（卡片限高 86vh，标题/按钮固定，长内容只滚内容区）+ 长串强制断行（注册表路径 `break-all` 防溢出）
+- **本机已修复：** 三项优化均已生效（GameDVR=0、ControllerToVKMapping=0、ms-gamebar 协议 NoOpenWith 写入并回读确认）
+- **RPC 实测：** `py_compile` / `node --check` 通过；`get`/`set`/忽略链路（写→新进程读→恢复）JSONL 全流程验证通过，本机无测试残留
+
+## 2026-09-04
+
 ### v0.20.0-dev.2 发行包体积优化：618 → 499 MB（-19.3%）📦
 - **版本号：** `v0.20.0-dev.2`（预发布；基于 v0.20.0-dev.1，11 轮单变量实验 + Runtime Closure Auditor 双工具）
 - **10 项 SAFE 裁剪正式入 release pipeline（assemble.ps1 `-Configuration Release` 默认全启用）：** ① WinAppSDK AI/ML 死链 -43.65MB（exp1）；② Widgets 死链 -2.49MB（exp2）；③ Python ORT `capi\onnxruntime.dll` -20.13MB（exp3，pyd 自带 ORT 引擎）；④ PIL `_avif` native ext -7.52MB（exp4A，惰性零路径）；⑤ .NET crash diagnostics（createdump/mscordaccore/DiaSymReader）-4.73MB（exp4B，**SAFE FOR NORMAL OPERATION**：降低崩溃转储/SOS 能力，保留 mscordbi）；⑥ NumPy dev/build 目录 -1.87MB（exp5A，不 patch numpy 源码）；⑦ 全部 `.pyi` typing stubs -1.13MB（exp5B-1，267 个）；⑧ console wrappers `packages\bin\*.exe` -0.83MB（exp5E-1，8 个 pip wrapper，f2py.exe 为孤儿）；⑨ SymPy -25.37MB（exp6，**SAFE FOR CURRENT MRA**：仅 ORT 离线 symbolic_shape_infer/transformers 工具需要，全链 360 模块 trace 证实运行零加载）；⑩ MaaAgentBinary -12.53MB（exp7，**SAFE FOR CURRENT MRA**：Android/ADB 代理二进制，MRA 仅用 Win32Controller）
