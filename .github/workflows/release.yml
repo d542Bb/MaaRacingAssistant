@@ -137,43 +137,10 @@ jobs:
           draft: false
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
 
-      # 版本标记文件（docs/latest_release.json）：随 Release 生成并回写 master。
-      # CNB（cnb.cool）镜像仓库只做 git 同步（mirror-to-cnb.yml），无发布包与匿名
-      # releases API；程序「检测更新」从 CNB raw 读取本文件（CNB 优先，GitHub raw
-      # 与 GitHub API 兜底），实现「开发只看 GitHub、更新走 CNB 镜像」。
-      # 回写 master 会触发 mirror-to-cnb 把标记文件同步到 CNB（concurrency 串行化防竞态）。
-      - name: 更新版本标记文件并回写 master
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const path = 'docs/latest_release.json';
-            const ver = '${{ steps.version.outputs.version }}';
-            const published = new Date().toISOString().slice(0, 10);
-            // download_url 指向 CNB releases 页（cnb-release job 会把 zip 资产同步过去，
-            // 国内用户点「前往下载」直达 CNB 快速下载；GitHub Release 仍是构建信源）
-            const mark = JSON.stringify({
-              tag: '${{ steps.version.outputs.tag }}',
-              version: ver,
-              published_at: published,
-              download_url: 'https://cnb.cool/MaaRacingAssistant/MAIN/-/releases',
-            }, null, 2) + '\n';
-
-            const { data: current } = await github.rest.repos.getContent({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              path,
-            }).catch(() => null);
-
-            await github.rest.repos.createOrUpdateFileContents({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              path,
-              message: `chore(release): 更新版本标记到 ${ver}`,
-              content: Buffer.from(mark).toString('base64'),
-              sha: current ? current.sha : undefined,
-            });
-            console.log(`latest_release.json 已更新到 ${ver} 并回写 master`);
+      # 版本标记文件（docs/latest_release.json）不由 CI 回写：master 受分支保护
+      # （PR + status checks），GITHUB_TOKEN 直推必 409。改由发版提交预先携带更新
+      # 后的标记文件（与 tag 同 commit，mirror-to-cnb.yml 随 git 镜像同步到 CNB；
+      # 程序「检测更新」从 CNB raw 优先读取，GitHub raw 与 GitHub API 兜底）。
 
   # 解压即用的 Windows 可执行包：embedded Python3.11 runtime + 预装依赖 + dotnet publish GUI，
   # 组装成 MaaRacingAssistant-<ver>-win-x64.zip 并补传同一 Release（见 build/release/assemble.ps1）。
