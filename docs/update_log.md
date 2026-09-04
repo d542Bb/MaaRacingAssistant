@@ -2,6 +2,20 @@
 
 > 按时间顺序记录每次重大修改。
 
+## 2026-09-04
+
+### v0.20.0-dev.1 架构底座重构 + 截图/导航线程化 + CNB 双源分发 🚀
+- **版本号：** `v0.20.0-dev.1`（预发布；基于 v0.19.1 新开 minor 系列，累计 24 项提交）
+- **架构底座重构（不拥有策略的通用能力层）：** ① ROI 统一配置底座（`ROIConfig` + 坐标契约 + schema 校验）；② `StageTracker` 阶段记录器/校验器（断点换算收敛，racing 观测等价迁移）；③ `RenderPlan` + `LayerRegistry` 渲染计划底座（能力选择器 + 通用调度）；④ DebugIO worker 底座 + `FrameSource`/`DebugSink` 接口；⑤ DebugStudio 通用 server + 领域 adapter 注册端点（整合旧 treasure studio，会话路径与 `%APPDATA%` 对齐）
+- **截图 WGC 中心化（根治多线程争抢截图通道）：** `core/wgcap.py` 重写为单生产者/多消费者中心采集——Windows Graphics Capture 独立于 MAA FramePool，60fps 上限节流，DWM 客户区精确裁剪（渲染链判定：帧尺寸≈DWM 边界→裁剪窗口装饰链，否则独立交换链整帧即内容），`get_latest_rgb()` 惰性 720p 标准帧缓存；实测 35fps、单次读取 17-27µs、多线程并发读取零争抢；`CaptureAdapter.screenshot` 路由 WGC 优先 + MAA 兜底，controller 生命周期托管（失败回退不阻断）
+- **手柄导航线程化（根治导航阻塞吃识别窗口）：** `GamepadClicker` 常驻导航线程 + 任务/结果单槽（submit/consume_result/is_busy/nav_progress/cancel/swap_gpad/shutdown），五项并发契约（结果不可覆盖、busy 含 DONE 态、快照发布、Event 取消、设备重建先退出 worker）；treasure 主循环改异步点击协议（consume → decision → submit，click > shoo 优先级），光标驻留看守异步化（避让识别冷却缩至 1 帧）
+- **点击/避让体验修复：** 拨号盘误避让根因修复（`_active_stage_rois` 按出价阶段收窄守卫激活集，bidding 期仅激活出价按钮）；按钮/超大选框统一按框 70% 容差停靠；PEEP 叠加层显示置信度与五个次选候选（选中绿/未选中黄）
+- **CNB（cnb.cool）双源分发体系：** ① GitHub → CNB git 镜像 workflow（concurrency 串行化防发版竞态）；② 程序检测更新/公告改 CNB raw 优先 + GitHub 兜底（`docs/latest_release.json` 版本标记由 release CI 自动生成回写 master 随镜像同步）；③ CNB Release 资产同步 job（CNB 无 Windows 构建节点，GitHub 构建 zip 后经 CNB OpenAPI 三步上传：预签名 URL → PUT → verify），国内用户下载直链匿名可达；④ 修复 CNB API GET 调用缺 `Accept: application/json` 必 406 的隐患
+- **Python 版本统一 3.11：** pyproject / README / CONTRIBUTING / SELF_CHECK / CODE_WIKI / CI 矩阵统一 3.11（与发布链路 embedded 3.11 对齐，消除 3.9/3.10/3.13 混杂）；CI 测试补装 numpy/opencv-headless 修复 collect 失败
+- **用户数据目录规范化：** 五目录结构（logs/treasure/profile 等）统一 `%APPDATA%/MaaRacingAssistant`，DebugStudio 会话路径对齐
+- **racing/treasure 手柄收敛：** 两插件私有手柄/截图逻辑收敛到 core 能力层，消除第二设备冲突
+- **质量门禁：** `pytest` 178 passed（本地 venv Python 3.11.9）
+
 ## 2026-08-31
 
 ### v0.19.1 全面 debug 与冗余剔除（Python 3.9 兼容 + 三处真 bug）🔧
