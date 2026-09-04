@@ -6,6 +6,12 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# 串行化：发版时序（release.yml 回写 master + tag push）会连续触发本流水线，
+# git push --mirror 若并发会互相覆盖/竞态——同一时刻只允许一个同步在跑。
+concurrency:
+  group: cnb-sync
+  cancel-in-progress: false
+
 jobs:
   mirror:
     runs-on: ubuntu-latest

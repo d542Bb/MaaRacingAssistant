@@ -475,8 +475,18 @@ class SidecarService:
     # ---------- 关于页：检查更新 / 公告 ----------
 
     _GITHUB_REPO = "d542Bb/MaaRacingAssistant"
-    _RELEASE_URL = f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest"
+    # CNB 镜像仓库（cnb.cool/MaaRacingAssistant/MAIN）：只做 git 同步（mirror-to-cnb.yml），
+    # 无发布包与匿名 releases API。「检测更新」改读版本标记文件 docs/latest_release.json
+    # （release.yml 打 tag 时自动生成并回写 master，镜像随之同步）——CNB 优先（国内快），
+    # GitHub raw / GitHub API 兜底。公告同理 CNB raw 优先。
+    _CNB_RAW_BASE = "https://cnb.cool/MaaRacingAssistant/MAIN/-/git/raw/master"
+    _RELEASE_URLS = (
+        f"{_CNB_RAW_BASE}/docs/latest_release.json",
+        f"https://raw.githubusercontent.com/{_GITHUB_REPO}/master/docs/latest_release.json",
+        f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest",
+    )
     _ANNOUNCEMENT_URLS = (
+        f"{_CNB_RAW_BASE}/docs/announcement.json",
         f"https://raw.githubusercontent.com/{_GITHUB_REPO}/master/docs/announcement.json",
         f"https://cdn.jsdelivr.net/gh/{_GITHUB_REPO}@master/docs/announcement.json",
     )
@@ -490,19 +500,38 @@ class SidecarService:
             return resp.read().decode("utf-8")
 
     def check_update(self, params):
-        """查最新 release 与当前版本比较。仅手动触发（GUI 按钮）。"""
-        try:
-            body = self._http_get(self._RELEASE_URL)
-        except HTTPError as exc:
-            return (True, {"has_update": False, "error": None, "status": "no_release" if exc.code == 404 else "network"}, None)
-        except (URLError, TimeoutError, OSError):
-            return (True, {"has_update": False, "error": "无法连接到更新服务器，请稍后再试", "status": "network"}, None)
-        try:
-            rel = json.loads(body)
-            latest = str(rel.get("tag_name", "")).lstrip("v")
-            published = rel.get("published_at", "")[:10]
-        except (ValueError, TypeError):
-            return (True, {"has_update": False, "error": "更新服务器返回异常数据", "status": "parse"}, None)
+        """查最新版本与当前版本比较。仅手动触发（GUI 按钮）。
+
+        多源顺序（CNB 优先，2026-09-04）：CNB raw 版本标记 → GitHub raw 版本标记 →
+        GitHub API releases/latest。前两者读 release.yml 生成的 docs/latest_release.json
+        （{tag, version, published_at, download_url}）；最后回退官方 API 原生字段。
+        """
+        latest: str | None = None
+        published = ""
+        download_url = ""
+        for url in self._RELEASE_URLS:
+            try:
+                body = self._http_get(url)
+                rel = json.loads(body)
+            except HTTPError as exc:
+                if exc.code == 404 and url.startswith("https://api.github.com"):
+                    # 仅 GitHub 官方 API 的 404 权威判定「仓库无 release」；CNB raw 404
+                    # 只说明标记文件尚未生成（发版前），继续尝试后续源。
+                    return (True, {"has_update": False, "error": None, "status": "no_release"}, None)
+                continue
+            except (URLError, TimeoutError, OSError, ValueError, TypeError):
+                continue
+            tag = str(rel.get("tag_name") or rel.get("version") or rel.get("tag") or "").lstrip("v")
+            if not tag:
+                continue
+            latest = tag
+            published = str(rel.get("published_at") or "")[:10]
+            download_url = str(rel.get("download_url") or "") or \
+                f"https://github.com/{self._GITHUB_REPO}/releases/latest"
+            break
+        if latest is None:
+            return (True, {"has_update": False, "error": "无法连接到更新服务器，请稍后再试",
+                           "status": "network"}, None)
 
         cur = ".".join(str(x) for x in self._version_tuple())
         has_update = self._compare_versions(latest, cur) > 0
@@ -510,13 +539,13 @@ class SidecarService:
             "has_update": has_update,
             "latest_tag": latest,
             "published_at": published,
-            "download_url": f"https://github.com/{self._GITHUB_REPO}/releases/latest",
+            "download_url": download_url,
             "error": None,
             "status": "ok",
         }, None)
 
     def fetch_announcement(self, params):
-        """拉取公告（主源 raw + 回退 jsdelivr）。过期返回空；数据异常返回空。"""
+        """拉取公告（CNB raw 优先 → GitHub raw → jsdelivr）。过期返回空；数据异常返回空。"""
         for url in self._ANNOUNCEMENT_URLS:
             try:
                 body = self._http_get(url)
