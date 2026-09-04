@@ -268,13 +268,16 @@ jobs:
           ls -lh "$ZIP" "${ZIP}.sha256"
 
           # 2) 确保 CNB 上存在同名 Release（镜像只同步 git refs，不同步 Release 元数据）
+          # CNB API 的 GET 必须带 Accept: application/json，缺失返回 406（实测）
           code=$(curl -s -o /tmp/rel.json -w '%{http_code}' -H "$AUTH" \
+            -H 'Accept: application/json' \
             "${API}/-/releases/tags/${TAG}")
           if [ "$code" = "404" ]; then
             if echo "$TAG" | grep -q -- '-'; then PRE=true; else PRE=false; fi
             body=$(jq -n --arg tag "$TAG" --arg name "$TAG" --argjson pre "$PRE" \
               '{tag_name:$tag, name:$name, prerelease:$pre, draft:false, make_latest:"true"}')
             code=$(curl -s -o /tmp/rel.json -w '%{http_code}' -X POST -H "$AUTH" \
+              -H 'Accept: application/json' \
               -H 'Content-Type: application/json' -d "$body" "${API}/-/releases")
             if [ "$code" != "201" ]; then
               echo "创建 CNB Release 失败 HTTP=$code"; cat /tmp/rel.json; exit 1
