@@ -323,6 +323,7 @@ jobs:
             local f="$1"
             local size; size=$(stat -c%s "$f")
             local resp; resp=$(curl -fsSL -X POST -H "$AUTH" \
+              -H 'Accept: application/json' \
               -H 'Content-Type: application/json' \
               -d "{\"asset_name\":\"$(basename "$f")\",\"size\":${size},\"overwrite\":true}" \
               "${API}/-/releases/${RID}/asset-upload-url")
