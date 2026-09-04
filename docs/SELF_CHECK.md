@@ -182,4 +182,4 @@ echo {"id":1,"method":"get_initial_state","params":{}}
 
 ## 自动化回归（CI 已接入）
 
-本仓库在 GitHub Actions 上对 `push`（master / release）与 `pull_request` 自动跑 D 步单测（Python 3.10 / 3.11 矩阵）；发布流程前置测试 gate——**打 tag 发布前必须单测通过**。本地无需重复配置，C 步的 pytest 命令与 CI 完全一致。
+本仓库在 GitHub Actions 上对 `push`（master / release）与 `pull_request` 自动跑 D 步单测（Python 3.11）；发布流程前置测试 gate——**打 tag 发布前必须单测通过**。本地无需重复配置，C 步的 pytest 命令与 CI 完全一致。

@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/python-3.10+-blue?logo=python" alt="Python">
+  <img src="https://img.shields.io/badge/python-3.11-blue?logo=python" alt="Python">
   <img src="https://img.shields.io/badge/MaaFramework-5.12.3-green" alt="MaaFramework">
   <img src="https://img.shields.io/badge/YOLOv8-ONNX-orange" alt="YOLO">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License">
@@ -250,7 +250,7 @@ dotnet build apps\mra_shell\mra_shell.csproj -c Debug
 |------|------|
 | 操作系统 | Windows 10/11 **64-bit** |
 | 权限 | **管理员权限**（窗口截图必需） |
-| Python | 3.10+（推荐 3.11） |
+| Python | 3.11 |
 | 游戏窗口分辨率 | 1280×720 |
 | GPU（可选） | NVIDIA / AMD 独立显卡（DirectML 加速） |
 

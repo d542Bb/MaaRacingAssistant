@@ -168,7 +168,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 │   │   ├── dataset.yaml                      # 数据集类别配置
 │   │   └── auto_label.py                     # 自动标注工具
 │
-├── tests/                                    # 单元测试（纯逻辑，CI 矩阵 3.10/3.11）
+├── tests/                                    # 单元测试（纯逻辑，CI 矩阵 3.11）
 ├── scripts/                                  # 发布打包 / 启动脚本
 │   ├── release/assemble.ps1                  # 发布打包脚本
 │   └── start_debug_studio.ps1                # DebugStudio 启动

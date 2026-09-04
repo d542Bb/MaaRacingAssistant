@@ -7,7 +7,7 @@ name = "maaracing-assistant"
 dynamic = ["version"]
 description = "模块化游戏自动化平台 — MAA Framework + YOLOv8 ONNX + vgamepad，主打巅峰鉴宝"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
     "numpy",
     "opencv-python",
