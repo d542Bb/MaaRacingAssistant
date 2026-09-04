@@ -25,11 +25,12 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 安装 pytest
-        # 同 test.yml：不采用 `.[test]`（会连带安装 Windows-only 主依赖，Linux runner 装不上），只装 pytest。
+      - name: 安装 pytest 与轻量测试依赖
+        # 同 test.yml：不采用 `.[test]`（会连带安装 Windows-only 主依赖，Linux runner 装不上），
+        # 只装 pytest + 测试需要的轻量依赖（numpy / opencv-headless，均有 Linux wheel）。
         run: |
           python -m pip install --upgrade pip
-          pip install "pytest>=7.0"
+          pip install "pytest>=7.0" numpy opencv-python-headless
 
       - name: 运行单元测试
         run: python -m pytest tests -v

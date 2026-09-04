@@ -31,12 +31,14 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: 安装 pytest
+      - name: 安装 pytest 与轻量测试依赖
         # 注：不采用 `pip install -e .[test]`——会连带安装主依赖（onnxruntime-directml /
-        # windows-capture 等仅 Windows 有 wheel），Linux runner 装不上，故只装 pytest。
+        # windows-capture 等仅 Windows 有 wheel），Linux runner 装不上。故只装 pytest +
+        # 测试实际需要的轻量依赖（numpy：capabilities 顶层 import；opencv-headless：
+        # tools/debug_studio/server 顶层 import cv2——均有 Linux wheel）。
         run: |
           python -m pip install --upgrade pip
-          pip install "pytest>=7.0"
+          pip install "pytest>=7.0" numpy opencv-python-headless
 
       - name: 运行单元测试
         run: python -m pytest tests -v
