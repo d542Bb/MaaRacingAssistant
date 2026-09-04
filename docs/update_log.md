@@ -4,6 +4,16 @@
 
 ## 2026-09-04
 
+### v0.20.0-dev.2 发行包体积优化：618 → 499 MB（-19.3%）📦
+- **版本号：** `v0.20.0-dev.2`（预发布；基于 v0.20.0-dev.1，11 轮单变量实验 + Runtime Closure Auditor 双工具）
+- **10 项 SAFE 裁剪正式入 release pipeline（assemble.ps1 `-Configuration Release` 默认全启用）：** ① WinAppSDK AI/ML 死链 -43.65MB（exp1）；② Widgets 死链 -2.49MB（exp2）；③ Python ORT `capi\onnxruntime.dll` -20.13MB（exp3，pyd 自带 ORT 引擎）；④ PIL `_avif` native ext -7.52MB（exp4A，惰性零路径）；⑤ .NET crash diagnostics（createdump/mscordaccore/DiaSymReader）-4.73MB（exp4B，**SAFE FOR NORMAL OPERATION**：降低崩溃转储/SOS 能力，保留 mscordbi）；⑥ NumPy dev/build 目录 -1.87MB（exp5A，不 patch numpy 源码）；⑦ 全部 `.pyi` typing stubs -1.13MB（exp5B-1，267 个）；⑧ console wrappers `packages\bin\*.exe` -0.83MB（exp5E-1，8 个 pip wrapper，f2py.exe 为孤儿）；⑨ SymPy -25.37MB（exp6，**SAFE FOR CURRENT MRA**：仅 ORT 离线 symbolic_shape_infer/transformers 工具需要，全链 360 模块 trace 证实运行零加载）；⑩ MaaAgentBinary -12.53MB（exp7，**SAFE FOR CURRENT MRA**：Android/ADB 代理二进制，MRA 仅用 Win32Controller）
+- **assemble.ps1 管线收敛：** 新增 `-Configuration Release|Experimental`（默认 Release=10 项裁剪全自动启用，10 个 `Remove*` 实验开关降为内部不再暴露）与 `-DisableReleaseOptimizations`；新增 Production Guard（依赖敏感项白名单失效即阻断发布）+ 反向清理验证（应删不存在/应保留存在）+ Release Size Gate（对比 baseline 503.23/212.98，超 ±5MB 报 SIZE REGRESSION，自动生成 `release-size-report.json/.md`）
+- **裁剪白名单文档：** 新增 `scripts/release/runtime-pruning-policy.md`（来源实验/收益/验证状态/代价说明；明确不纳入：pygrun 6KB、mpmath、mscordbi、numpy.typing、dist-info RECORD、INSTALLER/WHEEL/REQUESTED、PublishTrimmed 等）
+- **Runtime Closure Auditor（新增 `tools/runtime_audit/`）：** 四层分析（Python AST 静态 import 图 / 发行 runtime trace / pefile PE 依赖图 / native 加载采集）+ 6 类文件分类 + 删除信心分级 + 人工结论 oracle 回归（KEEP 394/394、REMOVE 88/88 全绿）；V0.2 完成 app/154.58MB 归因（.NET 63.11 + WinUI/XAML 45.13 + WinRT 投影 25.56 + WinAppSDK 6.94 + WebView2 1.54，UNKNOWN 184MB→12.29MB，证实无第二个 20-40MB 大洞，剩余为架构成本）
+- **关键发现：** 新版 pip 在 `--target`+host 3.11 下会预编译 `__pycache__`（3076 个/74.89MB，历史构建为 0），assemble 新增统一清理段保持发行口径；onnxruntime dist-info 为 `onnxruntime_directml-*` 命名，`importlib.metadata.version('onnxruntime')` 本就 PackageNotFoundError（非裁剪导致）
+- **正式产物验证：** 从源码 + `build\runtime-full`（Python 3.11.9 embed + lock 全量 pip）全新构建，未裁剪验尸全过；total 499.24MB / zip 211.37MB（vs exp7 baseline delta −3.99/−1.61，no regression）；smoke test 全 PASS（NumPy/OpenCV 5.0.0/ORT-DML 真实推理/RapidOCR/MaaFramework 含 Win32Controller/Racing/Treasure 业务逻辑/截图构造/手柄）；GUI 与真实窗口抓帧未实机验证（requireAdministrator 触发 UAC）；**Production Release = READY**
+- **其他：** `.gitignore` 补 `build/exp*/`、`build/runtime-full/`；实验产物 exp1-exp7 已清理归档
+
 ### v0.20.0-dev.1 架构底座重构 + 截图/导航线程化 + CNB 双源分发 🚀
 - **版本号：** `v0.20.0-dev.1`（预发布；基于 v0.19.1 新开 minor 系列，累计 24 项提交）
 - **架构底座重构（不拥有策略的通用能力层）：** ① ROI 统一配置底座（`ROIConfig` + 坐标契约 + schema 校验）；② `StageTracker` 阶段记录器/校验器（断点换算收敛，racing 观测等价迁移）；③ `RenderPlan` + `LayerRegistry` 渲染计划底座（能力选择器 + 通用调度）；④ DebugIO worker 底座 + `FrameSource`/`DebugSink` 接口；⑤ DebugStudio 通用 server + 领域 adapter 注册端点（整合旧 treasure studio，会话路径与 `%APPDATA%` 对齐）

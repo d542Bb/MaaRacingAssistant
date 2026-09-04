@@ -1,16 +1,22 @@
-# Release package assembly for MRA Windows.
+﻿# Release package assembly for MRA Windows.
 # Output: <OutRoot>/MaaRacingAssistant-<Version>-win-x64.zip + .sha256
 # Structure reproduces the validated local package:
 #   <name>/{ mra_shell.exe + WinUI/.NET dlls, pyproject.toml,
 #          maaracing_assistant/, assets/ (含 config/), apps/mra_shell/frontend/,
 #          runtime/python/{python.exe, python311._pth, packages/, vcruntime140*.dll} }
-# Usage: powershell -File assemble.ps1 -Version 1.0.0
-#   -HostPython       host interpreter, MUST be 3.11 (cp311) to match embedded
-#   -SourceRuntimeDir reuse an existing verified runtime (skip download+pip) for local re-verify
-#   -KeepGoing        continue on error (local debug); default fail-fast
+# Usage: powershell -File assemble.ps1 -Version 1.0.0 -Configuration Release
+#   -Configuration          Release (default, all SAFE pruning on) | Experimental (no pruning)
+#   -DisableReleaseOptimizations   force off all production pruning (debug/reference, same as Experimental)
+#   -HostPython             host interpreter, MUST be 3.11 (cp311) to match embedded
+#   -SourceRuntimeDir       reuse an existing verified runtime (skip download+pip) for local re-verify
+#   -KeepGoing              continue on error (local debug); default fail-fast
+# Internal experiment switches below (Remove*) are driven by -Configuration; ordinary release
+# does not need to pass them. See scripts/release/runtime-pruning-policy.md for the canonical whitelist.
 
 param(
     [Parameter(Mandatory=$true)][string]$Version,
+    [ValidateSet('Release','Experimental')][string]$Configuration = 'Release',
+    [switch]$DisableReleaseOptimizations,   # force off all production pruning (debug/reference)
     [string]$RepoRoot = '',
     [string]$OutRoot = '',
     [string]$EmbedPythonUrl = 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip',
@@ -20,7 +26,18 @@ param(
     [string]$RuntimeCacheDir = '',
     [string]$VcVarsAll = '',   # native Launcher 编译用 MSVC vcvarsall.bat 路径（默认自动探测）
     [switch]$SkipPublish,
-    [switch]$KeepGoing
+    [switch]$KeepGoing,
+    [switch]$RemoveWinAppSdkML,  # EXP-1: remove WinAppSDK AI/ML dead chain (43.6MB, MRA zero usage)
+    [switch]$RemoveWidgets,       # EXP-2: remove WinAppSDK Widgets dead chain (2.5MB, MRA zero usage)
+    [switch]$RemovePythonOrtCapi, # EXP-3: remove Python ORT capi\onnxruntime.dll (20.1MB, pyd self-contained)
+    [switch]$RemovePilAvif,       # EXP-4A: remove Pillow _avif native ext (7.5MB, lazy-loaded AVIF only)
+    [switch]$RemoveCrashDiagnostics, # EXP-4B: remove createdump/mscordaccore/DiaSymReader (4.7MB, on-demand diag; KEEP mscordbi)
+    [switch]$RemoveNumpyDev,       # EXP-5A: remove numpy dev/test/build dirs (f2py/distutils/testing/tests/doc/_pyinstaller/ctypeslib, 2.55MB); KEEP _pytesttester/typing/_typing; no numpy source fork
+    [switch]$RemovePythonTypingStubs, # EXP-5B-1: remove ALL runtime\python\packages\**\*.pyi (typing-only static stubs, 1.96MB/267 files); KEEP numpy.typing (still its .py), numpy._typing (runtime-loaded, its .pyi removed too but .py stays); verified no .py does open()/resources/pkgutil/metadata reads of .pyi
+    [switch]$RemoveDistInfoInstallMetadata, # EXP-5C-1: remove INSTALLER/WHEEL/REQUESTED from every *.dist-info (only ~2.8KB total; install/dev-stage only, no runtime reader). METADATA/RECORD/entry_points.txt/top_level.txt untouched for 5C-1.
+    [switch]$RemovePythonConsoleDev, # EXP-5E-1: remove packages\bin\*.exe console wrappers (~0.83MB/8 files: f2py numpy-config isympy normalizer idna onnxruntime_test rapidocr tqdm). All are pip console_scripts launchers (105.8KB each) for dev/test/CLI entry points. Verified: MRA sidecar & third-party runtime make ZERO subprocess/Popen calls to any of them (sidecar only runs git/taskkill); f2py.exe is an orphan (its numpy.f2py.f2py2e source was removed in EXP-5A). No native runtime/DLL embedded. Deleting loses only console CLI access, not library import. Default OFF; restore = reassemble w/o switch.
+    [switch]$RemoveSympy,    # EXP-6: remove sympy (25.37MB) from packages. Verified via full-chain runtime trace (sidecar+Racing+Treasure+all third-party, 360 modules) that sympy is NEVER loaded on any MRA run path; onnxruntime DML inference does NOT load sympy either. Its only dependency source is onnxruntime_directml METADATA Requires-Dist:sympy, used only by offline tools (onnxruntime\tools\symbolic_shape_infer.py, transformers\shape_infer_helper.py) — NOT the inference/DML runtime path. MRA has zero sympy import. Deletion loses only onnxruntime offline symbolic shape-infer/quantization tooling. mpmath kept (separate EXP-7). Default OFF; restore = reassemble w/o switch.
+    [switch]$RemoveMaaAgentBinary # EXP-7: remove MaaAgentBinary (12.53MB) — Android/ADB agent binaries (23 adb/minicap + 56 minicap.so). Referenced only by maa\controller.py L802 AdbController path ("../MaaAgentBinary"); MRA uses Win32Controller (Win32 screenshot+gamepad), never ADB. Verified no runtime import loads MaaAgentBinary. Deleting breaks only future Android/ADB control. Default OFF; restore = reassemble w/o switch.
 )
 
 $ErrorActionPreference = 'Stop'
@@ -51,6 +68,30 @@ if (-not $VcVarsAll) {
         ForEach-Object { $p = Join-Path $_ 'VC\Auxiliary\Build\vcvarsall.bat'; if (Test-Path $p) { $p } } |
         Select-Object -First 1
 }
+# ---------- 0.1 Configuration -> pruning switches ----------
+# Production = all independently-validated SAFE removals ON (default).
+# Experimental / -DisableReleaseOptimizations = no pruning (full runtime reference build).
+# The 10 Remove* switches are internal; ordinary release never passes them directly.
+if ($DisableReleaseOptimizations -or $Configuration -eq 'Experimental') {
+    foreach ($sw in @('RemoveWinAppSdkML','RemoveWidgets','RemovePythonOrtCapi','RemovePilAvif',
+                      'RemoveCrashDiagnostics','RemoveNumpyDev','RemovePythonTypingStubs',
+                      'RemovePythonConsoleDev','RemoveSympy','RemoveMaaAgentBinary')) {
+        if (-not (Get-Variable -Name $sw -ErrorAction SilentlyContinue)) { New-Variable -Name $sw -Value $false }
+        else { Set-Variable -Name $sw -Value $false -Force }
+    }
+    Write-Host "[assemble] Configuration=$Configuration; production pruning DISABLED (full runtime)"
+} else {
+    foreach ($sw in @('RemoveWinAppSdkML','RemoveWidgets','RemovePythonOrtCapi','RemovePilAvif',
+                      'RemoveCrashDiagnostics','RemoveNumpyDev','RemovePythonTypingStubs',
+                      'RemovePythonConsoleDev','RemoveSympy','RemoveMaaAgentBinary')) {
+        if (-not (Get-Variable -Name $sw -ErrorAction SilentlyContinue)) { New-Variable -Name $sw -Value $true }
+        else { Set-Variable -Name $sw -Value $true -Force }
+    }
+    # 明确不纳入正式裁剪的项保持 OFF，仅保留在 Experimental 作参考
+    Set-Variable -Name RemoveDistInfoInstallMetadata -Value $false -Force
+    Write-Host "[assemble] Configuration=Release; production pruning ON (10 SAFE removals)"
+}
+
 $Name      = 'MaaRacingAssistant-' + $Version + '-win-x64'
 $StageRoot = Join-Path $OutRoot $Name
 
@@ -58,6 +99,31 @@ Write-Host "[assemble] Version=$Version stage=$StageRoot"
 
 $errors = New-Object System.Collections.Generic.List[string]
 $Fail = { param($m) Write-Host "FATAL: $m" -ForegroundColor Red; exit 1 }
+
+# ---------- Production pruning Guard ----------
+# 原则：宁可发布失败，也不要"悄悄少删一部分让体积膨胀"。
+# 每个大项删除前先检查源文件存在；若应存在却缺失（依赖结构变化导致白名单失效）→ 报 error 阻止 release（除非 -KeepGoing）。
+$Guard = {
+    param([string]$label, [string]$path, [switch]$Require)
+    if (Test-Path $path) {
+        # 该删除的项还存在，正常
+        return $true
+    }
+    if ($Require) {
+        # 应存在（依赖敏感项），缺失说明结构变化 —— 严格模式返回 false，调用方报错
+        return $false
+    }
+    # 不强制：允许缺失（版本号/细节变化），静默跳过
+    return $null
+}
+# 敏感项清单：缺失即应版失败（这些是依赖版本敏感的删除项）
+$PruneExpects = @(
+    @{Label='WinAppSDK-AI/ML';                  Path='app\onnxruntime.dll'},
+    @{Label='Python-ORT-capiDLL';               Path='runtime\python\packages\onnxruntime\capi\onnxruntime.dll'},
+    @{Label='PIL-_avif';                        Path='runtime\python\packages\PIL\_avif.cp311-win_amd64.pyd'},
+    @{Label='SymPy';                            Path='runtime\python\packages\sympy\__init__.py'},
+    @{Label='MaaAgentBinary';                   Path='runtime\python\packages\MaaAgentBinary\README.md'}
+)
 
 # ---------- 缓存源指纹（防跨分支 / 改代码后误用过期缓存） ----------
 $pubFinger = 'publish/' + ((Get-ChildItem (Join-Path $RepoRoot 'apps\mra_shell') -Recurse -File |
@@ -113,6 +179,16 @@ if ($rtSource) {
     }
 }
 
+# 统一清理 pip 生成的 __pycache__（历史 release 口径：runtime 不带字节码）。
+# 新版 pip 在 --target 下会为 host(3.11) 预编译 pyc（~75MB）；用户首次运行会自动重建，
+# 打包携带只会虚增体积并破坏 size gate 基线可比性。无条件执行（含复用 SourceRuntimeDir 的分支）。
+$pycAll = Get-ChildItem $rtDir -Recurse -Directory -Filter '__pycache__' -EA SilentlyContinue
+if ($pycAll) {
+    $n = $pycAll.Count
+    $pycAll | ForEach-Object { Remove-Item $_.FullName -Recurse -Force -EA SilentlyContinue }
+    Write-Host "[assemble] 清理 runtime __pycache__: $n 个目录"
+}
+
 $pthContent = "python311.zip`n.`npackages`n..\..`n# repo root on sys.path; sidecar started with -m`nimport site"
 Set-Content -Path (Join-Path $rtDir 'python311._pth') -Value $pthContent -Encoding ascii
 
@@ -159,6 +235,239 @@ $langDirs = Get-ChildItem $cleanDir -Directory | Where-Object {
 foreach ($d in $langDirs) {
     Remove-Item $d.FullName -Recurse -Force
     Write-Host "[assemble] 清理语言包: $($d.Name)"
+}
+
+# ---------- 2.55 实验1：删除 WindowsAppSDK AI/ML 死链（-RemoveWinAppSdkML 开启时） ----------
+# 白名单依据 deps.json 中 Microsoft.WindowsAppSDK.AI/1.8.79 与 Microsoft.WindowsAppSDK.ML/1.8.2197
+# 子包布局（runtimes-framework\win-x64\native\ + lib\ + metadata\）逐文件映射到 app\ 目录得到；
+# MRA C# 源码 / mra_shell.dll IL / dumpbin 静态引用三重证据均证明整条链零使用
+# （推理在 Python sidecar 与 MaaFramework 内完成）。开关默认关闭；一键恢复 = 去掉开关重新 assemble。
+if ($RemoveWinAppSdkML) {
+    $mlWhitelist = @(
+        # --- Microsoft.WindowsAppSDK.ML/1.8.2197 runtimes-framework\win-x64\native\ ---
+        'onnxruntime.dll', 'DirectML.dll', 'onnxruntime_providers_shared.dll',
+        # --- Microsoft.WindowsAppSDK.ML/1.8.2197 lib\net8.0-windows...\ ---
+        'Microsoft.ML.OnnxRuntime.dll',
+        'Microsoft.Windows.AI.MachineLearning.dll',
+        'Microsoft.Windows.AI.MachineLearning.Projection.dll',
+        'Microsoft.Windows.AI.MachineLearning.winmd',
+        'Microsoft.Windows.AI.Imaging.dll','Microsoft.Windows.AI.Imaging.Projection.dll','Microsoft.Windows.AI.Imaging.winmd',
+        'Microsoft.Windows.AI.Text.dll','Microsoft.Windows.AI.Text.Projection.dll','Microsoft.Windows.AI.Text.winmd',
+        'Microsoft.Windows.AI.AICapabilities.dll',
+        'Microsoft.Windows.AI.ContentSafety.dll','Microsoft.Windows.AI.ContentSafety.Projection.dll','Microsoft.Windows.AI.ContentSafety.winmd',
+        'Microsoft.Windows.AI.Foundation.Projection.dll','Microsoft.Windows.AI.Foundation.winmd','Microsoft.Windows.AI.FoundationInternal.winmd',
+        'Microsoft.Windows.AI.GenerativeInternal.winmd','Microsoft.Windows.AI.ContentModerationInternal.winmd',
+        'Microsoft.Windows.AI.Projection.dll','Microsoft.Windows.AI.winmd',
+        'Microsoft.Windows.Vision.dll', 'Microsoft.Windows.Vision.winmd','Microsoft.Windows.VisionInternal.winmd','Microsoft.Windows.Internal.Vision.winmd',
+        'Microsoft.Windows.SemanticSearch.winmd','Microsoft.Windows.PrivateCommon.winmd',
+        'Microsoft.Graphics.Imaging.dll','Microsoft.Graphics.Imaging.Projection.dll','Microsoft.Graphics.Imaging.winmd',
+        'Microsoft.Graphics.Internal.Imaging.winmd','Microsoft.Graphics.ImagingInternal.winmd','Microsoft.Graphics.ImagingInternal.ImageObjectRemover.winmd',
+        'Microsoft.Windows.Workloads.dll','Microsoft.Windows.Workloads.winmd','Microsoft.Windows.Workloads.Resources.dll','Microsoft.Windows.Workloads.Resources_ec.dll',
+        'Microsoft.Windows.Private.Workloads.SessionManager.winmd',
+        'SessionHandleIPCProxyStub.dll',
+        'NpuDetect\NPUDetect.dll',
+        'workloads.json','workloads.365.json','workloads.j32.json','workloads.lnl.json','workloads.qnn.json','workloads.stx.json'
+    )
+    # Skip gracefully if a whitelisted path does not exist in this output
+    foreach ($rel in $mlWhitelist) {
+        $target = Join-Path $appDir $rel
+        if (Test-Path $target) {
+            Remove-Item $target -Recurse -Force
+            Write-Host "[assemble] EXP-1 remove AI/ML dead chain: $rel"
+        }
+    }
+}
+
+# ---------- 2.56 EXP-2: remove WindowsAppSDK Widgets dead chain (only with -RemoveWidgets) ----------
+# Whitelist = all 3 files shipped by Microsoft.WindowsAppSDK.Widgets/1.8.251231004 into app\:
+#   runtimes-framework\win-x64\native\Microsoft.Windows.Widgets.dll
+#   lib\net6.0-windows10.0.17763.0\Microsoft.Windows.Widgets.Projection.dll
+#   metadata\Microsoft.Windows.Widgets.winmd
+# MRA C# source / XAML / mra_shell.dll use none of WidgetManager/FeedManager/WidgetProvider
+# (zero reference verified). mra_shell.exe's embedded activation manifest still declares these
+# WinRT classes, but that manifest is only a per-request lookup table (same proven-safe pattern as
+# EXP-1 AI/ML): MRA never requests a Windows.Widgets.* type, so the vanished DLL is never resolved.
+# Default OFF; restore = reassemble w/o switch.
+if ($RemoveWidgets) {
+    $widgetsWhitelist = @(
+        'Microsoft.Windows.Widgets.dll',           # native, 2.293 MB
+        'Microsoft.Windows.Widgets.Projection.dll',# managed projection, 0.160 MB
+        'Microsoft.Windows.Widgets.winmd'          # winmd metadata, 0.035 MB
+    )
+    foreach ($rel in $widgetsWhitelist) {
+        $target = Join-Path $appDir $rel
+        if (Test-Path $target) {
+            Remove-Item $target -Recurse -Force
+            Write-Host "[assemble] EXP-2 remove Widgets dead chain: $rel"
+        }
+    }
+}
+
+# ---------- 2.57 EXP-3: remove Python ORT capi\onnxruntime.dll (only with -RemovePythonOrtCapi) ----------
+# Target: packages\onnxruntime\capi\onnxruntime.dll (20.1MB).
+# Evidence: onnxruntime_pybind11_state.pyd static import table has NO onnxruntime.dll dep;
+# pyd bundles the full ORT engine. capi\onnxruntime.dll never appears in the process module
+# list across import + DmlExecutionProvider + real inference + RapidOCR (verified twice).
+# onnxruntime\__init__.py CDLL() calls are CUDA/cuDNN-only (nvidia DLLs), not onnxruntime.dll.
+# Everything else in capi\ (pyd/DirectML.dll/providers_shared.dll/__init__.py) is preserved.
+# Default OFF; restore = reassemble w/o switch.
+if ($RemovePythonOrtCapi) {
+    $capiortdll = Join-Path $rtDir 'packages\onnxruntime\capi\onnxruntime.dll'
+    if (Test-Path $capiortdll) {
+        Remove-Item $capiortdll -Recurse -Force
+        Write-Host "[assemble] EXP-3 remove Python ORT capi\onnxruntime.dll"
+    }
+}
+
+# ---------- 2.58 EXP-4A: remove Pillow _avif native ext (only with -RemovePilAvif) ----------
+# Target: packages\PIL\_avif.cp311-win_amd64.pyd (7.5MB).
+# Evidence: PIL.Image.open lazy-loads AvifImagePlugin only for ".avif"/".avifs" extensions;
+# import PIL.Image does NOT load _avif (importtime + sys.modules verified). Project has zero
+# Pillow usage and only png/jpg assets; rapidocr uses Pillow for OCR inputs (frames/memory, no
+# avif path in current release behavior). PNG/JPEG handled by Pillow built-in codecs, unaffected.
+# Everything else in PIL\ preserved. Default OFF; restore = reassemble w/o switch.
+if ($RemovePilAvif) {
+    $avifPyd = Join-Path $rtDir 'packages\PIL\_avif.cp311-win_amd64.pyd'
+    if (Test-Path $avifPyd) {
+        Remove-Item $avifPyd -Recurse -Force
+        Write-Host "[assemble] EXP-4A remove Pillow _avif native ext"
+    }
+}
+
+# ---------- 2.59 EXP-4B: remove .NET crash/diagnostics on-demand components (only with -RemoveCrashDiagnostics) ---
+# Removes: createdump.exe, mscordaccore.dll, mscordaccore_amd64_*.dll, Microsoft.DiaSymReader.Native.amd64.dll
+# (all from runtimepack.Microsoft.NETCore.App.Runtime.win-x64/8.0.30 native section; self-contained copy into app\).
+# These are on-demand diagnostics: a normal .NET process loads only coreclr/clrjit/hostfxr/hostpolicy; mscordaccore(DAC),
+# mscordbi(DBI), createdump(exe), DiaSymReader(symbol) stay unloaded even on a thrown exception (verified via a temp
+# no-elevation net8 self-contained probe). Removing them loses crash-dump / SOS / debugger-symbol capability but not
+# normal operation. mscordbi.dll is KEPT. Default OFF; restore = reassemble w/o switch.
+if ($RemoveCrashDiagnostics) {
+    foreach ($rel in @('createdump.exe','mscordaccore.dll','Microsoft.DiaSymReader.Native.amd64.dll')) {
+        $t = Join-Path $appDir $rel
+        if (Test-Path $t) { Remove-Item $t -Force; Write-Host "[assemble] EXP-4B remove crash/diag: $rel" }
+    }
+    Get-ChildItem $appDir -File -Filter 'mscordaccore_amd64_*.dll' -EA SilentlyContinue | ForEach-Object {
+        Remove-Item $_.FullName -Force
+        Write-Host "[assemble] EXP-4B remove crash/diag: $($_.Name)"
+    }
+}
+
+# ---------- 2.60 EXP-5A: remove numpy dev/test/build-only dirs (only with -RemoveNumpyDev) ----------
+# Whitelist (strict; total 2.55MB / 366 files at exp4b), all proven lazy/never-loaded on a normal
+# import numpy / cv2 / onnxruntime (numpy.__getattr__ lazy submodules or pure testing/docs dirs).
+#   f2py, distutils  -> Fortran/C build/compile tools; numpy.DEPRECATED lazy, no runtime import chain.
+#   testing, tests   -> pytest harness; numpy.testing only via np.testing (lazy).
+#   doc              -> package docs.
+#   _pyinstaller     -> PyInstaller hook helpers.
+#   ctypeslib        -> numpy.ctypeslib, lazy submodule, not used by MRA/RapidOCR/ORT.
+# STRICT EXCLUSION (never removed): numpy\_pytesttester.py (top-level hard import in numpy/__init__.py,
+#   `from numpy._pytesttester import PytestTester`; only 6KB, do NOT patch numpy source),
+#   numpy\typing + numpy\_typing (reserved for EXP-5B .pyi study), numpy\core (compat shim),
+#   numpy\_core\lib\random\linalg\fft\polynomial\matrixlib (runtime-required).
+# No numpy source is forked/patched. Default OFF; restore = reassemble w/o switch.
+if ($RemoveNumpyDev) {
+    $numpyDevDirs = @('f2py','distutils','testing','tests','doc','_pyinstaller','ctypeslib')
+    foreach ($d in $numpyDevDirs) {
+        $t = Join-Path $rtDir "packages\numpy\$d"
+        if (Test-Path $t) {
+            $sz = (Get-ChildItem $t -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
+            Remove-Item $t -Recurse -Force
+            Write-Host ("[assemble] EXP-5A remove numpy\{0}  ({1:N2} MB)" -f $d, ($sz/1MB))
+        }
+    }
+    # guard: _pytesttester.py hard-imported by numpy __init__; must remain
+    $guard = Join-Path $rtDir 'packages\numpy\_pytesttester.py'
+    if (-not (Test-Path $guard)) {
+        & $Fail 'EXP-5A guard breached: numpy\_pytesttester.py must be kept (top-level import). Aborting.'
+    }
+}
+
+# ---------- 2.61 EXP-5B-1: remove all .pyi typing stubs (only with -RemovePythonTypingStubs) ----------
+# Removes runtime\python\packages\**\*.pyi (267 files / 1.96MB at exp5a). All proven static typing-only:
+#  - numpy.typing (110 .pyi) is a lazy deprecation shim; `import numpy` does NOT load it (verified sys.modules).
+#  - numpy._typing IS runtime-loaded, but its _ufunc/_nbit_base resolve to their .py (verified __file__ = .py),
+#    so the sibling _ufunc.pyi/_nbit_base.pyi are pure stubs with the .py preserved.
+#  - Byte-scan: only 4 True literal ".pyi" hits in .py; three are comments/docstrings; the real path-readers
+#    (numpy\typing\tests\test_isfile.py / test_typing.py) live in numpy.typing.tests, never imported at runtime;
+#    no open()/importlib.resources/pkgutil/importlib.metadata read of .pyi anywhere on the normal load path.
+# .py / .pyc / .pyd / .dist-info are NOT touched. numpy.typing & numpy._typing dirs retained (only .pyi inside removed).
+# Verify this .pyi-specific removal is safe at runtime. Default OFF; restore = reassemble w/o switch.
+if ($RemovePythonTypingStubs) {
+    $pyis = Get-ChildItem (Join-Path $rtDir 'packages') -Recurse -File -Filter '*.pyi' -EA SilentlyContinue
+    $n = $pyis.Count; $sz = ($pyis | Measure-Object Length -Sum).Sum
+    foreach ($p in $pyis) { Remove-Item $p.FullName -Force }
+    Write-Host ("[assemble] EXP-5B-1 remove {0} .pyi typing stubs  ({1:N2} MB)" -f $n, ($sz/1MB))
+}
+
+# ---------- 2.62 EXP-5C-1: remove INSTALLER/WHEEL/REQUESTED from dist-info (only with -RemoveDistInfoInstallMetadata) --
+# Install/dev-stage only files; no runtime reader found in MRA sidecar (zero importlib.metadata/pkg_resources) nor on
+# the normal import path of numpy/cv2/onnxruntime/rapidocr/maafw (onnxruntime's metadata calls are lazy function-internal,
+# and its packaged dist-info is onnxruntime_directml-*.dist-info so importlib.metadata.version('onnxruntime') throws
+# PackageNotFoundError EVEN BEFORE any removal — proving it is not load-path-critical). METADATA / RECORD / entry_points.txt /
+# top_level.txt are NOT touched in this experiment (reserved 5C-2/5C-4). Default OFF; restore = reassemble w/o switch.
+if ($RemoveDistInfoInstallMetadata) {
+    $cnt = 0; $sz = 0L
+    $pkgs = Join-Path $rtDir 'packages'
+    foreach ($di in Get-ChildItem $pkgs -Directory -Filter '*.dist-info' -EA SilentlyContinue) {
+        foreach ($fn in @('INSTALLER','WHEEL','REQUESTED')) {
+            $p = Join-Path $di.FullName $fn
+            if (Test-Path $p) { $sz += (Get-Item $p).Length; Remove-Item $p -Force; $cnt++ }
+        }
+    }
+    Write-Host ("[assemble] EXP-5C-1 remove {0} install-meta files  ({1:N2} KB)" -f $cnt, ($sz/1KB))
+}
+
+# ---------- 2.63 EXP-5E-1: remove packages\bin\*.exe console wrappers (only with -RemovePythonConsoleDev) ----------
+# 8 dev/test/CLI console launchers (~0.83MB), all pure pip console_scripts wrappers (105.8KB each, distinct hashes =
+# distinct embedded entry points). No native runtime/DLL. Zero subprocess/Popen runtime call found from MRA sidecar
+# (only git/taskkill) or from third-party runtime load path (numpy/conftest.py is pytest-only, sympy/autowrap.py is lazy
+# Fortran codegen, tqdm/std.py match is the class name not a launch). f2py.exe is an orphan (numpy.f2py.f2py2e removed in
+# EXP-5A). Deletion only removes console CLI access; library imports (RapidOCR class, tqdm, charset_normalizer) unaffected.
+# Default OFF; restore = reassemble w/o switch.
+if ($RemovePythonConsoleDev) {
+    $binDir = Join-Path $rtDir 'packages\bin'
+    if (Test-Path $binDir) {
+        $exes = Get-ChildItem $binDir -File -Filter '*.exe' -EA SilentlyContinue
+        $sz = ($exes | Measure-Object Length -Sum).Sum; $n = $exes.Count
+        foreach ($e in $exes) { Remove-Item $e.FullName -Force }
+        Write-Host("[assemble] EXP-5E-1 remove {0} console exe  ({1:N2} KB)" -f $n, ($sz / 1KB))
+    } else {
+        Write-Host '[assemble] EXP-5E-1: no packages\bin dir to clean'
+    }
+}
+
+# ---------- 2.64 EXP-6: remove sympy (only with -RemoveSympy) ----------
+# 25.37MB. Verified never loaded on any MRA run path (full-chain trace = 360 modules) nor after onnxruntime DML
+# inference. Its only dependency is onnxruntime's offline symbolic shape-infer/transformers tooling, not the runtime
+# inference/DML path. MRA has zero sympy import. mpmath is KEPT (separate EXP-7). Default OFF; restore = reassemble.
+if ($RemoveSympy) {
+    $t = Join-Path $rtDir 'packages\sympy'
+    if (Test-Path $t) {
+        $sz = (Get-ChildItem $t -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
+        Remove-Item $t -Recurse -Force
+        # also drop sympy dist-info to keep metadata consistent with an absent package
+        $di = Join-Path $rtDir 'packages\sympy-1.14.0.dist-info'
+        if (Test-Path $di) { Remove-Item $di -Recurse -Force }
+        Write-Host ("[assemble] EXP-6 remove sympy  ({0:N2} MB)" -f ($sz / 1MB))
+    } else {
+        Write-Host "[assemble] EXP-6: sympy absent, skip"
+    }
+}
+
+# ---------- 2.65 EXP-7: remove MaaAgentBinary (only with -RemoveMaaAgentBinary) ----------
+# Android/ADB agent binaries (12.53MB). Referenced by maa\controller.py AdbController only; MRA uses Win32Controller.
+# Verified no runtime import loads it. Also drop its dist-info. Default OFF; restore = reassemble w/o switch.
+if ($RemoveMaaAgentBinary) {
+    $t = Join-Path $rtDir 'packages\MaaAgentBinary'
+    if (Test-Path $t) {
+        $sz = (Get-ChildItem $t -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
+        Remove-Item $t -Recurse -Force
+        $di = Join-Path $rtDir 'packages\MaaAgentBinary-1.0.1.dist-info'
+        if (Test-Path $di) { Remove-Item $di -Recurse -Force }
+        Write-Host ("[assemble] EXP-7 remove MaaAgentBinary  ({0:N2} MB)" -f ($sz / 1MB))
+    } else {
+        Write-Host '[assemble] EXP-7: MaaAgentBinary absent, skip'
+    }
 }
 
 # ---------- 2.6 native Launcher 编译 ----------
@@ -268,6 +577,44 @@ if ($LASTEXITCODE -eq 0 -and -not $rtSource) {
     Write-Host "[assemble] runtime 已写入缓存: $RuntimeCacheDir"
 }
 
+# ---------- 5.5 Production pruning verification (Release only) ----------
+# 1) Guard：敏感删除项在 Release 下必须已消失；若仍存在说明白名单失效 -> error。
+# 2) 反向验证：确认"应被删"的不存在、"应保留"的仍存在，防误删。
+if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
+    # 应已被删除（缺失是正确结果）
+    $AbsentChecks = @(
+        'runtime\python\packages\sympy',
+        'runtime\python\packages\MaaAgentBinary',
+        'runtime\python\packages\onnxruntime\capi\onnxruntime.dll',
+        'runtime\python\packages\PIL\_avif.cp311-win_amd64.pyd',
+        'runtime\python\packages\numpy\f2py',
+        'runtime\python\packages\numpy\distutils',
+        'app\createdump.exe', 'app\mscordaccore.dll',
+        'app\Microsoft.DiaSymReader.Native.amd64.dll',
+        'app\Microsoft.Windows.Widgets.dll'
+    )
+    foreach ($rel in $AbsentChecks) {
+        $p = Join-Path $StageRoot $rel
+        if (Test-Path $p) { $errors.Add("PRUNING-FAIL: '$rel' should be removed in Release but exists (whitelist stale?)") }
+    }
+    # 应保留（缺失是误删）
+    $PresentChecks = @(
+        'runtime\python\python.exe', 'runtime\python\pythonw.exe',
+        'runtime\python\packages\maa',
+        'runtime\python\packages\rapidocr\models',
+        'MaaRacingAssistant.exe'
+    )
+    foreach ($rel in $PresentChecks) {
+        if (-not (Test-Path (Join-Path $StageRoot $rel))) {
+            $errors.Add("PRUNING-REGRESSION: required '$rel' missing")
+        }
+    }
+    # mscordbi.dll 必须在（app\，debugger attach 能力保留）
+    if (-not (Test-Path (Join-Path $StageRoot 'app\mscordbi.dll'))) {
+        $errors.Add("PRUNING-REGRESSION: app\mscordbi.dll missing (debugger attach must be kept)")
+    }
+}
+
 # ---------- 6. errors ----------
 if ($errors.Count -gt 0) {
     Write-Host ("[assemble] {0} error(s):" -f $errors.Count) -ForegroundColor Red
@@ -286,3 +633,67 @@ $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
 $shaLine = $hash + '  ' + (Split-Path $zip -Leaf)
 Set-Content -Path ($zip + '.sha256') -Value $shaLine -Encoding ascii
 Write-Host ("[assemble] done: {0}  {1}" -f $zip, $hash) -ForegroundColor Green
+
+# ---------- 8. Release Size Gate + report (Release only) ----------
+# 与已验收 baseline (exp7: total 503.23 / zip 212.98) 对比，超 ±5MB 判 SIZE REGRESSION。
+if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
+    $g_runtime = (Get-ChildItem (Join-Path $StageRoot 'runtime') -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
+    $g_app = (Get-ChildItem (Join-Path $StageRoot 'app') -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
+    $g_sidecar = (Get-ChildItem (Join-Path $StageRoot 'maaracing_assistant') -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
+    $g_other = (Get-ChildItem $StageRoot -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum +
+               (Get-ChildItem $StageRoot -Directory | Where-Object { $_.Name -notin @('runtime','app','maaracing_assistant') } |
+                ForEach-Object { (Get-ChildItem $_.FullName -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum } | Measure -Sum).Sum
+    $g_total = $g_runtime + $g_app + $g_sidecar + $g_other
+    $g_zip = (Get-Item $zip).Length
+    $dTotal = ($g_total - 503.23MB) / 1MB
+    $dZip = ($g_zip - 212.98MB) / 1MB
+    $sizes = [ordered]@{
+        runtime = [math]::Round($g_runtime/1MB,2); app = [math]::Round($g_app/1MB,2)
+        sidecar = [math]::Round($g_sidecar/1MB,2); other = [math]::Round($g_other/1MB,2)
+        total_unpacked = [math]::Round($g_total/1MB,2); zip = [math]::Round($g_zip/1MB,2)
+    }
+    $regression = ([math]::Abs($dTotal) -gt 5) -or ([math]::Abs($dZip) -gt 5)
+    $gitShort = (git rev-parse --short HEAD 2>$null) -join ''
+    $reportData = [ordered]@{
+        release_version = $Version
+        configuration = $Configuration
+        git_commit = $gitShort
+        sizes = $sizes
+        baseline_total_mb = 503.23; baseline_zip_mb = 212.98
+        delta_total_mb = [math]::Round($dTotal,2); delta_zip_mb = [math]::Round($dZip,2)
+        size_regression = $regression
+        generated = (Get-Date).ToString('yyyy-MM-ddTHH:mm:ssZ')
+    }
+    $ReportPath = Join-Path $OutRoot 'release-size-report.md'
+    $ReportJson = Join-Path $OutRoot 'release-size-report.json'
+    Set-Content -Path $ReportJson -Value ($reportData | ConvertTo-Json -Depth 4) -Encoding utf8
+    $md = @"
+# Release Size Report
+
+- version: $Version
+- generated: $($reportData.generated)
+- configuration: Release (all SAFE pruning on)
+- git: $($reportData.git_commit)
+
+## 1. 最终体积
+| part | MB |
+|---|---|
+| runtime | $($sizes.runtime) |
+| app | $($sizes.app) |
+| sidecar | $($sizes.sidecar) |
+| other | $($sizes.other) |
+| total unpacked | $($sizes.total_unpacked) |
+| zip | $($sizes.zip) |
+
+## 2. vs baseline (exp7)
+| | baseline | release | delta |
+|---|---|---|---|
+| total | 503.23 | $($sizes.total_unpacked) | $([math]::Round($dTotal,2)) |
+| zip | 212.98 | $($sizes.zip) | $([math]::Round($dZip,2)) |
+
+## 3. Regression
+$(if($regression){'SIZE REGRESSION (delta > ±5MB)'}else{'no regression'})
+"@
+    Set-Content -Path $ReportPath -Value $md -Encoding utf8
+    Write-Host "[assemble] Size gate: total=$($sizes.total_unpacked)MB zip=$($sizes.zip)MB (baseline 503.23/212.98)"
+}

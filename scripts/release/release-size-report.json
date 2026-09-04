@@ -1,0 +1,32 @@
+﻿{
+    "release_version":  "0.19.0",
+    "configuration":  "Release",
+    "git_commit":  "36a1088",
+    "sizes":  {
+                  "runtime":  330.36,
+                  "app":  154.58,
+                  "sidecar":  1.66,
+                  "other":  12.64,
+                  "total_unpacked":  499.24,
+                  "zip":  211.37
+              },
+    "baseline_total_mb":  503.23,
+    "baseline_zip_mb":  212.98,
+    "delta_total_mb":  -3.99,
+    "delta_zip_mb":  -1.61,
+    "size_regression":  false,
+    "generated":  "2026-09-04T20:25:35Z",
+    "smoke_test":  {
+                       "win32controller":  "PASS",
+                       "ort_dml":  "PASS",
+                       "gui":  "NOT FULLY VERIFIED(requireAdministrator)",
+                       "numpy":  "PASS",
+                       "maaframework":  "PASS",
+                       "racing":  "PASS",
+                       "screenshot":  "NOT VERIFIED(hwnd=0)",
+                       "rapidocr":  "PASS",
+                       "opencv":  "PASS",
+                       "treasure":  "PASS"
+                   },
+    "final_conclusion":  "Production Release = READY"
+}

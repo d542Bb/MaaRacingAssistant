@@ -57,6 +57,9 @@ apps/mra_shell/obj/
 build/release/
 # 探索/验证用临时运行时（spike 的完整 python runtime 数百 MB，不入库）
 build/spike/
+# 体积优化实验产物与全量 runtime 临时目录（exp1..expN / runtime-full，可由 assemble 重建，不入库）
+build/exp*/
+build/runtime-full/
 
 # 本地复用缓存（已验证 runtime 依赖 + 已编译 GUI，跳过重复下载/编译）
 build/runtime-cache/
