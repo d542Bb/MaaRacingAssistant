@@ -26,5 +26,8 @@ jobs:
           CNB_URL: https://${{ secrets.CNB_USER }}:${{ secrets.CNB_TOKEN }}@cnb.cool/${{ secrets.CNB_ORG }}/${{ secrets.CNB_REPO }}.git
         run: |
           git remote add cnb "$CNB_URL"
-          git push --mirror cnb
+          # 不用 --mirror：它带删除语义（prune 远程多余 refs），CNB 拒绝删除默认分支
+          # master（refusing to delete the current branch）导致 tag-push 触发时恒红。
+          # 显式 refspec + force 只同步更新 heads/tags，不做删除。
+          git push cnb --force "refs/heads/*:refs/heads/*" "refs/tags/*:refs/tags/*"
           git remote remove cnb
