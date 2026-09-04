@@ -301,7 +301,8 @@ jobs:
             up_url=$(echo "$resp" | jq -r '.upload_url')
             verify_url=$(echo "$resp" | jq -r '.verify_url')
             curl -fsSL --retry 2 -X PUT --upload-file "$f" "$up_url"
-            curl -fsSL -X POST -H "$AUTH" "$verify_url"
+            # verify 端点同样要求 Accept: application/json（缺失 406，实测）
+            curl -fsSL -X POST -H "$AUTH" -H 'Accept: application/json' "$verify_url"
             echo "已上传 $(basename "$f") ($size bytes)"
           }
           upload_asset "$ZIP"
