@@ -165,6 +165,23 @@
     void detailMsg;
   }
 
+  // ---------- 后台(手柄)使用须知：每次切入 gamepad 点击方式都会弹出 ----------
+  function showGamepadNotice() {
+    openModal({
+      title: '后台(手柄)使用须知',
+      titleColor: 'var(--mra-info,#38bdf8)',
+      bodyHtml:
+        '<div style="font-size:13px;line-height:1.7;color:var(--mra-foreground,#e5e7eb);">' +
+        '<p style="margin:0 0 10px;"><b>适用场景</b>：游戏留在后台挂机，前台可正常聊聊天、看视频等——这些<b>不接收手柄操作</b>的程序不受影响，可放心共存。</p>' +
+        '<p style="margin:0 0 10px;"><b>不能与其他游戏并存</b>：本项目用虚拟手柄（ViGEmBus）输入，手柄状态对系统是<b>全局</b>的。运行期间<b>不要</b>同时启动<b>会识别手柄、接收手柄输入</b>的程序（如其他游戏、Steam 等），否则它们也会收到手柄输入，可能被误操作。</p>' +
+        '<p style="margin:0;color:var(--mra-foreground-secondary,#8b93a3);">挂机结束建议切回前台(鼠标)或停止程序，避免空闲时手柄误触。</p>' +
+        '</div>',
+      buttons: [
+        { text: '知道了', primary: true, onClick: (modal) => modal.close() },
+      ],
+    });
+  }
+
   // ---------- 注册表权限优化（启动体检 + 设置页优化中心） ----------
   // 渲染单个优化项卡片（优化中心用）：名称/状态徽章/性质/值/可选值/路径与后果（灰字）
   // 可选值与按钮文案由后端下发（dword/noopenwith 两种 kind 的语义不同）
@@ -1781,6 +1798,7 @@
           card.classList.add('mra-radio-card--selected');
           try {
             if (card.dataset.clickmode) {
+              if (card.dataset.clickmode === 'gamepad') showGamepadNotice();
               await mra.call('set_click_mode', { mode: card.dataset.clickmode });
             } else if (card.dataset.backend) {
               await mra.call('set_capture_backend', { backend: card.dataset.backend });
