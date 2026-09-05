@@ -53,6 +53,10 @@ archive/
 apps/mra_shell/bin/
 apps/mra_shell/obj/
 
+# 本地构建缓存/实验/验证产物目录（整体忽略：zip/dll/runtime-cache/publish-cache/C1 基准/7z 下载缓存等均不入库；
+# 唯一入库的 7za.exe 已在 scripts/release/tools/ 单独跟踪）
+build/
+
 # 发布打包产物（体积大，不入库；本地 staging/zip/sha256 放这里）
 build/release/
 # 探索/验证用临时运行时（spike 的完整 python runtime 数百 MB，不入库）

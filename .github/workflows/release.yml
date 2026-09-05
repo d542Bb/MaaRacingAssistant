@@ -220,22 +220,27 @@ jobs:
           & "${{ github.workspace }}\scripts\release\assemble.ps1" `
             -Version "$env:VER" `
             -RepoRoot "${{ github.workspace }}" `
-            -OutRoot "${{ github.workspace }}\build\release"
+            -OutRoot "${{ github.workspace }}\build\release" `
+            -SevenZ
 
-      - name: 校验产物存在
+      - name: 校验产物存在（zip 保底 + 7z 主推）
         shell: pwsh
         run: |
           $zip = "${{ github.workspace }}\build\release\MaaRacingAssistant-$env:VER-win-x64.zip"
-          if (-not (Test-Path $zip)) { throw "zip 未生成: $zip" }
-          Get-Item $zip | Select-Object Name, Length
+          $sevenz = "${{ github.workspace }}\build\release\MaaRacingAssistant-$env:VER-win-x64.7z"
+          if (-not (Test-Path $zip))    { throw "zip 未生成: $zip" }
+          if (-not (Test-Path $sevenz)) { throw "7z 未生成: $sevenz" }
+          Get-Item $zip, $sevenz | Select-Object Name, Length
 
-      - name: 补传 zip 到 Release
+      - name: 补传 zip + 7z 到 Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAGNAME }}
           files: |
             ${{ github.workspace }}/build/release/MaaRacingAssistant-${{ env.VER }}-win-x64.zip
             ${{ github.workspace }}/build/release/MaaRacingAssistant-${{ env.VER }}-win-x64.zip.sha256
+            ${{ github.workspace }}/build/release/MaaRacingAssistant-${{ env.VER }}-win-x64.7z
+            ${{ github.workspace }}/build/release/MaaRacingAssistant-${{ env.VER }}-win-x64.7z.sha256
 
   # CNB（cnb.cool）Release 资产同步：把 GitHub Release 的 zip/sha256 推到 CNB 仓库的
   # 同名 Release。CNB 构建节点只有 Linux 容器（无 Windows），无法自行构建本项目发布包，
@@ -259,13 +264,14 @@ jobs:
           AUTH="Authorization: Bearer ${CNB_TOKEN}"
           VER="${TAG#v}"
           ZIP="MaaRacingAssistant-${VER}-win-x64.zip"
+          SZ7="MaaRacingAssistant-${VER}-win-x64.7z"
 
-          # 1) 从 GitHub Release 下载本 tag 的资产（win-build 已补传完成）
-          curl -fsSL --retry 3 -o "$ZIP" \
-            "https://github.com/${GH_REPO}/releases/download/${TAG}/${ZIP}"
-          curl -fsSL --retry 3 -o "${ZIP}.sha256" \
-            "https://github.com/${GH_REPO}/releases/download/${TAG}/${ZIP}.sha256"
-          ls -lh "$ZIP" "${ZIP}.sha256"
+          # 1) 从 GitHub Release 下载本 tag 的资产（win-build 已补传完成）：zip 保底 + 7z 主推，各带 sha256
+          for f in "$ZIP" "${ZIP}.sha256" "$SZ7" "${SZ7}.sha256"; do
+            curl -fsSL --retry 3 -o "$f" \
+              "https://github.com/${GH_REPO}/releases/download/${TAG}/${f}"
+          done
+          ls -lh "$ZIP" "${ZIP}.sha256" "$SZ7" "${SZ7}.sha256"
 
           # 2) 确保 CNB 上存在同名 Release（镜像只同步 git refs，不同步 Release 元数据）
           # CNB API 的 GET 必须带 Accept: application/json，缺失返回 406（实测）
@@ -307,4 +313,6 @@ jobs:
           }
           upload_asset "$ZIP"
           upload_asset "${ZIP}.sha256"
+          upload_asset "$SZ7"
+          upload_asset "${SZ7}.sha256"
           echo "CNB Release 同步完成: https://cnb.cool/${CNB_REPO}/-/releases"

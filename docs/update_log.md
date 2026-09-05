@@ -2,6 +2,20 @@
 
 > 按时间顺序记录每次重大修改。
 
+## 2026-09-05
+
+### v0.21.0-dev.2 发行包 7z 双产物落地 + 体积优化收尾 + 交付账本 📦
+- **版本号：** `v0.21.0-dev.2`（预发布；基于 v0.21.0-dev.1 顺延；本轮为形态落地 + 体积优化收尾，内容侧无 payload 改动）
+- **7z 主推档 + zip 保底双产物（assemble.ps1 新增 `-SevenZ`）：** 产出 `MaaRacingAssistant-<ver>-win-x64.7z`（solid LZMA2 256M，参数 `-mx=9 -m0=LZMA2:d=256m -ms=on`，与 C1 基准一致）+ `.7z.sha256`；zip 保底始终产出（§7 不变）。CI（release.yml win-build）加 `-SevenZ` 并强校验双产物，GitHub/CNB Release 各挂 4 件资产（zip+7z+各 sha256）
+- **体积收益:** 内容侧 **Δ = 0**（本轮不改 payload，Installed 468.86 / Download zip 198.79 均与 0.20.0 收尾一致）；形态侧新增 7z 主推档 **198.79 → 136.59 MiB（−62.20 / −31.3%）**。累计链条（自 v0.20.0-dev.2 起点）：zip 211.37 → 198.79（0.20.0 exp8+exp9 收尾，−12.58 → 136.59（本轮 7z 形态，−62.20）。解压峰值内存：solid 342 MiB vs zip 10.7 MiB——内存敏感用户取 zip 保底档
+- **Win10 兼容说明（用户可见）：** 主推档 `.7z` 需 Windows 11 23H2+ 原生解压（22H2 经 KB5031455 支持），或安装 7-Zip/兼容解压软件；`.zip` 任何 Windows 双击即解压、零依赖。→ **保底档恒有 `.zip` 兜底**
+- **7-Zip LGPL 合规：** `scripts/release/tools/7za.exe`（7-Zip 26.03 x64, standalone 1.27MB）入库，随附 `7za_License.txt` + `tools/README.md`。本项目使用 7-Zip 部分文件（7za.exe），7-Zip 以 GNU LGPL 发布，源码见 `https://www.7-zip.org/`
+- **体积优化收尾（0.20.0 系列 exp8+exp9 正式编入，经评审签字）：** exp8 ORT offline tooling（google/protobuf + flatbuffers，−0.96 MiB）+ exp9 cv2 videoio ffmpeg backend（opencv_videoio_ffmpeg500_64.dll，−29.45 MiB），合计 Installed −30.41 MiB（499.24 → 468.86）。B4′-0 发布完整性核验通过（rapidocr 三模型齐全 + 离线构造成功）；EXP-9 JSONL 污染专测通过（stdout 非协议行 0）
+- **账本交付：** `runtime-pruning-policy.md` 负结果区 + `release-size-report.md`（0.20.0/0.21.0 双档）结构化落地；CLOSED-ABSENT/NEGATIVE/UNSAFE/KEEP 分类；size gate 增设 `sevenz` 记录（`baseline_7z_mb`/`delta_7z_mb`）——**7z 基线自 v0.21.0-dev.2 起建立，本期无 delta**；zip 仍为 baseline 主判据（468.86/198.79），`delta_total`/`delta_zip` 本期 = 0
+- **细节修复：** `$sevenz` 产物体积变量与 `$SevenZ` switch 的 PowerShell 变量名大小写不敏感冲突导致 String→SwitchParameter——改名 `$sevenzFile` 规避；7za 打包改 cwd+`.` 避免 `\*` 通配符被 PS 预展开
+- **验证：** assemble 复用缓存产出 zip 198.79 + 7z 136.59，Size gate no-regression；7z 与 zip 解压产物 **2267 文件逐字节 hash 全一致**（0 缺失/0 独有，证 7z 只改 packaging 不改 payload）
+- **PublishTrimmed：** 留作下轮（最贵，需 rebuild + 完整 GUI L2/L3）
+
 ## 2026-09-04
 
 ### v0.21.0-dev.1 注册表权限优化中心 + 启动体检 + ms-gamebar 协议弹窗修复 🔧

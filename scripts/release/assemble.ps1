@@ -10,6 +10,8 @@
 #   -HostPython             host interpreter, MUST be 3.11 (cp311) to match embedded
 #   -SourceRuntimeDir       reuse an existing verified runtime (skip download+pip) for local re-verify
 #   -KeepGoing              continue on error (local debug); default fail-fast
+#   -SevenZ                 additionally build .7z primary artifact (solid LZMA2 256M, per C1-C bench) + .7z.sha256; zip always built as fallback
+#   -SevenZPath             7za.exe path (default: scripts\release\tools\7za.exe -> build\7z\extra\x64\7za.exe; missing => zip-only fallback, non-fatal)
 # Internal experiment switches below (Remove*) are driven by -Configuration; ordinary release
 # does not need to pass them. See scripts/release/runtime-pruning-policy.md for the canonical whitelist.
 
@@ -27,6 +29,8 @@ param(
     [string]$VcVarsAll = '',   # native Launcher 编译用 MSVC vcvarsall.bat 路径（默认自动探测）
     [switch]$SkipPublish,
     [switch]$KeepGoing,
+    [switch]$SevenZ,        # 额外产出 .7z 主推档（solid LZMA2 256M, 参数同 C1-C 基准）+ .7z.sha256；zip 保底始终产出
+    [string]$SevenZPath = '',  # 7za.exe 路径；默认优先 scripts\release\tools\7za.exe，次选本地缓存 build\7z\extra\x64\7za.exe；均无则降级仅出 zip（不阻断）
     [switch]$RemoveWinAppSdkML,  # EXP-1: remove WinAppSDK AI/ML dead chain (43.6MB, MRA zero usage)
     [switch]$RemoveWidgets,       # EXP-2: remove WinAppSDK Widgets dead chain (2.5MB, MRA zero usage)
     [switch]$RemovePythonOrtCapi, # EXP-3: remove Python ORT capi\onnxruntime.dll (20.1MB, pyd self-contained)
@@ -37,7 +41,9 @@ param(
     [switch]$RemoveDistInfoInstallMetadata, # EXP-5C-1: remove INSTALLER/WHEEL/REQUESTED from every *.dist-info (only ~2.8KB total; install/dev-stage only, no runtime reader). METADATA/RECORD/entry_points.txt/top_level.txt untouched for 5C-1.
     [switch]$RemovePythonConsoleDev, # EXP-5E-1: remove packages\bin\*.exe console wrappers (~0.83MB/8 files: f2py numpy-config isympy normalizer idna onnxruntime_test rapidocr tqdm). All are pip console_scripts launchers (105.8KB each) for dev/test/CLI entry points. Verified: MRA sidecar & third-party runtime make ZERO subprocess/Popen calls to any of them (sidecar only runs git/taskkill); f2py.exe is an orphan (its numpy.f2py.f2py2e source was removed in EXP-5A). No native runtime/DLL embedded. Deleting loses only console CLI access, not library import. Default OFF; restore = reassemble w/o switch.
     [switch]$RemoveSympy,    # EXP-6: remove sympy (25.37MB) from packages. Verified via full-chain runtime trace (sidecar+Racing+Treasure+all third-party, 360 modules) that sympy is NEVER loaded on any MRA run path; onnxruntime DML inference does NOT load sympy either. Its only dependency source is onnxruntime_directml METADATA Requires-Dist:sympy, used only by offline tools (onnxruntime\tools\symbolic_shape_infer.py, transformers\shape_infer_helper.py) — NOT the inference/DML runtime path. MRA has zero sympy import. Deletion loses only onnxruntime offline symbolic shape-infer/quantization tooling. mpmath kept (separate EXP-7). Default OFF; restore = reassemble w/o switch.
-    [switch]$RemoveMaaAgentBinary # EXP-7: remove MaaAgentBinary (12.53MB) — Android/ADB agent binaries (23 adb/minicap + 56 minicap.so). Referenced only by maa\controller.py L802 AdbController path ("../MaaAgentBinary"); MRA uses Win32Controller (Win32 screenshot+gamepad), never ADB. Verified no runtime import loads MaaAgentBinary. Deleting breaks only future Android/ADB control. Default OFF; restore = reassemble w/o switch.
+    [switch]$RemoveMaaAgentBinary, # EXP-7: remove MaaAgentBinary (12.53MB) — Android/ADB agent binaries (23 adb/minicap + 56 minicap.so). Referenced only by maa\controller.py L802 AdbController path ("../MaaAgentBinary"); MRA uses Win32Controller (Win32 screenshot+gamepad), never ADB. Verified no runtime import loads MaaAgentBinary. Deleting breaks only future Android/ADB control. Default OFF; restore = reassemble w/o switch.
+    [switch]$RemoveOrtOffline,  # EXP-8: remove onnxruntime offline toolchain deps — google\protobuf (1.57MB) + flatbuffers (0.08MB). Both are pure-python dependencies of onnxruntime\quantization + tools (cold paths), never loaded by runtime inference; runtime closure probe (onnxruntime + RapidOCR 构造+推理) confirms both NOT in sys.modules. dist-info 保留（与 RECORD 不删先例一致）。Cost: onnxruntime quantization / offline shape-infer / ort_format_model unusable (inference path unaffected). Default OFF; restore = reassemble w/o switch.
+    [switch]$RemoveCvFfmpeg # EXP-9: remove opencv_videoio_ffmpeg500_64.dll (29.45MB) from cv2. dumpbin /dependents on cv2.pyd shows NO static dependency (ffmpeg dll is a runtime LoadLibrary'd videoio backend). Stage-2 probe (rm dll) confirms import cv2 + imencode/imdecode + cvtColor/resize/matchTemplate/dnn.NMSBoxes + chinese-path(utf8_patch chain) all OK; videoio(VideoWriter) unavailable but MRA production has ZERO videoio usage; any video-backend failure warns to STDERR, stdout(JSONL) stays clean. Cost: OpenCV video file read/write playback disabled. Default OFF; restore = reassemble w/o switch.
 )
 
 $ErrorActionPreference = 'Stop'
@@ -50,6 +56,14 @@ $RepoRoot  = (Resolve-Path $RepoRoot).Path
 if (-not (Test-Path $OutRoot)) { New-Item -ItemType Directory -Force -Path $OutRoot | Out-Null }
 $OutRoot   = (Resolve-Path $OutRoot).Path
 if (-not $RuntimeCacheDir) { $RuntimeCacheDir = Join-Path $RepoRoot 'build\runtime-cache' }
+# 7za.exe 路径解析（-SevenZ 时用）：优先入库的 scripts\release\tools\7za.exe，次选本地缓存 build\7z\extra\x64\7za.exe；
+# 均未找到保持 ''，§7.5 自动走"降级仅出 zip"分支（不阻断）。
+if (-not $SevenZPath) {
+    $builtin7z = Join-Path $RepoRoot 'scripts\release\tools\7za.exe'
+    $cache7z   = Join-Path $RepoRoot 'build\7z\extra\x64\7za.exe'
+    if (Test-Path $builtin7z)     { $SevenZPath = $builtin7z }
+    elseif (Test-Path $cache7z)   { $SevenZPath = $cache7z }
+}
 # native Launcher 编译需 MSVC；未显式指定时自动探测常见 VS 安装路径
 if (-not $VcVarsAll) {
     $candidates = @(
@@ -75,7 +89,8 @@ if (-not $VcVarsAll) {
 if ($DisableReleaseOptimizations -or $Configuration -eq 'Experimental') {
     foreach ($sw in @('RemoveWinAppSdkML','RemoveWidgets','RemovePythonOrtCapi','RemovePilAvif',
                       'RemoveCrashDiagnostics','RemoveNumpyDev','RemovePythonTypingStubs',
-                      'RemovePythonConsoleDev','RemoveSympy','RemoveMaaAgentBinary')) {
+                      'RemovePythonConsoleDev','RemoveSympy','RemoveMaaAgentBinary',
+                      'RemoveOrtOffline','RemoveCvFfmpeg')) {
         if (-not (Get-Variable -Name $sw -ErrorAction SilentlyContinue)) { New-Variable -Name $sw -Value $false }
         else { Set-Variable -Name $sw -Value $false -Force }
     }
@@ -83,13 +98,14 @@ if ($DisableReleaseOptimizations -or $Configuration -eq 'Experimental') {
 } else {
     foreach ($sw in @('RemoveWinAppSdkML','RemoveWidgets','RemovePythonOrtCapi','RemovePilAvif',
                       'RemoveCrashDiagnostics','RemoveNumpyDev','RemovePythonTypingStubs',
-                      'RemovePythonConsoleDev','RemoveSympy','RemoveMaaAgentBinary')) {
+                      'RemovePythonConsoleDev','RemoveSympy','RemoveMaaAgentBinary',
+                      'RemoveOrtOffline','RemoveCvFfmpeg')) {
         if (-not (Get-Variable -Name $sw -ErrorAction SilentlyContinue)) { New-Variable -Name $sw -Value $true }
         else { Set-Variable -Name $sw -Value $true -Force }
     }
     # 明确不纳入正式裁剪的项保持 OFF，仅保留在 Experimental 作参考
     Set-Variable -Name RemoveDistInfoInstallMetadata -Value $false -Force
-    Write-Host "[assemble] Configuration=Release; production pruning ON (10 SAFE removals)"
+    Write-Host "[assemble] Configuration=Release; production pruning ON (12 SAFE removals)"
 }
 
 $Name      = 'MaaRacingAssistant-' + $Version + '-win-x64'
@@ -470,6 +486,44 @@ if ($RemoveMaaAgentBinary) {
     }
 }
 
+# ---------- 2.66 EXP-8: remove ORT offline toolchain deps (only with -RemoveOrtOffline) ----------
+# google\protobuf (1.57MB) + flatbuffers (0.08MB) — pure-python deps of onnxruntime\quantization + tools (cold paths).
+# Runtime closure probe (import onnxruntime + RapidOCR 构造+推理, providers=[Dml,CPU]) confirms BOTH NOT loaded into
+# sys.modules; C#/python runtime inference never touches them. onnxruntime's protobuf/flatbuffers are C++-embedded.
+# dist-info 保留（最小侵入，与 policy "RECORD 不删" 先例一致）。Default OFF; restore = reassemble w/o switch.
+if ($RemoveOrtOffline) {
+    $targets = @(
+        (Join-Path $rtDir 'packages\google\protobuf'),
+        (Join-Path $rtDir 'packages\flatbuffers')
+    )
+    foreach ($t in $targets) {
+        if (Test-Path $t) {
+            $sz = (Get-ChildItem $t -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
+            Remove-Item $t -Recurse -Force
+            Write-Host ("[assemble] EXP-8 remove {0}  ({1:N2} MB)" -f (Split-Path $t -Leaf), ($sz / 1MB))
+        } else {
+            Write-Host "[assemble] EXP-8: $(Split-Path $t -Leaf) absent, skip"
+        }
+    }
+}
+
+# ---------- 2.67 EXP-9: remove cv2 videoio ffmpeg backend (only with -RemoveCvFfmpeg) ----------
+# opencv_videoio_ffmpeg500_64.dll (29.45MB) in packages\cv2. dumpbin /dependents on cv2.pyd shows NO static dependency
+# (ffmpeg dll is a runtime LoadLibrary'd videoio backend). Stage-2 probe (rm dll on stage): import cv2 + imencode/imdecode
+# + cvtColor/resize/matchTemplate/dnn.NMSBoxes + chinese-path(utf8_patch imencode->bytes->imdecode chain) all PASS;
+# videoio(VideoWriter MJPG/XVID) unavailable but MRA production has ZERO highgui/videoio usage. Any video-backend failure
+# warns to STDERR only; STDOUT(JSONL) stays clean. Default OFF; restore = reassemble w/o switch.
+if ($RemoveCvFfmpeg) {
+    $t = Join-Path $rtDir 'packages\cv2\opencv_videoio_ffmpeg500_64.dll'
+    if (Test-Path $t) {
+        $sz = (Get-Item $t).Length
+        Remove-Item $t -Force
+        Write-Host ("[assemble] EXP-9 remove opencv_videoio_ffmpeg500_64.dll  ({0:N2} MB)" -f ($sz / 1MB))
+    } else {
+        Write-Host '[assemble] EXP-9: ffmpeg dll absent, skip'
+    }
+}
+
 # ---------- 2.6 native Launcher 编译 ----------
 # 根目录唯一入口 MaaRacingAssistant.exe（薄 Launcher，见 apps/mra_launcher/launcher.c）。
 # 用 MSVC 编译为静态链接（/MT）GUI 子系统 exe，零外部 runtime 依赖；每次重新编译（体积小、快），不缓存。
@@ -591,7 +645,10 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
         'runtime\python\packages\numpy\distutils',
         'app\createdump.exe', 'app\mscordaccore.dll',
         'app\Microsoft.DiaSymReader.Native.amd64.dll',
-        'app\Microsoft.Windows.Widgets.dll'
+        'app\Microsoft.Windows.Widgets.dll',
+        'runtime\python\packages\google\protobuf',
+        'runtime\python\packages\flatbuffers',
+        'runtime\python\packages\cv2\opencv_videoio_ffmpeg500_64.dll'
     )
     foreach ($rel in $AbsentChecks) {
         $p = Join-Path $StageRoot $rel
@@ -607,6 +664,20 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
     foreach ($rel in $PresentChecks) {
         if (-not (Test-Path (Join-Path $StageRoot $rel))) {
             $errors.Add("PRUNING-REGRESSION: required '$rel' missing")
+        }
+    }
+    # rapidocr 模型完整性守卫（B4′-0 教训）：仅查目录存在会把"空 models/"放行，
+    # 而 rapidocr 3.9.2 构造即加载 det+cls+rec，任一缺失/空 → OCR 静默失效。
+    # 用 Test-Path（非 -PathType）兼容目录亦可，三模型须存在且 > 0 字节。
+    foreach ($onnx in @(
+        'runtime\python\packages\rapidocr\models\PP-OCRv6_det_small.onnx',
+        'runtime\python\packages\rapidocr\models\ch_ppocr_mobile_v2.0_cls_mobile.onnx',
+        'runtime\python\packages\rapidocr\models\PP-OCRv6_rec_small.onnx')) {
+        $mp = Join-Path $StageRoot $onnx
+        if (-not (Test-Path $mp)) {
+            $errors.Add("PRUNING-REGRESSION: required OCR model missing: $onnx")
+        } elseif ((Get-Item $mp).Length -eq 0) {
+            $errors.Add("PRUNING-REGRESSION: OCR model is 0 bytes (truncated): $onnx")
         }
     }
     # mscordbi.dll 必须在（app\，debugger attach 能力保留）
@@ -634,8 +705,34 @@ $shaLine = $hash + '  ' + (Split-Path $zip -Leaf)
 Set-Content -Path ($zip + '.sha256') -Value $shaLine -Encoding ascii
 Write-Host ("[assemble] done: {0}  {1}" -f $zip, $hash) -ForegroundColor Green
 
+# ---------- 7.5 7z 主推产物（-SevenZ 时；参数与 C1-C solid256M 基准一致） ----------
+# 7z 为极限压缩主推档；zip 保底必需（§7 恒产出）。顶层结构与 zip 一致（仅打包 $StageRoot 内容）。
+$sevenzFile = Join-Path $OutRoot ($Name + '.7z')
+if ($SevenZ) {
+    if (Test-Path $SevenZPath) {
+        if (Test-Path $sevenzFile) { Remove-Item $sevenzFile -Force }
+        if (Test-Path ($sevenzFile + '.sha256')) { Remove-Item ($sevenzFile + '.sha256') -Force }
+        # 打包 $StageRoot 内容为顶层：Set-Location 到 stage 后用 7za 打包 "."。
+        # 不把 $StageRoot\* 通配符传给原生 exe（PowerShell 会对 * 做通配扩展成多参数 → 触发
+        # "Cannot convert String to SwitchParameter"）。2>&1|Out-Null 隔离 7za stdout/stderr，
+        # 避免在 $ErrorActionPreference='Stop' 下原生命令的输出被当成 ErrorRecord 中断。
+        # §8 全程用绝对路径，不依赖 cwd，此处 Set-Location 安全。
+        $prev = Get-Location
+        Set-Location $StageRoot
+        try { & $SevenZPath 'a' '-t7z' '-mx=9' '-m0=LZMA2:d=256m' '-ms=on' $sevenzFile '.' 2>&1 | Out-Null }
+        finally { Set-Location $prev }
+        if ($LASTEXITCODE -ne 0) { $errors.Add("7z 压缩失败 (7za exit $LASTEXITCODE)") } else {
+            $hash7 = (Get-FileHash $sevenzFile -Algorithm SHA256).Hash.ToLower()
+            Set-Content -Path ($sevenzFile + '.sha256') -Value ($hash7 + '  ' + (Split-Path $sevenzFile -Leaf)) -Encoding ascii
+            Write-Host ("[assemble] 7z: {0}  {1}" -f $sevenzFile, $hash7) -ForegroundColor Green
+        }
+    } else {
+        Write-Host "[assemble] WARN: -SevenZ 已指定但找不到 7za.exe -> 降级仅出 zip（不阻断）" -ForegroundColor Yellow
+    }
+}
+
 # ---------- 8. Release Size Gate + report (Release only) ----------
-# 与已验收 baseline (exp7: total 503.23 / zip 212.98) 对比，超 ±5MB 判 SIZE REGRESSION。
+# 与已验收 baseline (0.20.0: total 468.86 / zip 198.79) 对比，涨超 5MB 判 SIZE REGRESSION。
 if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
     $g_runtime = (Get-ChildItem (Join-Path $StageRoot 'runtime') -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
     $g_app = (Get-ChildItem (Join-Path $StageRoot 'app') -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
@@ -645,21 +742,32 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
                 ForEach-Object { (Get-ChildItem $_.FullName -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum } | Measure -Sum).Sum
     $g_total = $g_runtime + $g_app + $g_sidecar + $g_other
     $g_zip = (Get-Item $zip).Length
-    $dTotal = ($g_total - 503.23MB) / 1MB
-    $dZip = ($g_zip - 212.98MB) / 1MB
+    # 7z 主推档体积（存在才记录；zip 仍为 baseline 主判据，7z 仅记录建新基线，不纳入本次 regression）
+    if (Test-Path $sevenzFile) { $g_7z = (Get-Item $sevenzFile).Length } else { $g_7z = $null }
+    # 7z 基线冷启动：本期（首个产出 7z 的版本）baseline_7z_mb = null，故 delta_7z_mb 恒 null，
+    # 只记录实测 sevenz 值；下轮把本期实测值回填为 baseline 后，delta 才开始参与观察（仍不进 regression）。
+    $baseline7z = $null
+    $d7z = if ($baseline7z -ne $null -and $g_7z) { (($g_7z - $baseline7z) / 1MB) } else { $null }
+    $dTotal = ($g_total - 468.86MB) / 1MB
+    $dZip = ($g_zip - 198.79MB) / 1MB
     $sizes = [ordered]@{
         runtime = [math]::Round($g_runtime/1MB,2); app = [math]::Round($g_app/1MB,2)
         sidecar = [math]::Round($g_sidecar/1MB,2); other = [math]::Round($g_other/1MB,2)
         total_unpacked = [math]::Round($g_total/1MB,2); zip = [math]::Round($g_zip/1MB,2)
     }
-    $regression = ([math]::Abs($dTotal) -gt 5) -or ([math]::Abs($dZip) -gt 5)
+    if ($g_7z) { $sizes['sevenz'] = [math]::Round($g_7z/1MB,2) }
+    # 仅"正向变大"判 SIZE REGRESSION：delta<0 是新增裁剪的收益，不是回归。
+    # 旧写法 abs()>5 会把 exp8/exp9 这类缩小 30+MB 的合法收益误判为 regression，属 bug。
+    $regression = ($dTotal -gt 5) -or ($dZip -gt 5)
     $gitShort = (git rev-parse --short HEAD 2>$null) -join ''
     $reportData = [ordered]@{
         release_version = $Version
         configuration = $Configuration
         git_commit = $gitShort
         sizes = $sizes
-        baseline_total_mb = 503.23; baseline_zip_mb = 212.98
+        baseline_total_mb = 468.86; baseline_zip_mb = 198.79
+        baseline_7z_mb = $baseline7z
+        delta_7z_mb = if ($d7z -ne $null) { [math]::Round($d7z,2) } else { $null }
         delta_total_mb = [math]::Round($dTotal,2); delta_zip_mb = [math]::Round($dZip,2)
         size_regression = $regression
         generated = (Get-Date).ToString('yyyy-MM-ddTHH:mm:ssZ')
@@ -684,16 +792,20 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
 | other | $($sizes.other) |
 | total unpacked | $($sizes.total_unpacked) |
 | zip | $($sizes.zip) |
+| 7z | $(if($sizes.Contains('sevenz')){$sizes.sevenz}else{'-'}) |
 
-## 2. vs baseline (exp7)
+## 2. vs baseline (0.20.0)
 | | baseline | release | delta |
 |---|---|---|---|
-| total | 503.23 | $($sizes.total_unpacked) | $([math]::Round($dTotal,2)) |
-| zip | 212.98 | $($sizes.zip) | $([math]::Round($dZip,2)) |
+| total | 468.86 | $($sizes.total_unpacked) | $([math]::Round($dTotal,2)) |
+| zip | 198.79 | $($sizes.zip) | $([math]::Round($dZip,2)) |
+| 7z（新基线，仅记录） | - | $(if($sizes.Contains('sevenz')){$sizes.sevenz}else{'-'}) | $(if($g_7z){[math]::Round($d7z,2)}else{'-'}) |
 
 ## 3. Regression
-$(if($regression){'SIZE REGRESSION (delta > ±5MB)'}else{'no regression'})
+$(if($regression){'SIZE REGRESSION (total/zip 较 baseline 涨超 5MB)'}else{'no regression'})
 "@
     Set-Content -Path $ReportPath -Value $md -Encoding utf8
-    Write-Host "[assemble] Size gate: total=$($sizes.total_unpacked)MB zip=$($sizes.zip)MB (baseline 503.23/212.98)"
+    $gateLine = "[assemble] Size gate: total=$($sizes.total_unpacked)MB zip=$($sizes.zip)MB (baseline 468.86/198.79)"
+    if ($g_7z) { $gateLine += " 7z=$($sizes.sevenz)MB" }
+    Write-Host $gateLine
 }
