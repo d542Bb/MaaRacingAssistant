@@ -8,22 +8,18 @@ MAA Resource/Tasker/RacingLoop 归属模块内部创建与管理。
 from __future__ import annotations
 
 import time
-from pathlib import Path
 
 from maa.tasker import Tasker
 from maa.resource import Resource
 
 from maaracing_assistant.core.base import ActivityContext, ActivityModule
 from maaracing_assistant.core.stage_tracker import StageTracker
+from maaracing_assistant.plugins.racing import MODEL_PATH, RES_DIR
 from maaracing_assistant.plugins.racing.renderer import RacingDebugRenderer
 from maaracing_assistant.plugins.racing.navigation import ButtonDef, Navigation
 from maaracing_assistant.plugins.racing.loop import RacingLoop
 from maaracing_assistant.core.pipeline_logger import PipelineLogger
 from maaracing_assistant.core.logger import logger
-
-
-# 模块资源目录（随插件自包含：plugins/racing/resources/）
-_RES_DIR = Path(__file__).resolve().parent / "resources"
 
 
 class RacingModule(ActivityModule):
@@ -32,7 +28,9 @@ class RacingModule(ActivityModule):
     ID = "racing"
     NAME = "极速狂飙"
     REQUIRES_GAMEPAD_EXCLUSIVE = True
-    REQUIRES = frozenset({"capture", "gamepad", "onnx"})
+    REQUIRES = frozenset({"capture", "gamepad"})
+    # 插件自带必需资源（相对插件目录）：YOLO 模型随插件分发，缺失时启动前拦截
+    REQUIRED_ASSETS = ("resources/onnx/model.onnx",)
 
     # 阶段顺序（GUI 断点选择用）
     STAGE_ORDER = [
@@ -67,9 +65,9 @@ class RacingModule(ActivityModule):
         resource = Resource()
         # gpad 不在构造注入：每局入赛前经 ctx.gamepad._get_gpad() 重新取并 bind_gpad
         # （避免 RacingLoop 跨局复用 + 每局 reset_device 销毁后指向失效 pad）
-        self.racing_loop = RacingLoop(str(self.ctx.model_path), debug=self.ctx.debug)
+        self.racing_loop = RacingLoop(str(MODEL_PATH), debug=self.ctx.debug)
         resource.register_custom_action("RacingLoop", self.racing_loop)
-        resource.post_bundle(str(_RES_DIR)).wait()
+        resource.post_bundle(str(RES_DIR)).wait()
         # MAA 绑定经 ctx 窄入口（内部持有 Win32Controller，模块不接触高权限对象）
         self.ctx.bind_tasker(tasker, resource)
         tasker.add_context_sink(PipelineLogger())

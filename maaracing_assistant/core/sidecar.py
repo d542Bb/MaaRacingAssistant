@@ -38,7 +38,11 @@ from maaracing_assistant import __version__
 from maaracing_assistant.core import opencv_utf8_patch  # noqa: F401  中文路径读写兼容，须先于任何 cv2 存图生效
 from maaracing_assistant.core.controller import MaaRacingAssistantController
 from maaracing_assistant.core.logger import logger
-from maaracing_assistant.core.registry import MODULE_REGISTRY, get_module_info
+from maaracing_assistant.core.registry import (
+    MODULE_REGISTRY,
+    check_required_assets,
+    get_module_info,
+)
 from maaracing_assistant.core.paths import config_dir, data_dir, user_data_dir
 from maaracing_assistant.core.window_utils import ensure_dpi_aware, has_physical_controller
 
@@ -418,7 +422,7 @@ class SidecarService:
             "modules": self._module_list(),
             "selected_module": self._selected_module,
             "stages": list(self._stages),
-            "model_ok": self._controller.check_model(),
+            "model_ok": self._selected_module_assets_ok(),
             "is_running": self._controller.module_active,
         }, None)
 
@@ -434,6 +438,18 @@ class SidecarService:
                 (mid, get_module_info(mid)) for mid in MODULE_REGISTRY
             )
         ]
+
+    def _selected_module_assets_ok(self) -> bool:
+        """当前选中模块的插件自带资源（REQUIRED_ASSETS）是否齐全。
+
+        未选中模块时不告警（True）；模块被剥离/未注册时同样不告警，由启动校验兜底。
+        """
+        if not self._selected_module:
+            return True
+        try:
+            return not check_required_assets(self._selected_module)
+        except KeyError:
+            return True
 
     def select_module(self, params):
         module_id = params.get("module_id")
@@ -563,10 +579,11 @@ class SidecarService:
         if info["requires_gamepad_exclusive"] and has_physical_controller():
             return (False, None, "请断开所有物理手柄后再运行")
 
-        # 仅对申明了 onnx 能力（如 racing 的 YOLO）的模块校验本地模型存在；
-        # 鉴宝等无需模型的模块不再被无条件拦截。
-        if "onnx" in info["requires"] and not self._controller.check_model():
-            return (False, None, "模型未找到，请检查 assets/model/model.onnx")
+        # 插件自带资源校验（REQUIRED_ASSETS，如 racing 的 YOLO 模型）：
+        # 模型已随插件自包含（plugins/<id>/resources/），缺失时拦截并给出插件内具体路径。
+        missing_assets = check_required_assets(module_id)
+        if missing_assets:
+            return (False, None, "插件资源缺失: " + ", ".join(missing_assets))
 
         # 启动阶段检测：依赖虚拟手柄的模块（racing）在 ViGEmBus 驱动缺失时提前拦下，
         # 返回结构化错误码 VIGEM_BUS_MISSING，供前端弹「下载并安装 ViGEmBus 驱动」引导。

@@ -182,4 +182,4 @@ class TestTreasureAdapter:
         assert b.debug_root.name == "treasure"
 
     def test_template_dir(self):
-        assert t_adapter.template_dir().name == "resources"
+        assert t_adapter.template_dir().name == "image"

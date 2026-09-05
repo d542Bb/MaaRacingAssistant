@@ -83,15 +83,15 @@ pip show maafw vgamepad onnxruntime-directml rapidocr numpy opencv-python
 
 | 文件 | 路径 | 缺失后果 |
 |------|------|---------|
-| YOLO 模型 | `assets/model/model.onnx` | 极速狂飙不可启动（sidecar 会提示「模型未找到」） |
+| YOLO 模型（随 racing 插件自包含） | `maaracing_assistant/plugins/racing/resources/onnx/model.onnx` | 极速狂飙不可启动（sidecar 会提示「插件资源缺失: plugins/racing/resources/onnx/model.onnx」） |
 
 ```bash
-dir assets\model\model.onnx
+dir maaracing_assistant\plugins\racing\resources\onnx\model.onnx
 ```
 
 预期：文件存在且非 0 字节。
 
-> 鉴宝模块不需要 model.onnx，缺失只影响极速狂飙。训练导出见 [docs/CODE_WIKI.md](docs/CODE_WIKI.md#训练) 或 `tools/training/train.py`。
+> 鉴宝模块不需要 model.onnx，缺失只影响极速狂飙。训练导出见 [赛车域文档 §9](../maaracing_assistant/plugins/racing/CODE_WIKI.md) 或 `tools/training/train.py`。
 
 ---
 
@@ -175,7 +175,7 @@ echo {"id":1,"method":"get_initial_state","params":{}}
 | `pip install` 网络失败 | 代理 / 镜像问题 | 换国内镜像 `pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt` |
 | pytest 报 `No module named pytest` | 未装 test 依赖 | `pip install "pytest>=7.0"` |
 | GUI 版本号一直不出现 / 后端 unavailable | 仓库根 `.venv` 缺失或不在仓库根 | 见 B2 警告 | 
-| 极速狂飙点「开始」提示模型未找到 | `assets/model/model.onnx` 缺失 | 见 C |
+| 极速狂飙点「开始」提示模型未找到 | `plugins/racing/resources/onnx/model.onnx` 缺失 | 见 C |
 | 鉴宝一直「等待」、阶段不动 | 前台校验失败或窗口未就绪 | 切游戏到前台；确认分辨率 1280×720 |
 
 ---

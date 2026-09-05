@@ -37,7 +37,6 @@ from maaracing_assistant.plugins.treasure.strategy import (
     BidContext,
     BidStrategy,
     DECISION_OBSERVE,
-    DECISION_PASS,
     RoundSnapshot,
     STRATEGY_LABEL,
     VAL_COEF,
@@ -53,10 +52,7 @@ from maaracing_assistant.core.window_utils import (
     verify_frame_client,
 )
 from maaracing_assistant.core.logger import logger
-
-# 模块资源目录（随插件自包含：plugins/treasure/resources/，不再依赖主程序 assets/）。
-# 定位基准 = 本文件所在目录，与安装/工作目录解耦。
-_RES_DIR = Path(__file__).resolve().parent / "resources"
+from maaracing_assistant.plugins.treasure import CONFIG_DIR, IMAGE_DIR
 
 
 class ClickRetryExhaustedError(RuntimeError):
@@ -75,7 +71,7 @@ def _load_action_centers(proj: Path) -> tuple[dict[str, tuple[float, float]], di
     两个分类；缺失/损坏时返回空 dict。宽高供手柄模式点击容差用（落点在框中心
     70% 区域内即可按 A——ROI 本对标整个可交互区域，无需像素级精确到中心）。
     """
-    path = _RES_DIR / "treasure_rois.json"
+    path = CONFIG_DIR / "treasure_rois.json"
     if not path.exists():
         return {}, {}
     try:
@@ -161,13 +157,12 @@ def _load_appraiser_templates(
 
     返回: [(priority, key, gray_ndarray, rect, threshold), ...]，至少 0 项，不崩溃。
     """
-    tpl_dir = _RES_DIR
     defs: list[tuple[int, str, str, tuple[float, float, float, float], float]] = [
         (prio, key, fname, _APPRAISER_SEARCH_ROI, _APPRAISER_MATCH_THRESHOLD)
         for prio, key, fname in _APPRAISER_TEMPLATE_DEFS
     ]
     try:
-        with open(tpl_dir / "treasure_rois.json", "r", encoding="utf-8") as f:
+        with open(CONFIG_DIR / "treasure_rois.json", "r", encoding="utf-8") as f:
             data = json.load(f)
         seg = data.get("appraisers")
         if isinstance(seg, dict):
@@ -196,7 +191,7 @@ def _load_appraiser_templates(
     for prio, key, fname, rect, threshold in defs:
         if not fname:
             continue
-        p = tpl_dir / fname
+        p = IMAGE_DIR / fname
         if not p.exists():
             continue
         img = cv2.imread(str(p))
@@ -221,8 +216,7 @@ def _load_selected_check(
      文件缺失/损坏/rect 非法返回 None（选中判定自动跳过）。
     """
     _, fname = _SELECTED_CHECK_DEF
-    tpl_dir = _RES_DIR
-    p = tpl_dir / fname
+    p = IMAGE_DIR / fname
     if not p.exists():
         return None
     img = cv2.imread(str(p))
@@ -233,7 +227,7 @@ def _load_selected_check(
         return None
     # rect：stage.appraiser_selected_check
     rect: tuple[float, float, float, float] | None = None
-    rois_path = _RES_DIR / "treasure_rois.json"
+    rois_path = CONFIG_DIR / "treasure_rois.json"
     if rois_path.exists():
         try:
             with open(rois_path, "r", encoding="utf-8") as f:
@@ -259,7 +253,7 @@ def _load_session_panel(
     （判定降级为未匹配 → 始终先点目标场次 badge，再点开始匹配位置）。
     """
     rois: dict[str, tuple[float, float, float, float]] = {}
-    path = _RES_DIR / "treasure_rois.json"
+    path = CONFIG_DIR / "treasure_rois.json"
     if path.exists():
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -270,13 +264,12 @@ def _load_session_panel(
                     rois[key] = (float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3]))
         except Exception:
             pass
-    tpl_dir = _RES_DIR
     out: list[tuple[int, str, np.ndarray, tuple[float, float, float, float]]] = []
     for prio, key, fname in _SESSION_PANEL_DEFS:
         rect = rois.get(key)
         if rect is None:
             continue
-        p = tpl_dir / fname
+        p = IMAGE_DIR / fname
         if not p.exists():
             continue
         img = cv2.imread(str(p))
@@ -424,8 +417,7 @@ def _load_smart_bid_btn(
     rect 从 treasure_rois.json 的 stage.smart_bid_btn 读取（调试台可调）。
     文件缺失/损坏/rect 非法返回 None（面板已开判定自动降级 → 依赖主按钮 OCR 兜底）。
     """
-    tpl_dir = _RES_DIR
-    p = tpl_dir / "bid_smart_btn.png"
+    p = IMAGE_DIR / "bid_smart_btn.png"
     if not p.exists():
         return None
     img = cv2.imread(str(p))
@@ -435,7 +427,7 @@ def _load_smart_bid_btn(
     if gray.size == 0 or gray.shape[0] < 4 or gray.shape[1] < 4:
         return None
     rect: tuple[float, float, float, float] | None = None
-    rois_path = _RES_DIR / "treasure_rois.json"
+    rois_path = CONFIG_DIR / "treasure_rois.json"
     if rois_path.exists():
         try:
             with open(rois_path, "r", encoding="utf-8") as f:
@@ -541,6 +533,16 @@ class TreasureModule(ActivityModule):
     })
     CLICK_RETRY_FRAMES = 10        # 点击后等多少帧仍未切换 → 判定失败（主循环 ~300ms/帧 ≈ 3s，给足转场动画时间）
     CLICK_RETRY_MAX = 3            # 同一意图最多重试次数（含首点共 4 次），仍失败则停手并 WARNING
+    # 领取分红「跳过动画」点击无响应兜底：跳过动画点击成功（ok=true）后，本场收入
+    # （_settle_my_income）应被 OCR 读出（动画跳过 → 数据出现）。若等待
+    # SETTLE_SKIP_RETRY_FRAMES 帧仍无收入 → 判定点击落空/游戏无响应（实测场景：
+    # 点领取后按钮/动画无反应，收入永远读不到而静默卡死）→ 清指纹重新点击，
+    # 最多 SETTLE_SKIP_RETRY_MAX 次仍无响应 → 抛 ClickRetryExhaustedError 终止模块。
+    # 注意与「真领取」重试的区分（成功信号不同）：
+    #   - 跳过动画：成功信号 = 收入读出（OCR 字段变化），在本常量独立实现
+    #   - 真领取：  成功信号 = 阶段切走，复用 _maybe_retry_stage_click 的 stage 判定
+    SETTLE_SKIP_RETRY_FRAMES = 10  # 点击后等多少帧仍未读到收入 → 判定无响应（≈3s，给足动画+OCR 时间）
+    SETTLE_SKIP_RETRY_MAX = 3      # 最多重试次数（含首点共 4 次），仍无响应则终止模块
     # 弹窗连点用短周期（3帧 ≈ 0.9s）：模板 1 帧出、OCR 2 帧稳（用户实测）。
     # 与阶段切换类 key（CLICK_RETRY_FRAMES=10，要等转场动画）目的相反——弹窗要"连续关多个弹窗"，
     # 故 per-key 覆盖重试帧数，不动全局常量（全局降 3 会误伤卡片/领取等转场点击，2026-08-15 洞3）。
@@ -840,6 +842,9 @@ class TreasureModule(ActivityModule):
         self._appraiser_confirmed_once: bool = False
         # --------- 问题5：领取分红"跳过动画点一次"标记，防连点 ---------
         self._settle_collect_clicked_once: bool = False
+        # 跳过动画点击无响应兜底状态（点击成功 → 计时；收入读出/换场/切阶段归零）：
+        self._settle_skip_since: int = 0            # 最近一次跳过动画点击成功的帧号
+        self._settle_skip_retry_count: int = 0      # 无响应重试次数（达 SETTLE_SKIP_RETRY_MAX 终止）
         # --------- 结算后弹窗（今日最高/奖励彩蛋）状态 ----------
         self._egg_counts: dict[str, int] | None = None  # 本场彩蛋 {red,yellow,blue}（仅记录，Phase2 填充）
         self._egg_read_done: bool = False              # 彩蛋数量已读完（稳定确认后置位）
@@ -1234,6 +1239,8 @@ class TreasureModule(ActivityModule):
             # 跳过数据加载动画，防止连点把结算页直接关掉退出去）
             if stage_name == "领取分红":
                 self._settle_collect_clicked_once = False
+                self._settle_skip_since = 0
+                self._settle_skip_retry_count = 0
             # 离开「结算弹窗」阶段 → 彩蛋识别窗口结束，清 _egg_reading
             if stage_name != "结算弹窗":
                 self._egg_reading = False
@@ -1270,6 +1277,8 @@ class TreasureModule(ActivityModule):
                     self._store.flush_game_record()
                 self._reset_round_state(reason=f"进入{stage_name}")
                 self._settle_my_income = None
+                self._settle_skip_since = 0
+                self._settle_skip_retry_count = 0
                 self._settle_final_price = None
                 self._settle_total_price = None
                 self._settle_profit = None
@@ -2121,8 +2130,9 @@ class TreasureModule(ActivityModule):
             and self._our_bids[self._round_no - 1] > 0
             else None
         )
-        # 对手最高价史（逐回合，已完成回合）：供策略按加价意愿动态收缩预测缓冲。
-        # 我方槽位 _my_rank 从对手集合排除；某回合任一对空缺读则跳过该回合（不参与趋势）。
+        # 对手最高价史（逐回合，已完成回合）：V3 策略据此算对手已证明火力
+        # M = max(历史各轮最高, 上轮快照对手最高)（出价可回放，历史峰值才是真实上限）。
+        # 我方槽位 _my_rank 从对手集合排除；某回合任一对空缺读则跳过该回合（不参与峰值）。
         opp_high: list[int] = []
         my_slot = self._my_rank
         if my_slot is not None and self._player_bids:
@@ -2233,18 +2243,6 @@ class TreasureModule(ActivityModule):
             return
         dec = self._strategy.decide(ctx)
         T = dec.price
-
-        # ---------- pass：策略弃权（区间空/无对手信息）→ 嘲讽出价 250，不静默死等 ----------
-        # 原实现是"保持面板现状不动作"，PASS 分支不打日志也没超时兜底 → 面板永久挂着像"卡住"。
-        # 现改为把目标价 T 强设为 250（最小档嘲讽报价），照常落入下方通用输入子状态机
-        # （清空残留界面价 → 输入 250 → 确认），既送出报价不浪费回合，又维持严格兜底
-        # （250 极低，绝不接盘，不破坏 risk_cap 语义）。
-        if dec.decision == DECISION_PASS:
-            T = 250
-            logger.log(
-                f"[鉴宝出价] 策略 PASS（{dec.reason}）→ 嘲讽出价 {T}，走输入确认链路",
-                "INFO",
-            )
 
         # ---------- 余额不足钳制：出价不能超过余额，否则游戏会重置输入框 → 无限编辑循环 ----------
         # 仅当余额已知（真实 0 或正数）才钳制；余额未知（BALANCE_UNKNOWN）不钳制（策略已在 cap 约束内）。
@@ -2519,6 +2517,37 @@ class TreasureModule(ActivityModule):
                     "INFO",
                 )
                 return {"key": "settle_collect_red_btn", "hint": "点领取跳过数据动画（之后等 OCR 读完整再准星再指）"}
+            # 跳过动画点击无响应兜底：已点跳过动画（clicked_once=True）但收入迟迟未读出。
+            # 点击物理成功（ok=true）≠ 游戏收到——实测场景：点领取后按钮/动画无反应，
+            # 收入永远读不到，原逻辑在此静默卡死。这里超时后清指纹重新 arm 再点一次：
+            # 重试指纹带 clicked_once=True 位，与首点（False）不同，不会撞指纹锁；
+            # 达 SETTLE_SKIP_RETRY_MAX 仍无响应 → 判定点击链路失效，终止模块（对齐
+            # 阶段切换类重试的失败后果，不再静默）。
+            if self._frame_counter - self._settle_skip_since >= self.SETTLE_SKIP_RETRY_FRAMES:
+                if self._settle_skip_retry_count >= self.SETTLE_SKIP_RETRY_MAX:
+                    logger.log(
+                        f"[鉴宝分红] 跳过动画点击重试 {self.SETTLE_SKIP_RETRY_MAX} 次后"
+                        f"仍读不到本场收入（点击疑似始终无响应），终止模块", "ERROR",
+                    )
+                    raise ClickRetryExhaustedError(
+                        f"领取分红跳过动画点击重试 {self.SETTLE_SKIP_RETRY_MAX} 次仍无响应"
+                        f"（本场收入始终未读出），请检查游戏界面/点击方式后重新开始"
+                    )
+                self._settle_skip_retry_count += 1
+                self._settle_skip_since = self._frame_counter
+                self._last_click_fingerprint = None  # 重新 arm → 本帧同一意图可再次点击
+                confirm = self._action_centers.get("settle_collect_red_btn")
+                logger.log(
+                    f"[鉴宝分红] 跳过动画点击疑似无响应"
+                    f"（点击后 {self.SETTLE_SKIP_RETRY_FRAMES} 帧收入未读出），"
+                    f"第 {self._settle_skip_retry_count}/{self.SETTLE_SKIP_RETRY_MAX} 次重试",
+                    "WARNING",
+                )
+                return {
+                    "key": "settle_collect_red_btn",
+                    "center": confirm,
+                    "hint": f"跳过动画点击疑似无响应，第 {self._settle_skip_retry_count} 次重试...",
+                }
             return {"key": "dividend_waiting", "hint": "已跳动画，等待 OCR 读本场收入/利润...（数据齐后准星再指领取）"}
         # 结算弹窗（合并阶段：今日最高/等级提升/彩蛋，弹窗遮满全屏）。
         # 具体是哪个弹窗由检测器 _last_hit_roi_key 区分：
@@ -2922,9 +2951,12 @@ class TreasureModule(ActivityModule):
             self._click_retry_since = self._frame_counter
         # 领取分红"跳过动画"首次点击成功后才置位（失败时意图持续，下帧重试）
         if (key == "settle_collect_red_btn" and self._current_stage == "领取分红"
-                and self._settle_my_income is None and not self._settle_collect_clicked_once):
-            self._settle_collect_clicked_once = True
-            logger.log("[鉴宝分红] 已点击领取（跳过动画），标记置位，等 OCR 读本场收入...", "INFO")
+                and self._settle_my_income is None):
+            # 每次点击成功都重启无响应计时（含重试点击），防"重试后立即再重试"的连点风暴
+            self._settle_skip_since = self._frame_counter
+            if not self._settle_collect_clicked_once:
+                self._settle_collect_clicked_once = True
+                logger.log("[鉴宝分红] 已点击领取（跳过动画），标记置位，等 OCR 读本场收入...", "INFO")
         self.record_event("click",
                           extra_msg=f"方式={mode_label} state={state} key={key} 屏幕=({sx},{sy})")
         logger.log(
@@ -4233,6 +4265,9 @@ class TreasureModule(ActivityModule):
                         )
                     elif prev != amt:
                         self._settle_my_income = amt
+                        # 收入读出 = 跳过动画已生效 → 无响应计时/重试计数归零
+                        self._settle_skip_since = 0
+                        self._settle_skip_retry_count = 0
                         logger.log(
                             f"[鉴宝] OCR settle_my_income = {amt:,}"
                             + (f"（覆盖旧值{prev:,}）" if prev is not None else ""),

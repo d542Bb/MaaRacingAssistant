@@ -78,14 +78,13 @@ class RacingLoop(CustomAction):
         self._steer_alpha: float = 0.80
 
         # 加载结束检测模板（任一匹配即认为本轮结束）
-        from pathlib import Path
+        from maaracing_assistant.plugins.racing import RES_DIR
         self._end_templates: list[tuple[np.ndarray, str, float]] = []  # (gray, name, threshold)
-        res_dir = Path(__file__).resolve().parent / "resources"
         for tpl_file, label, threshold in [
             ("store_popup_template.jpg", "商店弹窗", 0.90),
             ("round1_end_template.jpg", "回合1结束", 0.55),
         ]:
-            tpl_path = res_dir / "image" / tpl_file
+            tpl_path = RES_DIR / "image" / tpl_file
             if tpl_path.exists():
                 tpl = cv2.imread(str(tpl_path))
                 if tpl is not None:

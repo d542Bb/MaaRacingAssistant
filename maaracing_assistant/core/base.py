@@ -104,10 +104,9 @@ class ActivityContext:
         # 依赖它的模块（如 racing）在启动前拦下，而不是运行中途崩。
         if self.app.gamepad_available():
             result.add("gamepad")
-        # onnx 能力：本地 YOLO 模型（assets/model/model.onnx）存在时暴露。
-        # 只有申明 REQUIRES 含 "onnx" 的模块（如 racing）启动才依赖它，鉴宝等无需拦截。
-        if self.app.check_model():
-            result.add("onnx")
+        # onnx 能力已随模型插件化移除：YOLO 模型归 racing 插件自带
+        # （plugins/racing/resources/onnx/），缺失校验走模块类 REQUIRED_ASSETS 声明，
+        # 由 registry/sidecar 按插件目录检查，不再是宿主全局能力。
         # debug_renderer 恒可用（debug 实例常驻）
         result.add("debug_renderer")
         return frozenset(result)
@@ -123,11 +122,6 @@ class ActivityContext:
     def proj(self) -> Path:
         """项目根目录"""
         return self.app.proj
-
-    @property
-    def model_path(self) -> Path:
-        """YOLO 模型路径"""
-        return self.app.model_path
 
     @property
     def capture_backend(self) -> str:
@@ -186,6 +180,10 @@ class ActivityModule(ABC):
     # 固有能力 lifecycle 隐式满足，无需声明。
     # 示例：REQUIRES = frozenset({"capture", "gamepad"})
     REQUIRES: frozenset[str] = frozenset()
+
+    # 声明插件自带的必需资源（相对插件目录的路径，如 "resources/onnx/model.onnx"）。
+    # 启动前由 sidecar 逐项检查存在性，缺失时拦截并给出插件内具体路径。
+    REQUIRED_ASSETS: tuple[str, ...] = ()
 
     def __init__(self, ctx: ActivityContext):
         self.ctx = ctx

@@ -42,7 +42,6 @@ class MaaRacingAssistantController:
         # DPI awareness：进程级语义，须在创建窗口 / 初始化坐标 API 前显式建立（不继承 shell 配置）
         ensure_dpi_aware()
         self.proj = Path(__file__).resolve().parent.parent.parent
-        self.model_path = self.proj / "assets" / "model" / "model.onnx"
         self.controller = None  # MAA Win32Controller（连接后有效，未连接为 None）
         self._hwnd = 0  # 已连接的游戏窗口句柄（未连接为 0）
         self._gpad = None  # 虚拟手柄，首次使用时创建，不复位不销毁
@@ -387,9 +386,6 @@ class MaaRacingAssistantController:
                 cap.stop()
             except Exception:
                 pass
-
-    def check_model(self) -> bool:
-        return self.model_path.exists()
 
     def connect(self) -> bool:
         """幂等窗口连接：仅创建 Win32Controller 并保存句柄，MAA 资源归活动模块创建"""

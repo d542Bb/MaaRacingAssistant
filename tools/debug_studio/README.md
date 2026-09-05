@@ -43,7 +43,7 @@ tools/debug_studio/
 调试台打开会话 ──框选/调阈值──→ 原子保存
                           │
                           ▼
-    plugins/treasure/resources/treasure_rois.json   ←—— 唯一真源（v2 schema）
+    plugins/treasure/resources/config/treasure_rois.json   ←—— 唯一真源（v2 schema）
                           │
 模块下次启动 ──加载──→ ROI / 模板列表 / 阈值立即生效
 ```

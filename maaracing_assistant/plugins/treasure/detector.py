@@ -28,9 +28,7 @@ import cv2
 import numpy as np
 
 from maaracing_assistant.core.logger import logger
-
-# 模块资源目录（随插件自包含：plugins/treasure/resources/）
-_RES_DIR = Path(__file__).resolve().parent / "resources"
+from maaracing_assistant.plugins.treasure import CONFIG_DIR, IMAGE_DIR
 
 
 MATCH_THRESHOLD = 0.75  # TM_CCOEFF_NORMED
@@ -44,7 +42,7 @@ MATCH_SCALES: tuple[float, ...] = (
 )
 
 # ============================================================
-# 搜索 ROI：从插件资源目录 plugins/treasure/resources/treasure_rois.json 读取
+# 搜索 ROI：从插件资源目录 plugins/treasure/resources/config/treasure_rois.json 读取
 # （调试台 tools/debug_studio 负责可视化校准并保存该文件）。
 # rect 为归一化坐标 (x1n, y1n, x2n, y2n)，匹配时直接乘当前输入帧 W/H。
 # 注意：不提供硬编码 fallback——JSON 缺失/失败时如实报告并跳过，
@@ -60,7 +58,7 @@ def _load_rois(proj: Path) -> dict:
     """
     global _roi_thresholds
     _roi_thresholds = {}
-    path = _RES_DIR / "treasure_rois.json"
+    path = CONFIG_DIR / "treasure_rois.json"
     if not path.exists():
         logger.log(f"[鉴宝检测器] 未找到 {path.name}，无法配置任何 ROI，阶段检测将跳过", "WARNING")
         return {}
@@ -142,7 +140,7 @@ _ROUND_RE = re.compile(r"round(\d+)", re.IGNORECASE)
 
 def _load_schema(proj: Path) -> dict:
     """读取完整 v2（或旧）schema；失败返回空 dict。"""
-    path = _RES_DIR / "treasure_rois.json"
+    path = CONFIG_DIR / "treasure_rois.json"
     if not path.exists():
         return {}
     try:
@@ -158,7 +156,7 @@ def _load_roi_templates(proj: Path) -> dict[str, list[str]]:
 
     不提供硬编码兜底：JSON 未给某 ROI 配模板时如实返回空，由 detect 跳过该 ROI，
     避免用默认模板掩盖配置缺失导致阶段误判。"""
-    path = _RES_DIR / "treasure_rois.json"
+    path = CONFIG_DIR / "treasure_rois.json"
     data: dict = {}
     if path.exists():
         try:
@@ -181,7 +179,7 @@ class TreasureStageDetector:
     """巅峰鉴宝自动阶段检测器（无状态，局部 ROI 匹配）"""
 
     def __init__(self, proj: Path, ocr=None):
-        self.tpl_dir = _RES_DIR
+        self.tpl_dir = IMAGE_DIR
         self._tpl_cache: dict[str, np.ndarray | None] = {}
         self.ROI = _load_rois(proj)       # ← 从调试台 JSON 读取 ROI 区域（仅 stage 运行时）
         self.ROI_TPL = _load_roi_templates(proj)  # ← 从调试台 JSON 读取每个 stage ROI 的模板列表

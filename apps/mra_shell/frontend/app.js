@@ -715,7 +715,7 @@
       refreshModuleOptions(data.selected_module);
       // 按当前模块渲染「数据/设置」页卡片
       renderModulePages(data.selected_module);
-      if (!data.model_ok) setStatus('模型未找到', 'error');
+      if (!data.model_ok) setStatus('插件资源缺失', 'error');
     } catch (e) {
       console.error(e);
       showError('初始化失败: ' + e.message);

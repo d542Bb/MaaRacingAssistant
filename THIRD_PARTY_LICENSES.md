@@ -5,7 +5,7 @@
 
 ## 项目自身许可（分层）
 - **本项目源码**（`maaracing_assistant/`、`apps/mra_shell/` 等）采用 **Apache-2.0**（见根目录 `LICENSE`）。
-- **模型权重 `assets/model/model.onnx` 单独采用 AGPL-3.0**（见下方「模型权重」一节）；
+- **模型权重 `maaracing_assistant/plugins/racing/resources/onnx/model.onnx` 单独采用 AGPL-3.0**（见下方「模型权重」一节）；
   AGPL 仅作用于该权重文件，本项目其余代码非其衍生作品，保留 Apache-2.0。
 
 ---
@@ -39,7 +39,7 @@
 
 ## 二、模型权重（AGPL-3.0）
 
-`assets/model/model.onnx` 由 **Ultralytics 官方预训练权重** `yolo11n.pt` + Ultralytics 训练代码
+`maaracing_assistant/plugins/racing/resources/onnx/model.onnx` 由 **Ultralytics 官方预训练权重** `yolo11n.pt` + Ultralytics 训练代码
 在自有标注数据上微调导出（见 `tools/training/train.py`）。
 
 - 按 Ultralytics 的许可立场，该微调模型视为 **AGPL-3.0 衍生作品**，随本发布包再分发需遵循 AGPL-3.0。

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-YOLO11n 训练脚本：自动训练并导出 ONNX 到 assets/model/
+YOLO11n 训练脚本：自动训练并导出 ONNX 到 racing 插件资源目录
+（maaracing_assistant/plugins/racing/resources/onnx/，模型随插件自包含分发）。
 
 许可证注意：本脚本用 Ultralytics 官方预训练权重 yolo11n.pt 微调导出，
-产出的 model.onnx 视为 AGPL-3.0 衍生作品（见 assets/model/README.md）。
+产出的 model.onnx 视为 AGPL-3.0 衍生作品（见同目录 resources/onnx/README.md）。
 发布冒烟/CI 之外，请勿把该模型用于不开放源码的商业场合而未取得
 Ultralytics Enterprise License。
 """
@@ -36,7 +37,7 @@ def main():
     best.export(format="onnx", imgsz=640, simplify=True, opset=12)
     onnx_path = project_dir / "weights" / "best.onnx"
 
-    dst = tools_dir.parent / "assets" / "model" / "model.onnx"
+    dst = tools_dir.parent / "maaracing_assistant" / "plugins" / "racing" / "resources" / "onnx" / "model.onnx"
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(onnx_path, dst)
     print(f"导出完成: {onnx_path}")

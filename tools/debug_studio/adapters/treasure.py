@@ -9,7 +9,7 @@ adapter 端点（server 转发），供 racing 等未来模块复用同一 serve
 
 结构落点（迁移自 treasure_debug_studio/server.py）：
     - 类别：stage / actions / ocr / appraisers / eggs
-    - ROI 文件：plugins/treasure/resources/treasure_rois.json
+    - ROI 文件：plugins/treasure/resources/config/treasure_rois.json
     - 截图根：debug/treasure/（会话目录）
     - 领域端点：/api/ocr_recognize（RapidOCR 单 ROI）、/api/eggs_recognize（彩蛋识别）
 """
@@ -66,7 +66,7 @@ def make_session_browser() -> SessionBrowser:
 
 
 def template_dir() -> Path:
-    return PROJ / "maaracing_assistant" / "plugins" / "treasure" / "resources"
+    return PROJ / "maaracing_assistant" / "plugins" / "treasure" / "resources" / "image"
 
 
 # ---------------------------------------------------------------------------

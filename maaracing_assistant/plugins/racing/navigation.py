@@ -104,7 +104,8 @@ class Navigation:
 
     def _load_template(self, name: str) -> Optional[np.ndarray]:
         """加载模板图片（优先 png，其次 jpg），返回 RGB ndarray"""
-        img_dir = Path(__file__).resolve().parent / "resources" / "image"
+        from maaracing_assistant.plugins.racing import RES_DIR
+        img_dir = RES_DIR / "image"
         for ext in (".png", ".jpg"):
             path = img_dir / f"{name}{ext}"
             if path.exists():

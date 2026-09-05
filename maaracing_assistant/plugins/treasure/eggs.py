@@ -33,8 +33,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-# 模块资源目录（随插件自包含：plugins/treasure/resources/）
-_RES_DIR = Path(__file__).resolve().parent / "resources"
+from maaracing_assistant.plugins.treasure import CONFIG_DIR, IMAGE_DIR
 
 
 MATCH_THRESHOLD = 0.72  # TM_CCOEFF_NORMED（与鉴宝师匹配同一数量级）
@@ -133,7 +132,7 @@ class EggRewardRecognizer:
     """
 
     def __init__(self, proj: Path, ocr=None):
-        self.tpl_dir = _RES_DIR
+        self.tpl_dir = IMAGE_DIR
         self._ocr = ocr
         # (gray_tpl, rect_norm, threshold)
         self._entry: tuple[np.ndarray, tuple[float, float, float, float], float] | None = None
@@ -145,7 +144,7 @@ class EggRewardRecognizer:
 
     # ---------- 加载 ----------
     def _load(self, proj: Path) -> None:
-        path = self.tpl_dir / "treasure_rois.json"
+        path = CONFIG_DIR / "treasure_rois.json"
         data: dict = {}
         if path.exists():
             try:

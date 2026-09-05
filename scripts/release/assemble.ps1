@@ -578,9 +578,11 @@ if (-not (Test-Path (Join-Path $appDir 'mra_shell.exe'))) {
 }
 
 # ---------- 3. whitelist ----------
+# 模型已随插件自包含（maaracing_assistant/plugins/*/resources/，经下方 robocopy 整包带出），
+# assets/ 仅保留应用级资产（图标/演示图/框架配置）。
 foreach ($rel in @(
     'pyproject.toml', 'LICENSE', 'THIRD_PARTY_LICENSES.md',
-    'assets\model', 'assets\icon.ico',
+    'assets\icon.ico',
     'assets\mra_icon.png', 'assets\config', 'apps\mra_shell\frontend')) {
     $src = Join-Path $RepoRoot $rel
     if (Test-Path $src) {

@@ -330,6 +330,6 @@ MaaRacingAssistant/
 
 本项目源码采用 [Apache-2.0](LICENSE) © ZRY。
 
-> 分层许可说明：项目源码为 Apache-2.0（宽松许可）；模型权重 `assets/model/model.onnx` 单独沿用
-> AGPL-3.0（见 [assets/model/README.md](assets/model/README.md)）；运行时依赖各自保留其许可证
+> 分层许可说明：项目源码为 Apache-2.0（宽松许可）；模型权重 `maaracing_assistant/plugins/racing/resources/onnx/model.onnx` 单独沿用
+> AGPL-3.0（见同目录 `README.md`）；运行时依赖各自保留其许可证
 > （含 LGPL-3.0 的 MaaFramework）。详见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)。

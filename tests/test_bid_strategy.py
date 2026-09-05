@@ -123,14 +123,15 @@ def test_r4_slight_firefight_second():
 # ----------------------------------------------------------------------
 # 区间空 → pass
 # ----------------------------------------------------------------------
-def test_r5_snapshot_incomplete_pass():
-    # 快照含 -1（信息缺失，未读到报价）→ is_complete=False → pass。
+def test_r5_snapshot_incomplete_observe():
+    # 快照含 -1（信息缺失，未读到报价）→ is_complete=False → 无火力信息。
+    # V3 语义：无对手信息不再 pass/嘲讽 250，出 min(H,余额) 等低价捡漏。
     # 注意：0 是掉线/没出价的有效报价，不再视为缺失（见 test_r5_disconnected_bidder_second）。
     dec = BidStrategy().decide(
         ctx(5, (30000, 35000, 40000),
             snap(4, 40000, 30000, (-1, 44000, 45000)), 1000000)
     )
-    assert_decision("R5 快照不完整(-1)→pass", dec, DECISION_PASS, 0)
+    assert_decision("R5 快照不完整(-1)→observe 捡漏价", dec, DECISION_OBSERVE, 40000)
 
 
 def test_r5_disconnected_bidder_second():
@@ -159,9 +160,10 @@ def test_r1_budget_short():
     assert_decision("R1 预算不足", dec, DECISION_OBSERVE, 100000)
 
 
-def test_r4_no_snapshot_pass():
+def test_r4_no_snapshot_observe():
+    # V3：无快照（完全无对手信息）→ observe 式 min(H,余额) 低价捡漏，不再 pass
     dec = BidStrategy().decide(ctx(4, (30000, 35000, 40000), None, 1000000))
-    assert_decision("无快照 R4 → pass", dec, DECISION_PASS, 0)
+    assert_decision("无快照 R4 → observe 捡漏价", dec, DECISION_OBSERVE, 40000)
 
 
 # ----------------------------------------------------------------------
@@ -206,6 +208,45 @@ def test_profit_small_cap_firefight_second():
             snap(3, 40000, 20000, (20000, 30000, 80000)), 1000000)
     )
     assert_decision("profit R4 小兜底烧钱→卡第二", dec, DECISION_TARGET_SECOND, 38001)
+
+
+# ----------------------------------------------------------------------
+# V3 钓鱼局反杀回归（treasure.db id=401 真实局面：P3 出价 582200→748900→
+# 500300（钓鱼降价）→766810（末轮秒杀成交盈利 269k）。V2 用上轮价 500300 当
+# 火力基准只出 566665 错失；V3 用对手已证明火力 M=748900 出 874779 反杀秒杀）
+# ----------------------------------------------------------------------
+def test_r4_phishing_bait_rekill_401():
+    dec = BidStrategy().decide(BidContext(
+        round_no=4,
+        h_seen=(710600, 665000, 732400, 775900),
+        last_round=RoundSnapshot(
+            epoch=3, round_no=3, h=732400, our_bid=504401,
+            opponent_bids=(391200, 500300, 252600), opponent_ids=(1, 3, 4),
+        ),
+        balance=BALANCE_UNKNOWN,
+        our_last_bid=504401,
+        opp_high_history=(582200, 748900, 500300),
+    ))
+    assert_decision("R4 钓鱼局 V3 反杀(401 回归)", dec, DECISION_WIN, 874779)
+    # 874779 / 真实成交 766810 = 1.141 ≥ K4=1.1 → 当回合秒杀成立，利润确定性
+    assert dec.max_win_bid == 893836  # 买入线 0.9×V̂ 未破，杀价在线内
+
+
+def test_r3_phishing_crash_not_tricked():
+    # 对手上轮崩价到 100000 但历史峰值 748900：V3 不放松（M 取历史），
+    # 杀价超线 → 卡第二用安全垫 upper=M-u 防被顶成第一接盘。
+    dec = BidStrategy().decide(BidContext(
+        round_no=3,
+        h_seen=(710600, 665000, 732400),
+        last_round=RoundSnapshot(
+            epoch=2, round_no=2, h=665000, our_bid=665000,
+            opponent_bids=(492700, 100000, 502200), opponent_ids=(1, 3, 4),
+        ),
+        balance=BALANCE_UNKNOWN,
+        our_last_bid=665000,
+        opp_high_history=(582200, 748900),
+    ))
+    assert_decision("R3 对手崩价不被骗→卡第二(M 安全垫)", dec, DECISION_TARGET_SECOND, 116001)
 
 
 # ----------------------------------------------------------------------

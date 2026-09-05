@@ -1,14 +1,24 @@
 # -*- coding: utf-8 -*-
-"""巅峰鉴宝 · 出价策略模块 V2（2026-08-16 数据驱动重构）。
+"""巅峰鉴宝 · 出价策略模块 V3（2026-09-05 秒杀规则重构）。
 
-设计文档：docs/treasure_tick_dynamic_step_report.md + 多轮策略讨论。
-核心变更：
+设计文档：docs/treasure_tick_dynamic_step_report.md + 多轮策略讨论 + 401 场复盘。
+V3 核心变更（用户推导 + treasure.db 规则验证）：
+  - 收入铁律：玩家收入 = 拍中者(总值-成交价)；未拍中者仅当赢家亏钱时按顺位
+    吃 15%/10%/5% 分红——「卡第二」唯一合法前提 = 第一名必亏。
+  - 成交铁律：当回合第一名/第二名 ≥ K_r 即秒杀成交（K=2.0/1.6/1.3/1.1/1.0）。
+  - 火力基准 M：出价可回放，对手「历史最高报价」= 已证明支付意愿下限。
+    预测基准从「上轮 opp_max」改为 M——V2 在实测被钓鱼出价骗
+    （748,900→500,300→末轮 766,810 秒杀），错失利润线内的确定性反杀。
+  - 单一决策树：P_win=ceil(K_r×(M+缓冲)) ≤ 买入线 → win 反杀拍中；
+    否则 → 卡第二吃分红彩票（出价不花钱，赢家亏钱才有分红）。
+    「捡漏」不再是独立分支——M 低时 P_win 自然低，低价拍中即捡漏。
+  - 删除 willingness（对手降价收缩缓冲）模型：它专为「上轮=火力」的错误
+    基准打补丁，新基准 M 天然免疫钓鱼降价。
+V2 历史（2026-08-16 数据驱动重构）：
   - 确定性超价 u 与预测缓冲 D 分离：u=1（最小货币单位），D 基于数据分布
   - 双层缓冲：基础缓冲（查价格桶） × 利润强度缩放（0.5~1.5）
-  - 捡漏/卡第二双分支：是否有人烧钱超过估值线
   - 全局兜底上限 GLOBAL_CAP（GUI 可调，默认 5 万）
   - 赚钱/赚蛋策略模式切换（蛋模式放宽利润线）
-  - 密封同时出价下所有报价均为概率预测，无确定性保证
 """
 
 from __future__ import annotations
@@ -64,7 +74,7 @@ DECISION_TARGET_SECOND = "target_second"
 DECISION_LURE = "lure"
 DECISION_PASS = "pass"       # 主动放弃，不出价
 
-STRATEGY_LABEL: str = "V2 数据驱动（赚钱/赚蛋）"
+STRATEGY_LABEL: str = "V3 秒杀火力基准（赚钱/赚蛋）"
 
 
 # ----------------------------------------------------------------------
@@ -104,8 +114,8 @@ class BidContext:
     last_round: Optional[RoundSnapshot]
     balance: int
     our_last_bid: Optional[int] = None
-    # 已完成回合（含上一轮）逐轮的「对手最高出价」历史，按回合升序。
-    # 供策略判断对手加价意愿（interval 涨幅），用于动态收缩预测缓冲。
+    # 已完成回合逐轮的「对手最高出价」历史，按回合升序。
+    # V3 用途：与上一轮快照共同构造对手已证明火力 M = max(历史各轮最高, 上轮对手最高)。
     opp_high_history: tuple[int, ...] = ()
 
 
@@ -171,7 +181,6 @@ class BidStrategy:
         self.mode: str = mode
         self._lure_state: Optional[LureState] = None
         self.TICK: int = BUFFER_FALLBACK  # 兼容旧接口引用
-        self._willingness: float = 1.0    # 本回合对手加价意愿系数（decide 每次重算）
 
     # ---------- 内部工具 ----------
 
@@ -194,28 +203,6 @@ class BidStrategy:
         if vhat <= 0:
             return None
         return int(math.floor(vhat)) + self.risk_cap
-
-    def _willingness_scale(self, opp_high_history: tuple[int, ...]) -> float:
-        """对手加价意愿 → 缓冲缩放系数（0.3~1.0）。
-
-        取最近两轮对手最高价的相对涨幅衡量"还会不会继续顶价"：
-          - 涨幅 ≤ 0（对手不加价甚至回落）→ 预期=贴原价，缓冲 ×0.3
-          - 涨幅小（<30%）→ ×0.6
-          - 涨幅大（≥30%，还在抢）→ 保持 1.0
-        数据不足（<2 轮或零）→ 1.0（无趋势信息，不冒险缩小缓冲）。
-        """
-        hist = [h for h in opp_high_history if h > 0]
-        if len(hist) < 2:
-            return 1.0
-        prev, last = hist[-2], hist[-1]
-        if prev <= 0:
-            return 1.0
-        growth = (last - prev) / prev
-        if growth <= 0:
-            return 0.3
-        if growth < 0.3:
-            return 0.6
-        return 1.0
 
     def _predict_buffer(self, base: int, for_second: bool = False) -> int:
         """第一层：查价格桶得基础缓冲值。"""
@@ -247,10 +234,10 @@ class BidStrategy:
 
     def _buffer(self, base: int, vhat: float, opp_max: int,
                 is_second: bool = False) -> int:
-        """双层缓冲（×对手加价意愿）：基础缓冲 × 强度缩放 × 意愿系数。"""
+        """双层缓冲：基础缓冲 × 强度缩放（V3 起不再乘意愿系数——基准已是火力峰值）。"""
         base_buf = self._predict_buffer(base, for_second=is_second)
         scale = self._scale_by_intensity(vhat, opp_max, is_second=is_second)
-        return int(round(base_buf * scale * self._willingness))
+        return int(round(base_buf * scale))
 
     def _global_cap(self, vhat: float) -> int:
         """全局兜底上限 = 估值 + 可接受亏损（V̂ + risk_cap）。
@@ -267,8 +254,6 @@ class BidStrategy:
 
     def decide(self, ctx: BidContext) -> BidDecision:
         r = ctx.round_no
-        # 本回合对手加价意愿（基于已完成轮次对手最高价趋势）→ 动态收缩预测缓冲
-        self._willingness = self._willingness_scale(ctx.opp_high_history)
         # 余额语义：-1（BALANCE_UNKNOWN）= OCR 未读到（未知，兜底视为充足，只受兜底 cap 约束）；
         # 0 = 真实没钱（所有出价被限制）；>0 = 正常。
         if ctx.balance == BALANCE_UNKNOWN:
@@ -276,7 +261,6 @@ class BidStrategy:
         else:
             balance = max(ctx.balance, 0)
         vhat = self._vhat(ctx.h_seen)
-        cap = self._global_cap(vhat)
 
         last = ctx.last_round
         opp: list[int] = []
@@ -284,6 +268,8 @@ class BidStrategy:
             opp = sorted(last.opponent_bids, reverse=True)
 
         # ---------- R1/R2：观察（不出价，只记录） ----------
+        # 出 min(H,余额) 的深层含义：H ≤ max(H) < 0.9×V̂ 恒成立，observe 价天然在
+        # 利润线内——R1/R2 秒杀线极高（甩开 2.0/1.6 倍才成交），偶尔撞上即是低价拍中。
         if r <= 2:
             price = min(ctx.h_seen[-1], balance) if ctx.h_seen else 1
             return BidDecision(
@@ -293,108 +279,64 @@ class BidStrategy:
                 reason=f"R{r} observe: 出 min(H,余额)={price}（观察对手加价意愿）",
             )
 
-        # ---------- R3~R5：决策 ----------
-        # 提取上一轮信息
-        opp_max = opp[0] if opp and len(opp) >= 1 else 0
-        opp_second = opp[1] if opp and len(opp) >= 2 else 0
-        opp_third = opp[2] if opp and len(opp) >= 3 else 0
+        # ---------- 对手已证明火力 M（V3 核心，401 场复盘定稿） ----------
+        # M = max(已完成各回合对手最高价历史, 上一轮快照对手最高)。出价可回放：
+        # 对手中途降价（钓鱼蓄力）随时能回到历史峰值，V2 用「上轮价」当基准实测被
+        # 骗（748,900→500,300→末轮 766,810 秒杀成交），错失利润线内的确定性反杀。
+        m_power = max(opp) if opp else 0
+        for h in ctx.opp_high_history:
+            if h > m_power:
+                m_power = h
+
+        # 无任何对手有效信息（无快照/对手全 0）→ 不出击价：出 min(H,余额) 等低价
+        # 捡漏（H 价必在利润线内），不再走"嘲讽 250"（无分红顺位意义，已删除）。
+        if m_power <= 0:
+            price = min(ctx.h_seen[-1], balance) if ctx.h_seen else 1
+            return BidDecision(
+                price=price, decision=DECISION_OBSERVE, vhat=vhat,
+                max_win_bid=None, opponent_max=0, trigger_bid=None,
+                reason=f"R{r} 无对手火力信息: 出 min(H,余额)={price} 等捡漏",
+            )
+
         kr = K_RATIOS[r - 1] if 1 <= r <= 5 else 1.0
+        # ---------- 秒杀判定（收入铁律：钱只在第一名和亏钱第一名的分红里） ----------
+        # 买入线：profit=捡漏利润线 0.9×V̂；egg=V̂+risk_cap（搏蛋放宽到可接受亏损）。
+        # 杀价 P_win = ceil(K_r × (M + 缓冲))：当第一名并把第二名（≤M+缓冲）甩开
+        # K_r 倍即当回合成交。M 低时杀价自然低——"捡漏"就是本分支的特例，不再独立。
+        line = self._max_win_bid(vhat) if self.mode == "profit" else self._egg_buy_cap(vhat)
+        buf = self._buffer(m_power, vhat, m_power, is_second=False)
+        p_win = int(math.ceil(kr * (m_power + buf)))
 
-        # 判断"是否有人烧钱"：第一名出价已超过估值
-        is_overvalued = opp_max > vhat and vhat > 0
-
-        if self.mode == "egg":
-            # 赚蛋模式：主攻拍中搏蛋（成交价 ≤ V̂+risk_cap 就买），拍不动再卡第二保底
-            return self._try_win_egg(
-                r, opp_max, opp_second, opp_third, kr, vhat, cap, balance, ctx, opp
-            )
-
-        # 赚钱模式：有人烧钱 → 卡第二吃分红；没人烧钱 → 捡漏买中
-        max_win = self._max_win_bid(vhat)
-        if is_overvalued:
-            return self._try_second(
-                r, opp_max, opp_second, opp_third, vhat, cap, balance, ctx, opp
-            )
-        else:
-            return self._try_win(
-                r, opp_max, opp_second, kr, vhat, max_win, cap, balance, ctx, opp
-            )
-
-    # ---------- 赚蛋：主攻拍中 ----------
-
-    def _try_win_egg(self, r, opp_max, opp_second, opp_third, kr, vhat,
-                     cap, balance, ctx, opp) -> BidDecision:
-        """赚蛋模式：尽量拍中搏蛋。
-
-        成交价 ≤ V̂ + risk_cap（最多亏 risk_cap）就出手拍中；
-        拍不动（已超买入上限）→ 有人烧钱则卡第二保底，否则 pass。
-        """
-        egg_cap = self._egg_buy_cap(vhat)
-        if egg_cap is None or opp_max <= 0:
-            return self._make_pass(vhat, opp_max, f"R{r} 赚蛋: 无对手信息或无法估值，pass")
-
-        buf = self._buffer(opp_max, vhat, opp_max, is_second=False)
-        predicted_second = opp_max + buf
-        raw_target = int(math.ceil(kr * predicted_second))
-
-        # 拍中条件：出价 ≤ 买入上限（V̂+risk_cap）且 ≤ 余额
-        if raw_target <= egg_cap and raw_target <= balance:
+        # ① 杀价在买入线与余额内 → 反杀拍中（绝不裁剪后买入——2026-08-16 教训：
+        #    裁剪价买入=赌一把接盘；超线宁可转②，未拍中出价本身不花钱）。
+        if line is not None and p_win <= line and p_win <= balance:
             return BidDecision(
-                price=raw_target, decision=DECISION_WIN, vhat=vhat,
-                max_win_bid=egg_cap, opponent_max=opp_max,
-                trigger_bid=raw_target,
-                buffer_used=buf, scale_used=self._scale_by_intensity(vhat, opp_max, False),
-                reason=f"R{r} egg-win(搏蛋): ceil({kr}×({opp_max}+{buf}))={raw_target} ≤ 买入上限 V̂+cap={egg_cap}",
+                price=p_win, decision=DECISION_WIN, vhat=vhat,
+                max_win_bid=line, opponent_max=m_power,
+                trigger_bid=p_win,
+                buffer_used=buf, scale_used=self._scale_by_intensity(vhat, m_power, False),
+                reason=f"R{r} win(秒杀): ceil({kr}×({m_power}+{buf}))={p_win} ≤ 买入线={line}",
             )
 
-        # 拍不动 → 有人烧钱则卡第二保底分红，否则 pass
-        if opp_max > vhat:
-            return self._try_second(
-                r, opp_max, opp_second, opp_third, vhat, cap, balance, ctx, opp
-            )
-        return self._make_pass(vhat, opp_max,
-                               f"R{r} 赚蛋: 需出 {raw_target} > 买入上限 {egg_cap}，pass")
-
-    # ---------- 捡漏买中 ----------
-
-    def _try_win(self, r, opp_max, opp_second, kr, vhat,
-                 max_win, cap, balance, ctx, opp) -> BidDecision:
-        """尝试低价买中。
-
-        主动成交线 = ceil(K_r × (原第一 + 缓冲))
-        必须 ≤ max_win（利润线）才买；超线绝不裁剪后买入（防止"赌一把"接盘）。
-        """
-        # 无对手信息（无快照/对手全 0）→ 不买，等更多信息
-        if opp_max <= 0:
-            return self._make_pass(vhat, opp_max, f"R{r} 无对手报价信息，pass")
-        buf = self._buffer(opp_max, vhat, opp_max, is_second=False)
-        predicted_second = opp_max + buf  # 预测本轮第二=原第一+缓冲
-        raw_target = int(math.ceil(kr * predicted_second))
-
-        # 必须未裁剪时就在利润线与预算内，否则不买（绝不 min 到 max_win）
-        if max_win is not None and raw_target <= max_win and raw_target <= balance:
-            return BidDecision(
-                price=raw_target, decision=DECISION_WIN, vhat=vhat,
-                max_win_bid=max_win, opponent_max=opp_max,
-                trigger_bid=raw_target,
-                buffer_used=buf, scale_used=self._scale_by_intensity(vhat, opp_max, False),
-                reason=f"R{r} win(捡漏): ceil({kr}×({opp_max}+{buf}))={raw_target} ≤ max_win_bid={max_win}",
-            )
-
-        # 捡漏失败（价格被推太高）→ 转卡第二吃分红
+        # ② 杀不动（对手火力已逼近/超过买入线）→ 卡第二吃分红彩票。
+        #    分红唯一来源=赢家亏钱（第一名亏→第2名15%/第3名10%/第4名5%）；
+        #    赢家盈利则未拍中者收入为 0，但出价不成交就不花钱——卡第二是免费彩票。
+        #    upper 用 M 卡安全垫：对手约 30% 概率退出/降价，防止意外当第一接盘。
         return self._try_second(
-            r, opp_max, opp[1] if len(opp) >= 2 else 0,
-            opp[2] if len(opp) >= 3 else 0, vhat, cap, balance, ctx, opp
+            r, m_power,
+            opp[1] if len(opp) >= 2 else 0,
+            opp[2] if len(opp) >= 3 else 0, vhat, self._global_cap(vhat), balance, ctx, opp
         )
 
     # ---------- 卡第二吃分红 ----------
 
     def _try_second(self, r, opp_max, opp_second, opp_third, vhat,
                     cap, balance, ctx, opp) -> BidDecision:
-        """卡第二：双尾预测。
+        """卡第二：双尾预测（V3 起由 decide 分支②调用，opp_max=对手已证明火力 M）。
 
         - lower = 第三名 + 缓冲（防被第三超）
-        - upper = min(第一名 − u, 兜底上限 cap, 余额)
+        - upper = min(M − u, 兜底上限 cap, 余额)（防对手退出/降价把我方顶成
+          第一名意外接盘——对手退出率≈30% 是实测数据，安全垫刚需）
         - lower > upper → PASS
         """
         # 竞争者：要压过的是第三名（如果存在）或第二名
