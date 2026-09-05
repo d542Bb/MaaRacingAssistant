@@ -58,12 +58,18 @@ _MODULE_CONFIG_KEYS = ("max_daily_loops", "target_session", "treasure_risk_cap",
 
 # 注册表权限优化项注册表（数据驱动：新增优化项只改这里，前后端体检/设置页自动生效）。
 # 字段语义：
-#   kind = "dword"（写 DWORD 值，单 path）| "noopenwith"（写/删 NoOpenWith REG_SZ，paths 多路径，
-#          用于屏蔽已卸载应用的协议链接弹窗）。
+#   kind = "dword"（写 DWORD 值，单 path）
+#        | "noopenwith"（写/删 NoOpenWith REG_SZ，paths 多路径）
+#        | "protocol_command"（给孤儿协议补空 shell\open\command 处理程序 + NoOpenWith 双保险，
+#          paths 多路径；恢复时删 NoOpenWith 并逐层删回 shell 子树——实测 NoOpenWith 单独
+#          写入管不住「协议已注册但无处理程序 → 弹 Store 推荐」的路径，空 command 才是阻断键）。
 #   optimized = 期望写入的"优化值"（本程序推荐态）；default = 系统默认值（值缺失时按此判定）。
 #   options/apply_label/restore_label = 前端展示文案（不同 kind 的可选值语义不同，由后端下发）。
 #   needs_admin = 写入是否需要管理员（HKLM 项）；发布版 sidecar 经 mra_shell UAC 提权可写，
 #   开发模式非管理员终端写入会失败并返回明确错误。
+#   appx_absent = 仅 protocol_command：目标应用（如 Microsoft.XboxGamingOverlay）包注册
+#   存在时该项"无需优化"（协议有真实处理程序不会弹窗，写空 command 反而拦截正常唤起），
+#   前端按 available 字段展示，体检自动跳过。
 _REGISTRY_OPTIMIZATIONS = (
     {
         "id": "gamedvr_appcapture",
@@ -100,9 +106,10 @@ _REGISTRY_OPTIMIZATIONS = (
     },
     {
         "id": "msgamebar_protocol",
-        "kind": "noopenwith",
+        "kind": "protocol_command",
         "name": "ms-gamebar 协议弹窗（获取应用对话框）",
-        "effect": "屏蔽已卸载的 Xbox Game Bar 协议链接，杜绝游戏启动时弹『获取打开此 ms-gamebar 链接的应用』",
+        "effect": "为已卸载的 Xbox Game Bar 的孤儿协议补空处理程序，杜绝 Win11 游戏运行中"
+                  "点击任务栏游戏图标时弹『获取打开此 ms-gamebar 链接的应用』",
         "hive": "HKCU",
         "path": r"Software\Classes\ms-gamebar",
         "paths": (
@@ -113,11 +120,16 @@ _REGISTRY_OPTIMIZATIONS = (
         "optimized": 0,
         "default": 1,
         "needs_admin": False,
+        "appx_absent": "Microsoft.XboxGamingOverlay",
         "options": {"0": "屏蔽弹窗（推荐）", "1": "恢复系统默认"},
-        "apply_label": "屏蔽弹窗",
+        "apply_label": "屏蔽弹窗（补空处理程序）",
         "restore_label": "恢复默认（会弹窗）",
-        "detail": "本机 Xbox Game Bar 已卸载但协议注册残留，游戏/系统仍尝试打开该链接。"
-                  "写入 NoOpenWith 后系统静默忽略不再弹窗；重新安装 Game Bar 后可恢复默认。",
+        "detail": "Win11 会把游戏窗口的任务栏图标点击当作『激活游戏』，并经 ms-gamebar: 协议"
+                  "尝试拉起 Game Bar；Game Bar 卸载后协议注册残留（只有 URL Protocol、无"
+                  " shell\\open\\command 处理程序），于是弹『获取应用』对话框（与手柄导航无关，"
+                  "关闭手柄导航仍会触发）。补空 shell\\open\\command 后协议调用静默结束"
+                  "（NoOpenWith 一并写入双保险），恢复默认即删除上述写入；重新安装 Game Bar"
+                  " 后本项自动显示为无需处理。",
     },
 )
 
@@ -150,6 +162,73 @@ def _reg_value_exists(hive: str, path: str, value_name: str) -> bool:
     except (FileNotFoundError, OSError):
         return False
     return True
+
+
+def _protocol_command_exists(hive: str, path: str) -> bool:
+    """协议是否已有 shell\\open\\command 处理程序（子键存在即算，值可为空串=空处理程序）。"""
+    try:
+        import winreg
+    except ImportError:
+        return False
+    h = winreg.HKEY_CURRENT_USER if hive == "HKCU" else winreg.HKEY_LOCAL_MACHINE
+    try:
+        with winreg.OpenKey(h, path + r"\shell\open\command"):
+            pass
+    except (FileNotFoundError, OSError):
+        return False
+    return True
+
+
+def _delete_protocol_shell_tree(hive: str, path: str) -> None:
+    """删除协议键下我们补的 shell\\open\\command 子树（自底向上，缺层幂等）。
+
+    安全阀：command 默认值非空 = 存在真实处理程序（可能非本程序所写），不删。
+    """
+    try:
+        import winreg
+    except ImportError:
+        return
+    h = winreg.HKEY_CURRENT_USER if hive == "HKCU" else winreg.HKEY_LOCAL_MACHINE
+    cmd_path = path + r"\shell\open\command"
+    try:
+        with winreg.OpenKey(h, cmd_path) as key:
+            default_value, _vtype = winreg.QueryValueEx(key, "")
+    except (FileNotFoundError, OSError):
+        return  # 子树不存在（或读不到）= 已是目标状态
+    if default_value:
+        return
+    for sub in (cmd_path, path + r"\shell\open", path + r"\shell"):
+        try:
+            winreg.DeleteKey(h, sub)
+        except (FileNotFoundError, OSError):
+            pass
+
+
+# UWP 包注册探测点：HKCU 当前用户已注册包仓库 = Get-AppxPackage 的同源数据，
+# 也是协议处理程序的 per-user 解析依据。不能用 HKLM AppxAllUserStore\Applications：
+# 那是 staged 清单，用户 Remove-AppxPackage 后仍留残留条目，会把已卸载误判为已安装。
+_APPX_PROBE_PATHS = (
+    ("HKCU", r"Software\Classes\Local Settings\Software\Microsoft\Windows"
+             r"\CurrentVersion\AppModel\Repository\Packages"),
+)
+
+
+def _appx_package_registered(package_id_prefix: str) -> bool:
+    """按包族名前缀（如 Microsoft.XboxGamingOverlay）探测 UWP 包是否已注册/安装。"""
+    try:
+        import winreg
+    except ImportError:
+        return False
+    for hive, path in _APPX_PROBE_PATHS:
+        h = winreg.HKEY_CURRENT_USER if hive == "HKCU" else winreg.HKEY_LOCAL_MACHINE
+        try:
+            with winreg.OpenKey(h, path) as key:
+                for i in range(winreg.QueryInfoKey(key)[0]):
+                    if winreg.EnumKey(key, i).startswith(package_id_prefix + "_"):
+                        return True
+        except (FileNotFoundError, OSError):
+            continue  # 探测点缺失（老系统/精简系统）→ 换下一个探测点
+    return False
 
 
 def _get_ignored_prompt_ids() -> list:
@@ -596,10 +675,18 @@ class SidecarService:
                 )
                 current = 0 if all_present else 1
                 optimized = all_present
+            elif opt.get("kind") == "protocol_command":
+                # 协议空处理程序型：全部路径存在 shell\open\command = 已优化
+                all_present = all(_protocol_command_exists(opt["hive"], p) for p in opt["paths"])
+                current = 0 if all_present else 1
+                optimized = all_present
             else:  # dword
                 current = _read_reg_dword(opt["hive"], opt["path"], opt["value_name"])
                 effective = opt["default"] if current is None else current
                 optimized = effective == opt["optimized"]
+            # 可用性：目标应用包已注册时（协议有真实处理程序、不会弹窗）项"无需优化"，
+            # 前端不展示操作按钮、体检自动跳过；set 端对优化（写 0）也会拒绝兜底。
+            unavailable = bool(opt.get("appx_absent")) and _appx_package_registered(opt["appx_absent"])
             items.append({
                 "id": opt["id"],
                 "kind": opt["kind"],
@@ -611,10 +698,15 @@ class SidecarService:
                 "value_name": opt["value_name"],
                 "current": current,
                 "optimized": optimized,
+                "available": not unavailable,
                 "default": opt["default"],
                 "optimized_value": opt["optimized"],
                 "needs_admin": opt["needs_admin"],
                 "detail": opt["detail"],
+                "unavailable_note": (
+                    f"检测到 {opt['appx_absent']} 已安装：协议由系统正常注册、不会弹窗，本项无需处理。"
+                    if unavailable else ""
+                ),
                 "options": opt["options"],
                 "apply_label": opt["apply_label"],
                 "restore_label": opt["restore_label"],
@@ -655,6 +747,39 @@ class SidecarService:
         if not isinstance(value, int):
             return (False, None, f"value 必须为整数，收到: {value!r}")
         hive = winreg.HKEY_CURRENT_USER if opt["hive"] == "HKCU" else winreg.HKEY_LOCAL_MACHINE
+        if opt.get("kind") == "protocol_command":
+            # 协议空处理程序型：0 = 补 NoOpenWith + 空 shell\open\command（屏蔽）；
+            # 1 = 删 NoOpenWith + 删空 shell 子树（恢复默认弹窗）。
+            # 目标应用已安装时协议有真实处理程序，写空 command 反而拦截正常唤起 → 拒绝优化。
+            if value == 0 and opt.get("appx_absent") and _appx_package_registered(opt["appx_absent"]):
+                return (False, None, f"检测到 {opt['appx_absent']} 已安装，协议有真实处理程序不会弹窗，无需屏蔽")
+            try:
+                for path in opt["paths"]:
+                    with winreg.CreateKey(hive, path) as key:
+                        if value == 0:
+                            winreg.SetValueEx(key, opt["value_name"], 0, winreg.REG_SZ, "")
+                        else:
+                            try:
+                                winreg.DeleteValue(key, opt["value_name"])
+                            except FileNotFoundError:
+                                pass  # 已不存在 = 目标状态，幂等
+                    if value == 0:
+                        with winreg.CreateKey(hive, path + r"\shell\open\command") as key:
+                            winreg.SetValueEx(key, None, 0, winreg.REG_SZ, "")
+                    else:
+                        _delete_protocol_shell_tree(opt["hive"], path)
+            except OSError as exc:
+                logger.log(f"[sidecar] 优化项 {opt_id} 写入失败: {exc!r}", "WARNING")
+                return (False, None, f"写入注册表失败: {exc}")
+            if value == 0:
+                confirmed = all(_protocol_command_exists(opt["hive"], p) for p in opt["paths"])
+            else:
+                confirmed = not any(_protocol_command_exists(opt["hive"], p) for p in opt["paths"])
+            if not confirmed:
+                return (False, None, "写入后回读异常（shell\\open\\command 未达目标状态）")
+            state = "已优化" if value == opt["optimized"] else "已恢复系统默认"
+            logger.log(f"注册表优化项 {opt_id} {state}（protocol_command={'补空处理程序' if value == 0 else '已删除'}）", "INFO")
+            return (True, {"id": opt_id, "value": value, "optimized": value == opt["optimized"]}, None)
         if opt.get("kind") == "noopenwith":
             # 标记型：0 = 在全部路径写 NoOpenWith（屏蔽）；1 = 删除标记（恢复默认弹窗）
             try:

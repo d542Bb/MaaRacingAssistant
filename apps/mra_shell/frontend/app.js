@@ -183,15 +183,13 @@
   }
 
   // ---------- 注册表权限优化（启动体检 + 设置页优化中心） ----------
-  // 渲染单个优化项卡片（优化中心用）：名称/状态徽章/性质/值/可选值/路径与后果（灰字）
-  // 可选值与按钮文案由后端下发（dword/noopenwith 两种 kind 的语义不同）
+  // 渲染单个优化项（三态行式卡片）：available===false→无需处理；optimized→已优化；否则待优化。
+  // 状态 pill 与操作按钮同处底部一行紧邻；值/路径/后果等技术细节收进 <details> 默认折叠。
+  // 样式统一走 style.css 的 .opt-* 类（复用设计令牌，不再堆内联样式）。
   function optimizerItemHtml(it) {
-    const badge = it.optimized
-      ? '<span style="font-size:12px;color:#22c55e;white-space:nowrap;">已优化 ✓</span>'
-      : '<span style="font-size:12px;color:#f59e0b;white-space:nowrap;">未优化</span>';
-    const ignoredMark = it.prompt_ignored
-      ? '<span style="font-size:11px;color:var(--mra-foreground-secondary,#8b93a3);white-space:nowrap;">启动提醒已忽略</span>'
-      : '';
+    const na = it.available === false;
+    const state = na ? 'na' : (it.optimized ? 'done' : 'todo');
+    const pillText = na ? '无需处理' : (it.optimized ? '已优化' : '待优化');
     const optsText = it.options
       ? Object.keys(it.options).map((k) => k + ' = ' + it.options[k]).join(' · ')
       : '';
@@ -200,31 +198,39 @@
       : (it.options && it.options[String(it.current)]
           ? it.options[String(it.current)] + '（值 ' + it.current + '）'
           : String(it.current));
+    // protocol_command 的动作落在子键 shell\open\command（+ NoOpenWith 标记），路径行按 kind 拼装
     const pathLines = (it.paths && it.paths.length ? it.paths : [it.path])
-      .map((p) => it.hive + '\\' + p + '\\' + it.value_name)
+      .map((p) => it.kind === 'protocol_command'
+        ? it.hive + '\\' + p + '\\shell\\open\\command（默认值 = 空）<br>'
+          + it.hive + '\\' + p + '\\' + it.value_name + '（标记值）'
+        : it.hive + '\\' + p + '\\' + it.value_name)
       .join('<br>');
-    return '<div style="border:1px solid var(--mra-border,#2a2f3a);border-radius:10px;padding:12px 14px;margin-bottom:12px;">'
-      + '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px;">'
-      + '<b style="font-size:13px;color:var(--mra-foreground,#e5e7eb)">' + it.name + '</b>'
-      + '<span style="display:flex;gap:10px;align-items:center;flex-shrink:0;">' + badge + ignoredMark + '</span></div>'
-      + '<p style="margin:0 0 8px;font-size:12px;line-height:1.6;color:var(--mra-foreground,#e5e7eb);word-break:break-word;">' + it.effect + '</p>'
-      + '<p style="margin:0 0 3px;font-size:11px;line-height:1.6;color:var(--mra-foreground-secondary,#8b93a3);word-break:break-word;">'
-      + '值：<b>' + it.value_name + '</b>　可选值：' + optsText + '　当前：' + currentTxt + '</p>'
-      + '<p style="margin:0 0 3px;font-size:11px;line-height:1.6;color:var(--mra-foreground-secondary,#8b93a3);word-break:break-all;">'
-      + pathLines + '</p>'
-      + '<p style="margin:0 0 10px;font-size:11px;line-height:1.6;color:var(--mra-foreground-secondary,#8b93a3);word-break:break-word;">'
-      + '后果：' + it.detail + '</p>'
-      + '<div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">'
-      + (it.optimized ? '' : '<button class="opt-apply" data-id="' + it.id + '" style="cursor:pointer;border:none;'
-        + 'border-radius:8px;font-size:12px;padding:6px 14px;background:var(--mra-primary,#2563eb);color:#fff;">'
-        + (it.apply_label || '优化（写 0）') + '</button>')
-      + '<button class="opt-restore" data-id="' + it.id + '" style="cursor:pointer;border-radius:8px;font-size:12px;'
-        + 'padding:6px 14px;border:1px solid var(--mra-border,#2a2f3a);background:transparent;'
-        + 'color:var(--mra-foreground-secondary,#8b93a3);">' + (it.restore_label || '恢复系统默认（写 1）') + '</button>'
-      + (it.prompt_ignored ? '<button class="opt-unignore" data-id="' + it.id + '" style="cursor:pointer;border-radius:8px;'
-        + 'font-size:12px;padding:6px 14px;border:1px solid var(--mra-border,#2a2f3a);background:transparent;'
-        + 'color:var(--mra-foreground-secondary,#8b93a3);">恢复启动提醒</button>' : '')
-      + '</div></div>';
+    let actions = '';
+    if (!na) {
+      if (!it.optimized) {
+        actions += '<button class="opt-btn opt-btn--primary opt-apply" data-id="' + it.id + '">'
+          + (it.apply_label || '优化') + '</button>';
+      }
+      actions += '<button class="opt-btn opt-btn--ghost opt-restore" data-id="' + it.id + '">'
+        + (it.restore_label || '恢复默认') + '</button>';
+    }
+    if (it.prompt_ignored) {
+      actions += '<button class="opt-btn opt-btn--ghost opt-unignore" data-id="' + it.id + '">恢复启动提醒</button>';
+    }
+    const note = (na && it.unavailable_note)
+      ? '<p class="opt-item-note">' + it.unavailable_note + '</p>' : '';
+    return '<div class="opt-item opt-item--' + state + '">'
+      + '<div class="opt-item-title">' + it.name + '</div>'
+      + '<div class="opt-item-effect">' + it.effect + '</div>'
+      + note
+      + '<details class="opt-details"><summary>技术细节</summary><div class="opt-details-body">'
+      + '<p>值：<b>' + it.value_name + '</b>　可选值：' + optsText + '　当前：' + currentTxt + '</p>'
+      + '<p class="opt-path">' + pathLines + '</p>'
+      + '<p>后果：' + it.detail + '</p>'
+      + '</div></details>'
+      + '<div class="opt-item-foot"><span class="opt-pill opt-pill--' + state + '">' + pillText + '</span>'
+      + '<span class="opt-actions">' + actions + '</span></div>'
+      + '</div>';
   }
 
   // 写入单个优化项，返回错误信息（null = 成功）
@@ -247,7 +253,7 @@
     }
   }
 
-  // 权限优化中心（设置页入口）：列出全部优化项，可单项优化/恢复系统默认
+  // 权限优化中心（设置页入口）：顶部汇总条（三档计数 + 一键全部优化）+ 三态卡片列表
   async function openOptimizerCenter() {
     let items;
     try {
@@ -263,19 +269,54 @@
     }
     const modal = openModal({
       title: '权限优化中心',
-      bodyHtml: '<div id="opt-center-list"></div>',
+      maxWidth: 540,
+      bodyHtml: '<div id="opt-summary"></div><div id="opt-center-list"></div>',
       buttons: [{ text: '关闭', primary: true, onClick: (m) => m.close() }],
     });
+    const summaryEl = modal.card.querySelector('#opt-summary');
     const listEl = modal.card.querySelector('#opt-center-list');
+    // 汇总三档：待优化 / 已优化 / 无需处理。available===false 计入"无需处理"，不混入"已优化"
+    function renderSummary(list) {
+      const todo = list.filter((it) => it.available !== false && !it.optimized);
+      const done = list.filter((it) => it.available !== false && it.optimized).length;
+      const na = list.filter((it) => it.available === false).length;
+      const parts = [];
+      if (todo.length) parts.push('<b class="opt-num--todo">' + todo.length + '</b> 项待优化');
+      if (done) parts.push('<b class="opt-num--done">' + done + '</b> 项已优化');
+      if (na) parts.push('<b>' + na + '</b> 项无需处理');
+      const text = parts.length ? parts.join(' · ') : '全部已优化';
+      const btn = todo.length
+        ? '<button class="opt-btn opt-btn--primary opt-apply-all">一键优化全部</button>' : '';
+      summaryEl.innerHTML = '<div class="opt-summary"><span class="opt-summary-text">'
+        + text + '</span>' + btn + '</div>';
+    }
     async function refresh() {
       try {
         const d = await mra.call('get_registry_optimizations');
-        listEl.innerHTML = (d.items || []).map(optimizerItemHtml).join('');
+        const its = d.items || [];
+        renderSummary(its);
+        listEl.innerHTML = its.map(optimizerItemHtml).join('');
       } catch (e) {
-        listEl.innerHTML = '<p style="margin:0;font-size:12px;color:var(--mra-danger,#ef4444)">刷新失败: ' + e.message + '</p>';
+        listEl.innerHTML = '<p style="margin:0;font-size:12px;color:var(--mra-danger)">刷新失败: ' + e.message + '</p>';
       }
     }
-    listEl.addEventListener('click', async (ev) => {
+    // 事件委托到 modal.card：覆盖汇总条(一键全部)与列表(单项)，列表 innerHTML 重渲染不影响委托
+    modal.card.addEventListener('click', async (ev) => {
+      const applyAllBtn = ev.target.closest('.opt-apply-all');
+      if (applyAllBtn) {
+        applyAllBtn.disabled = true;
+        const its = ((await mra.call('get_registry_optimizations')).items) || [];
+        const todo = its.filter((it) => it.available !== false && !it.optimized);
+        const fails = [];
+        for (const it of todo) {
+          const err = await applyOptimization(it.id, it.optimized_value);
+          if (err) fails.push(it.name + '：' + err);
+        }
+        if (fails.length) showError('部分优化失败：' + fails.join('；'));
+        else showError('已完成 ' + todo.length + ' 项权限优化');
+        await refresh();
+        return;
+      }
       const applyBtn = ev.target.closest('.opt-apply');
       const restoreBtn = ev.target.closest('.opt-restore');
       const unignoreBtn = ev.target.closest('.opt-unignore');
@@ -297,7 +338,8 @@
     let pending;
     try {
       const d = await mra.call('get_registry_optimizations');
-      pending = (d.items || []).filter((it) => !it.optimized && !it.prompt_ignored);
+      // available === false = 目标应用已安装、该项无需处理，不进体检提醒
+      pending = (d.items || []).filter((it) => !it.optimized && !it.prompt_ignored && it.available !== false);
     } catch (e) {
       console.error('权限体检失败:', e);
       return;
@@ -1815,6 +1857,7 @@
     document.querySelectorAll('.mra-tool-btn').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const tool = btn.dataset.tool;
+        if (!tool) return; // 借用 .mra-tool-btn 样式但非快捷工具的按钮（如「打开权限优化中心」）交各自专属 handler，不在此报错
         if (tool === 'folder') {
           try {
             await mra.call('open_user_data_folder', {});
