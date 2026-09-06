@@ -7,8 +7,9 @@ NavKit P1 决策策略层单测（纯标准库，CI 只装 pytest 即可运行�
 - P0-6 DecisionFacts 冻结快照 / 派生事实（retry_elapsed / reward_elapsed / skip_cycle）
 - P0-7 StateSnapshot 封闭白名单投影（未知字段 fail-closed）
 - §4 schema：parse_policies 结构错误（P01-P05）
-- §5 P1d 双轨等价：TreasureLegacyPolicy vs PolicyPlan 同一 facts → 同 Decision
+- §4.3 PolicyPlan 行为语义：各阶段决策/兜底/透传/冷却边界（单轨绝对断言）
 - §4.2 validate_policy_document：P06/P07/P09 告警与 strict 升级
+- §5.1 P1e fail-closed：policies 缺失/非法 = 启动失败
 """
 from __future__ import annotations
 
@@ -30,7 +31,6 @@ from maaracing_assistant.core.navkit import (
     parse_policies,
     validate_policy_document,
 )
-from maaracing_assistant.plugins.treasure.policy_legacy import TreasureLegacyPolicy
 
 _ASSETS_PATH = (
     Path(__file__).resolve().parents[1]
@@ -205,145 +205,109 @@ def _compile() -> PolicyPlan:
     return compile_plan(assets.policies, assets.anchors)
 
 
-def _legacy() -> TreasureLegacyPolicy:
-    assets = _load_assets()
-    def center_of(aid: str) -> tuple[float, float] | None:
-        anchor = assets.anchors.get(aid)
-        if anchor is None:
-            return None
-        x1, y1, x2, y2 = anchor.rect.as_list()
-        return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
-    return TreasureLegacyPolicy(
-        popup_continue_center=center_of("confirm_red_btn") or (0.5, 0.5),
-        settle_collect_center=center_of("settle_collect_red_btn"),
-        settle_skip_retry_frames=10,
-        settle_skip_retry_max=3,
-        daily_high_timeout_frames=8,
-        egg_ocr_timeout_frames=8,
+def _decide_key(plan: PolicyPlan, **kw) -> str:
+    return plan.decide(_make_facts(**kw)).key
+
+
+def test_plan_stage_decisions():
+    """各阶段锚点/兜底行为（§4.3 规则顺序敏感：冷却规则全局优先）。"""
+    plan = _compile()
+    assert _decide_key(plan, stage="hall", frame=1) == "hall_peak_appraise_card"
+    assert _decide_key(plan, stage="activity", frame=1) == "goto_appraise_btn"
+    assert _decide_key(plan, stage="matching", frame=1) == "stage_waiting"
+    assert _decide_key(plan, stage="auction_result", frame=1) == "stage_waiting"
+    # settle：首点跳动画 / 数据齐真领取
+    assert _decide_key(plan, stage="settle", frame=1, clicked_once=False) == "settle_collect_red_btn"
+    assert _decide_key(plan, stage="settle", frame=2, clicked_once=False, settle_income=5000) == "settle_collect_red_btn"
+    # popup：盲点分支（skip_cycle=0）走点击，其余等待
+    assert _decide_key(plan, stage="popup", frame=9) == "popup_high_continue"
+    assert _decide_key(plan, stage="popup", frame=7) == "popup_waiting"
+    # 无上游决策的 defer 阶段 → 各自 fallback_key 等待；未知阶段 → 全局兜底
+    assert _decide_key(plan, stage="session", frame=1) == "session_waiting"
+    assert _decide_key(plan, stage="appraiser", frame=1) == "appraiser_waiting"
+    assert _decide_key(plan, stage="bid", frame=1) == "bid_waiting"
+    assert _decide_key(plan, stage=None, frame=1) == "stage_waiting"
+
+
+def test_plan_deferred_sources_passthrough():
+    """defer 阶段：上游决策 dict 有 key → 透传；无 → 兜底等待。"""
+    plan = _compile()
+    facts = _make_facts(
+        stage="session", frame=1,
+        session_decision={"key": "session_start_match_btn", "hint": "开始匹配"},
     )
-
-
-def _assert_tracks_equal(facts: DecisionFacts, plan: PolicyPlan, legacy: TreasureLegacyPolicy) -> None:
-    d_plan = plan.decide(facts)
-    d_legacy = legacy.decide(facts)
-    assert d_plan.key == d_legacy.key, f"key 不一致 stage={facts.get('stage')}: plan={d_plan.key} legacy={d_legacy.key}"
-    assert d_plan.payload == d_legacy.payload, (
-        f"payload 不一致 stage={facts.get('stage')} key={d_plan.key}: plan={d_plan.payload} legacy={d_legacy.payload}"
+    d = plan.decide(facts)
+    assert d.key == "session_start_match_btn"
+    assert d.source == "session_decision"
+    facts = _make_facts(
+        stage="appraiser", frame=1,
+        appraiser_decision={"key": "appraiser_p1_caroline", "hint": "选她"},
     )
-    assert d_plan.fatal == d_legacy.fatal, "fatal 不一致"
-    assert d_plan.side_effects == d_legacy.side_effects, "side_effects 不一致"
+    assert plan.decide(facts).key == "appraiser_p1_caroline"
+    facts = _make_facts(
+        stage="bid", frame=1,
+        bidding_decision={"key": "bid_main_red_btn", "hint": "点出价"},
+    )
+    assert plan.decide(facts).key == "bid_main_red_btn"
 
 
-def test_dual_track_equivalence_stage_matrix():
+def test_plan_settle_variants():
+    """settle 分支矩阵：首点/数据齐/等待/重试/致命。"""
     plan = _compile()
-    legacy = _legacy()
-    stages = [
-        "hall", "activity", "session", "matching", "appraiser", "auction_result",
-        "settle", "popup",
-    ]
-    for frame in (1, 2, 3, 4, 9, 10, 11):
-        for stage in stages:
-            for clicked in (False, True):
-                _assert_tracks_equal(
-                    _make_facts(stage=stage, frame=frame, clicked_once=clicked),
-                    plan, legacy,
-                )
-    # bid 回合
-    for frame in (1, 5):
-        _assert_tracks_equal(_make_facts(stage="bid", frame=frame), plan, legacy)
-        _assert_tracks_equal(
-            _make_facts(stage="bid", frame=frame,
-                        bidding_decision={"key": "bid_main_red_btn", "hint": "点出价"}),
-            plan, legacy,
-        )
-    # 未知阶段 → 兜底
-    _assert_tracks_equal(_make_facts(stage=None, frame=1), plan, legacy)
+    # 点击后收入未读出、未超时 → 等待 OCR
+    d = plan.decide(_make_facts(stage="settle", frame=3, clicked_once=True, settle_income=None))
+    assert d.key == "dividend_waiting"
+    assert d.fatal is None and d.side_effects == ()
+    # 超时且重试次数未耗尽 → 重试点击 + settle_skip_retry 副作用
+    d = plan.decide(_make_facts(stage="settle", frame=20, clicked_once=True, settle_income=None,
+                                settle_skip_since=5, retry_count=1))
+    assert d.key == "settle_collect_red_btn"
+    assert d.side_effects == ("settle_skip_retry",) and d.fatal is None
+    # 超时且重试耗尽 → fatal 终止指令
+    d = plan.decide(_make_facts(stage="settle", frame=30, clicked_once=True, settle_income=None,
+                                settle_skip_since=5, retry_count=3))
+    assert d.key == "settle_collect_red_btn"
+    assert d.fatal is not None and "重试 3 次" in d.fatal
 
 
-def test_dual_track_equivalence_settle_variants():
+def test_plan_popup_variants():
+    """弹窗分支矩阵：今日最高（就绪/超时/等待）/彩蛋/OCR 中/盲点/冷却短路。"""
     plan = _compile()
-    legacy = _legacy()
-    cases = [
-        dict(stage="settle", frame=1, clicked_once=False, settle_income=None),
-        dict(stage="settle", frame=2, clicked_once=False, settle_income=5000),
-        dict(stage="settle", frame=3, clicked_once=True, settle_income=None),
-        dict(stage="settle", frame=20, clicked_once=True, settle_income=None,
-              settle_skip_since=5, retry_count=1),
-        dict(stage="settle", frame=30, clicked_once=True, settle_income=None,
-              settle_skip_since=5, retry_count=3),
-    ]
-    for kw in cases:
-        _assert_tracks_equal(_make_facts(**kw), plan, legacy)
-
-
-def test_dual_track_equivalence_popup_variants():
-    plan = _compile()
-    legacy = _legacy()
     base = dict(stage="popup", frame=6)
-    cases = [
-        dict(base, popup_kind="daily_high_banner"),
-        dict(base, popup_kind="daily_high_banner", daily_high_score=12345),
-        dict(base, popup_kind="daily_high_banner", reward_enter_frame=1),
-        dict(base, popup_kind="egg_reward_title"),
-        dict(base, popup_kind="egg_reward_title", egg_read_done=True),
-        dict(base, popup_kind="egg_reward_title", reward_enter_frame=1),
-        dict(base, egg_reading=True),
-        dict(base, egg_reading=True, egg_read_done=True),
-        dict(base, egg_reading=True, reward_enter_frame=1),
-        dict(base, cooldown=3),
-        dict(base, popup_kind=None, frame=7),
-        dict(base, popup_kind=None, frame=9),
+    expect = [
+        (dict(base, popup_kind="daily_high_banner", daily_high_score=12345), "popup_high_continue"),
+        (dict(base, popup_kind="daily_high_banner"), "popup_waiting"),
+        (dict(base, popup_kind="daily_high_banner", reward_enter_frame=1), "popup_waiting"),
+        (dict(base, popup_kind="egg_reward_title", egg_read_done=True), "popup_reward_continue"),
+        (dict(base, popup_kind="egg_reward_title"), "popup_waiting"),
+        (dict(base, popup_kind="egg_reward_title", reward_enter_frame=1), "popup_waiting"),
+        (dict(base, egg_reading=True, egg_read_done=True), "popup_reward_continue"),
+        (dict(base, egg_reading=True), "popup_waiting"),
+        (dict(base, egg_reading=True, reward_enter_frame=1), "popup_waiting"),
     ]
-    for kw in cases:
-        _assert_tracks_equal(_make_facts(**kw), plan, legacy)
+    for kw, want in expect:
+        assert _decide_key(plan, **kw) == want, f"facts={kw}"
 
 
-def test_dual_track_equivalence_cooldown_boundary():
+def test_plan_cooldown_boundary():
     """cooldown>0 全局短路边界：冷却期内任意阶段都返回等待意图，不产出点击（§4.3）。"""
     plan = _compile()
-    legacy = _legacy()
     # 冷却期跨阶段（点击成功后检测器延迟切阶段/误判回退的窗口）
     for stage in ("hall", "activity", "settle", "bid", "session", "appraiser"):
-        _assert_tracks_equal(
-            _make_facts(stage=stage, frame=10, clicked_once=True, cooldown=3),
-            plan, legacy,
-        )
-        _assert_tracks_equal(
-            _make_facts(stage=stage, frame=11, clicked_once=True, cooldown=1),
-            plan, legacy,
-        )
+        for frame in (10, 11):
+            d = plan.decide(_make_facts(stage=stage, frame=frame, clicked_once=True, cooldown=3))
+            assert d.key == "popup_click_cooldown", f"stage={stage} frame={frame}"
+            assert d.side_effects == ("popup_cooldown_decr",)
     # 冷却递减序列：5→4→3→2→1→0（恢复决策）
     for cd in (5, 4, 3, 2, 1):
-        facts = _make_facts(stage="activity", frame=20, cooldown=cd)
-        d_plan = plan.decide(facts)
-        d_legacy = legacy.decide(facts)
-        assert d_plan.key == d_legacy.key == "popup_click_cooldown"
-        assert d_plan.side_effects == d_legacy.side_effects == ("popup_cooldown_decr",)
+        d = plan.decide(_make_facts(stage="activity", frame=20, cooldown=cd))
+        assert d.key == "popup_click_cooldown" and d.side_effects == ("popup_cooldown_decr",)
     # cooldown 归零后恢复正常决策
-    facts = _make_facts(stage="activity", frame=25, cooldown=0)
-    assert plan.decide(facts).key == "goto_appraise_btn"
-    assert legacy.decide(facts).key == "goto_appraise_btn"
+    assert plan.decide(_make_facts(stage="activity", frame=25, cooldown=0)).key == "goto_appraise_btn"
     # settle 真领取后冷却窗口（income 已读出 + cooldown>0）：等待而非重复点击
-    _assert_tracks_equal(
-        _make_facts(stage="settle", frame=30, clicked_once=True,
-                    settle_income=5000, cooldown=4),
-        plan, legacy,
-    )
-
-
-def test_dual_track_equivalence_session_appraiser_bid():
-    plan = _compile()
-    legacy = _legacy()
-    _assert_tracks_equal(
-        _make_facts(stage="session", frame=1,
-                    session_decision={"key": "session_start_match_btn", "hint": "开始匹配"}),
-        plan, legacy,
-    )
-    _assert_tracks_equal(
-        _make_facts(stage="appraiser", frame=1,
-                    appraiser_decision={"key": "appraiser_p1_caroline", "hint": "选她"}),
-        plan, legacy,
-    )
+    d = plan.decide(_make_facts(stage="settle", frame=30, clicked_once=True,
+                                settle_income=5000, cooldown=4))
+    assert d.key == "popup_click_cooldown"
 
 
 def test_plan_fallback_key():
@@ -401,7 +365,7 @@ def test_tuning_unknown_reference_rejected():
 
 
 # ------------------------------------------------------------------
-# §5 P1e：收敛 fail-closed（删 LegacyPolicy + 删 fallback + 缺失即失败）
+# §5.1 P1e：policies 唯一决策源（缺失/非法 = 启动失败，无回退）
 # ------------------------------------------------------------------
 
 

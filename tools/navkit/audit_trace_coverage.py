@@ -35,7 +35,7 @@ DEFAULT_ROOT = debug_dir() / "treasure"
 
 STAGES_REQUIRED = (
     "hall", "activity", "session", "appraiser", "bid",
-    "settle", "popup", "matching",
+    "settle", "popup", "matching", "auction_result",
 )
 SETTLE_RETRY_FRAMES = 10  # 与 tuning.policy.settle_skip_retry_frames 对齐
 
@@ -118,11 +118,8 @@ OPTIONAL = [
     "popup_egg(彩蛋)",
     "settle_fatal(重试耗尽)",
     # 防御性计时分支：仅在点击成功后 10 帧收入仍未读出时触发（正常 OCR 1~3 帧读出），
-    # 正常游玩难以自然命中；等价性由单测 settle 变体矩阵 + 合成回放覆盖。
+    # 正常游玩难以自然命中；等价性由单测 settle 变体矩阵覆盖。
     "settle_retry_window(点击无响应重试)",
-    # 游戏改版（2026-08）后中标结算页 UI 变化，现有锚点最高分仅 ~0.46（改版前阈值 0.8）
-    # → 检测器在该页全盲、阶段不产出；等待锚点重新截图校准后恢复必选。
-    "stage=auction_result",
 ]
 
 
@@ -211,11 +208,15 @@ def main() -> int:
     if report.dual_track_false:
         lines.append(f"  ✗ dual_track_equal=False 共 {len(report.dual_track_false)} 帧："
                      f"{report.dual_track_false[:10]}")
-        lines.append("    运行期双轨已发现决策不一致——禁止进入 P1e，先修复再采集。")
+        lines.append("    运行期双轨已发现决策不一致——先修复再采集。")
     else:
-        lines.append(f"  ✓ dual_track_equal 全程 True"
-                     f"（{report.decision_rows - report.dual_track_none} 帧比对，"
-                     f"{report.dual_track_none} 帧 v2 回退无双轨）")
+        dual = report.decision_rows - report.dual_track_none
+        if dual:
+            lines.append(f"  ✓ 双轨等价记录 {dual} 帧全程 True"
+                         f"（另有 {report.dual_track_none} 帧单轨记录，P1e 收敛后不再带双轨字段）")
+        else:
+            lines.append(f"  ✓ {report.decision_rows} 帧单轨记录（P1e 收敛后决策单一来源，"
+                         "历史等价性由 P1d 双轨证据与重放校验保证）")
 
     print("\n".join(lines))
     if report.dual_track_false or missing:

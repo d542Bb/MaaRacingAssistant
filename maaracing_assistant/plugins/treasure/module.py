@@ -54,7 +54,6 @@ from maaracing_assistant.core.navkit import (
     TraceWriter,
     compile_plan,
 )
-from maaracing_assistant.plugins.treasure.policy_legacy import TreasureLegacyPolicy
 from maaracing_assistant.plugins.treasure.eggs import EggRewardRecognizer
 from maaracing_assistant.plugins.treasure.ocr import TreasureOcr
 from maaracing_assistant.plugins.treasure.renderer import TreasureDebugRenderer
@@ -875,15 +874,10 @@ class TreasureModule(ActivityModule):
         # 结算后弹窗（今日最高/彩蛋）点击关闭后的冷却帧计数：点关闭后弹窗消失动画期
         # 模板匹配不上，冷却帧内不产出新点击意图，等动画稳定再识别（2026-08-16）。
         self._popup_click_cooldown: int = 0
-        # 决策策略（P1：policies 决策规则数据化）：
-        #   _policy_plan = v3 assets policies → PolicyPlan（启动编译不可变；P1e 后必须非 None）
-        #   _legacy_policy = 旧 _decide_action 的纯决策等价物（P1b/P1d 双轨重放用）
-        #   _dual_track   = 双轨比对开关（有 plan 时自动开启；trace 落决策等价比对结果）
+        # 决策策略（P1：policies 决策规则数据化；P1e：policies 是唯一决策源）：
+        #   _policy_plan = v3 assets policies → PolicyPlan（启动编译不可变，缺失/非法 = 启动失败）
         self._policy_plan = None
-        self._legacy_policy: TreasureLegacyPolicy | None = None
-        self._dual_track = False
         self._policy_snapshot: dict | None = None  # 最近一帧 DecisionSnapshot（trace 决策契约）
-        self._policy_equal: bool | None = None     # 最近一帧双轨决策是否等价（None=未开双轨）
 
         # P1 收编：感知匹配阈值/ROI 真源 = policies.tuning.perception（缺省回落代码常量）。
         _per = _perception_tuning()
@@ -2581,44 +2575,26 @@ class TreasureModule(ActivityModule):
     # ==================================================================
 
     def _init_policy_stack(self) -> None:
-        """P1：编译 policies → PolicyPlan，并构建 LegacyPolicy 作为双轨/回退。
+        """P1：编译 policies → PolicyPlan（唯一决策源）。
 
         - v3 资产存在但缺 `policies` 段 → 启动失败（P1e 硬约束）。
-        - v2 回退路径（NAVKIT_SOURCE=v2 / v3 缺失）→ 仅 LegacyPolicy（行为与旧版一致）。
+        - 编译/校验失败（P01-P09 阻断项）→ 启动失败。
         """
         v3_path = CONFIG_DIR / "treasure_assets.json"
-        source = os.environ.get("NAVKIT_SOURCE", "v3").lower()
-        plan = None
-        if source != "v2" and v3_path.exists():
-            try:
-                from maaracing_assistant.core.navkit import Assets
-                assets = Assets.load(v3_path, module="treasure")
-                if assets.policies is None:
-                    raise RuntimeError(
-                        "treasure_assets.json 缺少 policies 段"
-                        "（P1e：决策策略缺失 = 启动失败，请先迁移策略到资产文件）"
-                    )
-                plan = compile_plan(assets.policies, assets.anchors)
-            except Exception as exc:
-                logger.log(f"[鉴宝] policies 编译失败：{exc}", "ERROR")
-                raise
-        self._policy_plan = plan
-        _pol = _policy_tuning().get("policy") or {}
-        self._legacy_policy = TreasureLegacyPolicy(
-            popup_continue_center=self._action_centers.get("confirm_red_btn") or (0.5, 0.5),
-            settle_collect_center=self._action_centers.get("settle_collect_red_btn"),
-            popup_high_continue_key=self.POPUP_HIGH_CONTINUE_KEY,
-            popup_reward_continue_key=self.POPUP_REWARD_CONTINUE_KEY,
-            settle_skip_retry_frames=_pol.get("settle_skip_retry_frames", self.SETTLE_SKIP_RETRY_FRAMES),
-            settle_skip_retry_max=_pol.get("settle_skip_retry_max", self.SETTLE_SKIP_RETRY_MAX),
-            daily_high_timeout_frames=_pol.get("daily_high_timeout_frames", self.DAILY_HIGH_TIMEOUT_FRAMES),
-            egg_ocr_timeout_frames=_pol.get("egg_ocr_timeout_frames", self.EGG_OCR_TIMEOUT_FRAMES),
-        )
-        self._dual_track = plan is not None
-        mode = "v3 policies + 双轨" if self._dual_track else "LegacyPolicy（v2 回退）"
+        try:
+            from maaracing_assistant.core.navkit import Assets
+            assets = Assets.load(v3_path, module="treasure")
+            if assets.policies is None:
+                raise RuntimeError(
+                    "treasure_assets.json 缺少 policies 段"
+                    "（决策策略缺失 = 启动失败，请先迁移策略到资产文件）"
+                )
+            self._policy_plan = compile_plan(assets.policies, assets.anchors)
+        except Exception as exc:
+            logger.log(f"[鉴宝] policies 编译失败：{exc}", "ERROR")
+            raise
         logger.log(
-            f"[鉴宝] 决策策略就绪: {mode}"
-            f"（rules={len(plan.rules) if plan else '--'}）",
+            f"[鉴宝] 决策策略就绪: v3 policies（rules={len(self._policy_plan.rules)}）",
             "INFO",
         )
 
@@ -2691,36 +2667,16 @@ class TreasureModule(ActivityModule):
     def _decide_action(self) -> dict | None:
         """P1：决策策略驱动（policies 数据化）。返回 {"key","hint","center"?} | None。
 
-        链：`_capture_decision_facts`（上游事实全部产出后冻结）→ Policy 决策
-        （PolicyPlan；双轨时 LegacyPolicy 同 facts 再算一遍比对）→ 引擎副作用
-        （`_apply_decision_effects`）→ 意图 dict（与旧结构一致，`_resolve_action_target`
-        消费逻辑不变）。行为等价由双轨 trace 机械保证。
+        链：`_capture_decision_facts`（上游事实全部产出后冻结）→ PolicyPlan 决策
+        → 引擎副作用（`_apply_decision_effects`）→ 意图 dict（与旧结构一致，
+        `_resolve_action_target` 消费逻辑不变）。
         """
         if self._current_stage is None:
             return None
         facts = self._capture_decision_facts()
-        policy = self._policy_plan if self._policy_plan is not None else self._legacy_policy
-        if policy is None:
+        if self._policy_plan is None:
             return None
-        decision = policy.decide(facts)
-        if self._dual_track and self._legacy_policy is not None:
-            legacy = self._legacy_policy.decide(facts)
-            self._policy_equal = (
-                legacy.key == decision.key
-                and legacy.payload == decision.payload
-                and legacy.fatal == decision.fatal
-                and legacy.side_effects == decision.side_effects
-            )
-            if not self._policy_equal:
-                logger.log(
-                    f"[鉴宝][P1双轨] 决策不一致 frame={self._frame_counter} "
-                    f"stage={facts.get('stage')} "
-                    f"legacy={legacy.key}/{legacy.payload} "
-                    f"vs plan={decision.key}/{decision.payload}",
-                    "ERROR",
-                )
-        else:
-            self._policy_equal = None
+        decision = self._policy_plan.decide(facts)
         self._policy_snapshot = DecisionSnapshot.from_decision(facts, decision).as_dict()
         self._apply_decision_effects(decision)
         out = {"key": decision.key, "hint": decision.hint}
@@ -3632,13 +3588,12 @@ class TreasureModule(ActivityModule):
         self._consume_click_result()      # 先消费上一任务结果，应用指纹/时刻等副作用
         self._execute_click(intent)       # click 决策 + 提交（非阻塞，导航后台闭环）
         self._maybe_shoo_cursor(intent)   # 无 click 任务时（任务槽空闲）才尝试避让
-        # P1：决策契约落盘（facts 投影 + policy 输出 + 双轨等价比对）。
+        # P1：决策契约落盘（facts 投影 + policy 输出）。
         if self._policy_snapshot is not None and self._trace_writer is not None:
             self._trace_writer.write({
                 "frame": self._frame_counter,
                 "event": "decision",
                 "decision_snapshot": self._policy_snapshot,
-                "dual_track_equal": self._policy_equal,
             })
             self._policy_snapshot = None
 
