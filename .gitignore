@@ -38,6 +38,9 @@ debug.txt
 .claude/
 AGENTS.md
 
+# AI 生成的 plan 文档（过程产物，不入库；归档后移 archive/）
+docs/plan/
+
 # 本机 harness 配置说明（含本机路径，仅本地参考）
 docs/trae-dsh-config-share.md
 
