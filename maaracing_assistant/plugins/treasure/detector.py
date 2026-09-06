@@ -456,20 +456,20 @@ class TreasureStageDetector:
         if best_name is None:
             return None
         # 阈值解析与 detect() 一致：优先 per-模板（win 0.60），再 ROI 通用，最后全局
-            plan_spec = self.plan.spec.get("result_banner") if self.plan is not None else None
-            per_tpl_th = (
-                (plan_spec.arbitration.get("template_thresholds", {}) or {}).get(Path(best_name).name)
-                if plan_spec is not None else None
+        plan_spec = self.plan.spec.get("result_banner") if self.plan is not None else None
+        per_tpl_th = (
+            (plan_spec.arbitration.get("template_thresholds", {}) or {}).get(Path(best_name).name)
+            if plan_spec is not None else None
+        )
+        if per_tpl_th is None:
+            per_tpl_th = _ROI_STAGE["result_banner"].get("thresholds", {}).get(Path(best_name).stem)
+        if per_tpl_th is not None:
+            threshold = float(per_tpl_th)
+        else:
+            roi_th = plan_spec.threshold if plan_spec is not None else (
+                _roi_thresholds.get("result_banner") if _roi_thresholds else None
             )
-            if per_tpl_th is None:
-                per_tpl_th = _ROI_STAGE["result_banner"].get("thresholds", {}).get(Path(best_name).stem)
-            if per_tpl_th is not None:
-                threshold = float(per_tpl_th)
-            else:
-                roi_th = plan_spec.threshold if plan_spec is not None else (
-                    _roi_thresholds.get("result_banner") if _roi_thresholds else None
-                )
-                threshold = roi_th if isinstance(roi_th, float) else self.match_threshold
+            threshold = roi_th if isinstance(roi_th, float) else self.match_threshold
         if best_score < threshold:
             return None
         if "win" in best_name:
