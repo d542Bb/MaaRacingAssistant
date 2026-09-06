@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""鉴宝 DebugStudio adapter（统一计划 P3，首次认领）。
+"""鉴宝 NavKit adapter（统一计划 P3，首次认领）。
 
 adapter 的职责：声明鉴宝模块「有哪些可校准类别 + 缺省归属 + 路径布局 + 领域端点」，
 并复用 core 的 session/categories/reader/renderer 完成浏览与匹配。generic studio
 只 dispatch 端点，不在此理解 OCR/出价内容；OCR/彩蛋的**领域识别逻辑**注册为
 adapter 端点（server 转发），供 racing 等未来模块复用同一 server 骨架。
 
-结构落点（迁移自 treasure_debug_studio/server.py）：
+结构落点（迁移自 NavKit 控制台/server.py）：
     - 类别：stage / actions / ocr / appraisers / eggs
     - ROI 文件：plugins/treasure/resources/config/treasure_rois.json
     - 截图根：debug/treasure/（会话目录）
@@ -17,8 +17,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tools.debug_studio.core.categories import CategoryDefs
-from tools.debug_studio.core.session import SessionBrowser
+from tools.navkit.core.categories import CategoryDefs
+from tools.navkit.core.session import SessionBrowser
 
 from maaracing_assistant.core.paths import debug_dir
 
@@ -26,7 +26,7 @@ PROJ = Path(__file__).resolve().parent.parent.parent.parent
 
 CATEGORIES: tuple[str, ...] = ("stage", "actions", "ocr", "appraisers", "eggs")
 
-# v2 缺省归属（与 treasure_debug_studio/server.py 的 DEFAULT_* 保持一致，幂等补填）。
+# v2 缺省归属（与 NavKit 控制台/server.py 的 DEFAULT_* 保持一致，幂等补填）。
 DEFAULT_ACTIONS = {
     "bid_confirm_red_btn": {"rect": [0.0, 0.0, 0.0, 0.0], "templates": ["bid_confirm_red_btn.png"]},
     "confirm_red_btn": {"rect": [0.0, 0.0, 0.0, 0.0], "templates": ["confirm_red_btn.png"]},
@@ -70,7 +70,7 @@ def template_dir() -> Path:
 
 
 # ---------------------------------------------------------------------------
-# 领域端点：OCR / 彩蛋（迁移自 treasure_debug_studio/server.py；server only dispatch）
+# 领域端点：OCR / 彩蛋（迁移自 NavKit 控制台/server.py；server only dispatch）
 # ---------------------------------------------------------------------------
 _ocr_instance = None
 _ocr_init_attempted = False
@@ -93,7 +93,7 @@ def _get_ocr():
             _ocr_instance = TreasureOcr(PROJ)
         except Exception as e:  # noqa: BLE001
             _ocr_instance = None
-            print(f"[DebugStudio] TreasureOcr 初始化失败: {e}")
+            print(f"[NavKit] TreasureOcr 初始化失败: {e}")
         finally:
             _ocr_init_attempted = True
     return _ocr_instance
@@ -184,7 +184,7 @@ def _handle_eggs(handler, body: dict) -> None:
 def _crop_for_roi(handler, body: dict, max_w: int):
     """从 body 的 session/image+rect 抠 ROI，返回 (bgr_crop, crop_bgr, preview, ocr)。"""
     import cv2
-    from tools.debug_studio.core.renderer import bgr_to_dataurl
+    from tools.navkit.core.renderer import bgr_to_dataurl
     img = handler._read_bgr(body)
     if img is None:
         return None, None, "", None

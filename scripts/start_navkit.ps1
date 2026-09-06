@@ -1,6 +1,6 @@
 # DebugStudio launcher: start server (separate process) and open browser.
 # Usage:
-#   powershell -ExecutionPolicy Bypass -File scripts/start_debug_studio.ps1 [-Module treasure] [-Port 8765]
+#   powershell -ExecutionPolicy Bypass -File scripts/start_navkit.ps1 [-Module treasure] [-Port 8765]
 # Options:
 #   -Module  module adapter id (default treasure; racing reserved), maps to server.py --module
 #   -Port    HTTP port (default 8765)
@@ -16,7 +16,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $RepoRoot = Split-Path $PSScriptRoot -Parent
-$ServerPy = Join-Path $RepoRoot 'tools\debug_studio\server.py'
+$ServerPy = Join-Path $RepoRoot 'tools\navkit\server.py'
 if (-not (Test-Path $ServerPy)) { throw "DebugStudio server not found: $ServerPy" }
 
 $Url = "http://localhost:$Port"
@@ -64,8 +64,8 @@ if ($existing) {
 }
 
 # 2) start server as an independent process (survives this script exiting)
-$serverOut = Join-Path $env:TEMP "debug_studio_$Port.out.log"
-$serverErr = Join-Path $env:TEMP "debug_studio_$Port.err.log"
+$serverOut = Join-Path $env:TEMP "navkit_$Port.out.log"
+$serverErr = Join-Path $env:TEMP "navkit_$Port.err.log"
 Write-Host "[DebugStudio] starting server (module=$Module) via $PyExeFull at $Url ..." -ForegroundColor Cyan
 $proc = Start-Process -FilePath $PyExeFull `
     -ArgumentList @($ServerPy, "--module", $Module, "--port", "$Port") `

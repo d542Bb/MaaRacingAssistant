@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""会话与文件白名单（DebugStudio Core · 与内容无关）。
+"""会话与文件白名单（NavKit Core · 与内容无关）。
 
 把「哪个名字是合法会话 / 哪些 raw 帧文件允许读 / 目录穿越防护」收敛成纯逻辑，
 供任何模块的调试浏览器复用。不从属于 treasure/racing 的任何内容知识。
 
-三个契约（迁移自 treasure_debug_studio/server.py 的白名单，保持严格防护语义）：
+三个契约（迁移自 NavKit 控制台/server.py 的白名单，保持严格防护语义）：
 - 会话名必须是 `%8d_%6d` 形态的目录（如 `20260812_183611`），且其下含 `raw/` 子目录。
 - raw 帧文件名必须是 `NNNN_raw.{png,jpg,jpeg,webp}`（原始抓帧格式由模块决定，这里同时放行）。
 - 一切路径解析均以 `is_relative_to` 严格限定在会话 raw 目录内，防同前缀目录绕过 / 目录穿越。

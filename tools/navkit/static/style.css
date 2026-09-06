@@ -161,6 +161,17 @@ select.tpl { width: 100%; margin-top: 6px; }
 }
 
 /* 模态框 */
+.graph-panel { margin-top: 12px; border-top: 1px solid #313244; padding-top: 10px; }
+.graph-head { display: flex; justify-content: space-between; align-items: center; color: #cdd6f4; margin-bottom: 6px; }
+.graph-tree { max-height: 34vh; overflow: auto; font-size: 12px; color: #bac2de; }
+.graph-tree details { margin: 3px 0; }
+.graph-tree summary { cursor: pointer; color: #89b4fa; }
+.graph-tree ul { padding-left: 18px; margin: 4px 0; list-style: none; }
+.graph-tree li { padding: 2px 0; }
+.graph-tree li.bad { color: #f38ba8; }
+.graph-tree em { color: #f9e2af; font-style: normal; }
+.node-kind { display: inline-block; min-width: 48px; margin-right: 4px; color: #a6e3a1; }
+
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 50; }
 .modal.hidden { display: none; }
 .modal-body { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; width: 90%; max-width: 720px; max-height: 85vh; display: flex; flex-direction: column; }

@@ -91,6 +91,7 @@ async function init() {
     updatePropPanel();
     // 等待 Flex 布局完全稳定后再 fit 一次 canvas（防容器尺寸为 0 / 被压缩成小条）
     requestAnimationFrame(() => requestAnimationFrame(fitCanvas));
+    await loadGraph();
   } catch (e) {
     console.error("init 失败:", e);
     alert("页面初始化失败：" + e.message + "\n请按 F12 打开控制台查看详细错误");
@@ -1094,7 +1095,40 @@ function flash(msg) {
 }
 
 // ---------------- 事件绑定 ----------------
+async function loadGraph() {
+  const box = $("graphTree");
+  if (!box) return;
+  try {
+    const graph = await apiGet("/api/graph");
+    const stages = graph.stage_order || [];
+    const byStage = new Map();
+    for (const node of graph.nodes || []) {
+      if (node.kind === "stage") continue;
+      const page = node.page || "未分组";
+      if (!byStage.has(page)) byStage.set(page, []);
+      byStage.get(page).push(node);
+    }
+    const parts = stages.map((stage, index) => {
+      const def = (graph.nodes || []).find(n => n.id === "stage:" + stage);
+      const anchors = (def && def.anchors) || [];
+      const items = anchors.map(id => {
+        const node = (graph.nodes || []).find(n => n.id === id) || {id};
+        const guard = node.guarded_by ? ` · 担保 ${node.guarded_by}` : "";
+        const cls = node.kind === "point" && !node.guarded_by ? "bad" : "";
+        return `<li class="${cls}"><span class="node-kind">${node.kind || "?"}</span>${node.label || id}${guard}</li>`;
+      }).join("");
+      const dynamic = def && def.dynamic ? " <em>→ 进入代码</em>" : "";
+      return `<details ${index === 0 ? "open" : ""}><summary>${index + 1}. ${stage}${dynamic}</summary><ul>${items || "<li>阶段未登记锚点</li>"}</ul></details>`;
+    }).join("");
+    box.innerHTML = parts || "<div class=empty>暂无结构树</div>";
+  } catch (e) {
+    box.innerHTML = `<div class="empty">结构树加载失败：${e.message}</div>`;
+  }
+}
+
 function bindEvents() {
+  const reloadGraph = $("reloadGraph");
+  if (reloadGraph) reloadGraph.onclick = loadGraph;
   $("sessionSelect").onchange = async (e) => {
     state.session = e.target.value;
     await loadImages();

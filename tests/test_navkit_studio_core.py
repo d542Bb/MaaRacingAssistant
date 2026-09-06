@@ -11,8 +11,8 @@ import json
 
 import pytest
 
-from tools.debug_studio.adapters import treasure as t_adapter
-from tools.debug_studio.core.categories import CategoriesError, CategoryDefs
+from tools.navkit.adapters import treasure as t_adapter
+from tools.navkit.core.categories import CategoriesError, CategoryDefs
 
 # ----------------------------------------------------------------------
 # session：会话/文件白名单 + 目录穿越防护
@@ -38,32 +38,32 @@ class TestSessionBrowser:
         return root
 
     def test_list_sessions_only_valid(self, layout):
-        from tools.debug_studio.core.session import SessionBrowser
+        from tools.navkit.core.session import SessionBrowser
         b = SessionBrowser(layout)
         assert b.list_sessions() == ["20260812_183611"]  # 无 raw/ 或无合法名的被排除
 
     def test_list_raw_filters_by_whitelist(self, layout):
-        from tools.debug_studio.core.session import SessionBrowser
+        from tools.navkit.core.session import SessionBrowser
         b = SessionBrowser(layout)
         raw_list = b.list_raw("20260812_183611")
         assert raw_list == ["0001_raw.jpg", "0002_raw.png"]
         assert "not_raw.txt" not in raw_list
 
     def test_list_raw_invalid_session_empty(self, layout):
-        from tools.debug_studio.core.session import SessionBrowser
+        from tools.navkit.core.session import SessionBrowser
         b = SessionBrowser(layout)
         assert b.list_raw("bad_session") == []
         assert b.list_raw("00000000_000000") == []  # 合法形态但目录不存在
 
     def test_resolve_raw_in_bounds(self, layout):
-        from tools.debug_studio.core.session import SessionBrowser
+        from tools.navkit.core.session import SessionBrowser
         b = SessionBrowser(layout)
         p = b.resolve_raw("20260812_183611", "0001_raw.jpg")
         assert p is not None and p.is_file()
         assert p.parent.name == "raw"
 
     def test_resolve_raw_blocks_illegal_names(self, layout):
-        from tools.debug_studio.core.session import SessionBrowser
+        from tools.navkit.core.session import SessionBrowser
         b = SessionBrowser(layout)
         assert b.resolve_raw("20260812_183611", "not_raw.txt") is None
         assert b.resolve_raw("20260812_183611", "..\\escape.png") is None
@@ -71,7 +71,7 @@ class TestSessionBrowser:
 
     def test_resolve_raw_blocks_traversal_outside_raw(self, layout):
         # raw/ 内没有该文件、但 raw/ 之外存在同名文件时，绝不越界读取外部路径
-        from tools.debug_studio.core.session import SessionBrowser
+        from tools.navkit.core.session import SessionBrowser
         (layout / "20260812_183611" / "0000_raw.jpg").write_bytes(b"x")  # 仅放在 raw 外
         b = SessionBrowser(layout)
         assert b.resolve_raw("20260812_183611", "0000_raw.jpg") is None

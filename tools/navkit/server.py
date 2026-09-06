@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""DebugStudio 通用后端（模块开发模式统一计划 · P3）。
+"""NavKit 通用后端（模块开发模式统一计划 · P3）。
 
-用 core（session/categories/reader/renderer）重建原 treasure_debug_studio/server.py，
+用 core（session/categories/reader/renderer）重建原 NavKit 控制台/server.py，
 并抽象为「通用 server + 模块 adapter」：前端 API 契约与旧版**完全兼容**，因此旧前端
 三件套可整套迁移零改动；OCR/彩蛋等领域专属能力由「模块 adapter」注册，供 racing 等
 未来模块复用同一 server。
 
 启动：
-    cd tools/debug_studio
+    cd tools/navkit
     python server.py --module treasure        # 默认
     python server.py --module racing          # 预留，适配后即可用
 浏览器打开 http://localhost:8765
@@ -30,17 +30,20 @@ from urllib.parse import parse_qs, urlparse
 
 import cv2
 
-# 允许 `python tools/debug_studio/server.py` 独立运行：把项目根加入 sys.path，
+# 允许 `python tools/navkit/server.py` 独立运行：把项目根加入 sys.path，
 # 使 `tools` / `maaracing_assistant` 两个包都可导入（cwd 非项目根时同样生效）。
 _PROJ_ROOT = Path(__file__).resolve().parent.parent.parent
 _PROJ_ROOT_STR = str(_PROJ_ROOT)
 if _PROJ_ROOT_STR not in sys.path:
     sys.path.insert(0, _PROJ_ROOT_STR)
 
-from tools.debug_studio.core import session as sessmod
-from tools.debug_studio.core.categories import CategoryDefs
-from tools.debug_studio.core.reader import TemplateStore, match_local
-from tools.debug_studio.core.renderer import bgr_to_dataurl, gray_to_dataurl
+from tools.navkit.core import session as sessmod
+from tools.navkit.core.categories import CategoryDefs
+from tools.navkit.core.reader import TemplateStore, match_local
+from tools.navkit.core.renderer import bgr_to_dataurl, gray_to_dataurl
+from maaracing_assistant.core.navkit import Assets, compile_routes_json, validate_assets
+from tools.navkit.graph_api import graph_document
+from maaracing_assistant.core.paths import debug_dir
 
 # ---------------------------------------------------------------------------
 # adapter 选择
@@ -50,7 +53,7 @@ from tools.debug_studio.core.renderer import bgr_to_dataurl, gray_to_dataurl
 def _load_adapter(module: str):
     """按模块名加载对应的 adapter 模块（treasure 现已支持，racing 预留）。"""
     if module == "treasure":
-        from tools.debug_studio.adapters import treasure
+        from tools.navkit.adapters import treasure
         return treasure
     raise ValueError(f"暂不支持模块 adapter: {module!r}（当前可用: treasure）")
 
@@ -231,6 +234,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(body)
             elif path == "/api/rois":
                 self._send_json(load_rois(self.state))
+            elif path == "/api/assets":
+                self._handle_assets_get(qs)
+            elif path == "/api/graph":
+                self._handle_graph_get(qs)
+            elif path == "/api/trace":
+                self._handle_trace_get(qs)
             else:
                 # 领域端点（adapter 注册）
                 extra = self.state.extra_handlers.get("GET", {})
@@ -246,6 +255,13 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
         body = self._read_body()
+
+        if path == "/api/assets":
+            self._handle_assets_post(body)
+            return
+        if path == "/api/compile":
+            self._handle_compile_post(body)
+            return
 
         # ROI 原子保存
         if path == "/api/rois":
@@ -285,6 +301,67 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         self._send_json({"error": f"unknown POST endpoint: {path}"}, 404)
+
+    # ---- NavKit v3 API ----
+    def _assets_path(self) -> Path:
+        return _PROJ_ROOT / "maaracing_assistant" / "plugins" / self.state.adapter.__name__.split(".")[-1] / "resources" / "config" / "treasure_assets.json"
+
+    def _load_assets_doc(self) -> dict:
+        path = self._assets_path()
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def _handle_assets_get(self, qs) -> None:
+        try:
+            doc = self._load_assets_doc()
+            assets = Assets.from_document(doc, module="treasure")
+            report = validate_assets(assets)
+            self._send_json({"document": doc, "report": {"ok": report.ok, "errors": [str(i) for i in report.errors], "warnings": [str(i) for i in report.warnings]}})
+        except Exception as exc:
+            self._send_json({"error": str(exc)}, 500)
+
+    def _handle_graph_get(self, qs) -> None:
+        try:
+            self._send_json(graph_document(self._load_assets_doc()))
+        except Exception as exc:
+            self._send_json({"error": str(exc)}, 500)
+
+    def _handle_trace_get(self, qs) -> None:
+        root = debug_dir() / "treasure"
+        rows = []
+        for path in sorted(root.glob("*/trace.jsonl")):
+            try:
+                rows.extend(json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+            except (OSError, ValueError):
+                continue
+        self._send_json(rows)
+
+    def _handle_assets_post(self, body: dict) -> None:
+        document = body.get("document")
+        if not isinstance(document, dict):
+            self._send_json({"ok": False, "error": "document 必须为 object"}, 400)
+            return
+        try:
+            assets = Assets.from_document(document, module="treasure")
+            report = validate_assets(assets)
+            if not report.ok:
+                self._send_json({"ok": False, "report": report.text()}, 400)
+                return
+            path = self._assets_path()
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(path)
+            self._send_json({"ok": True, "report": report.text()})
+        except Exception as exc:
+            self._send_json({"ok": False, "error": str(exc)}, 400)
+
+    def _handle_compile_post(self, body: dict) -> None:
+        try:
+            doc = self._load_assets_doc()
+            assets = Assets.from_document(doc, module="treasure")
+            output = compile_routes_json(assets)
+            self._send_json({"ok": True, "bytes": len(output.encode("utf-8")), "output": output})
+        except Exception as exc:
+            self._send_json({"ok": False, "error": str(exc)}, 400)
 
     # ---- 通用后端实现（不依赖 adapter 领域） ----
     def _handle_template_upload(self, body: dict) -> None:
@@ -452,7 +529,7 @@ def np_frombuffer(raw: bytes):
 
 def main() -> None:
     import argparse
-    parser = argparse.ArgumentParser(description="DebugStudio")
+    parser = argparse.ArgumentParser(description="NavKit")
     parser.add_argument("--module", default="treasure",
                         help="模块 adapter 名（treasure 默认；racing 预留）")
     parser.add_argument("--port", type=int, default=8765)
@@ -460,7 +537,7 @@ def main() -> None:
     state = build_state(args.module)
     Handler.state = state
     ensure_rois(state)
-    print(f"DebugStudio[{args.module}] 已启动: http://localhost:{args.port}")
+    print(f"NavKit[{args.module}] 已启动: http://localhost:{args.port}")
     print(f"ROI 配置文件    : {state.rois_file}")
     print(f"截图根目录      : {state.session_browser.debug_root}")
     print(f"模板目录        : {state.tpl_dir}")

@@ -149,7 +149,8 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 │           ├── eggs.py / renderer.py / store.py
 │           └── resources/                    # 插件专属资源（自包含）
 │               ├── image/                    # 全部鉴宝模板
-│               └── config/treasure_rois.json # ROI/阈值/偏好配置（调试台保存）
+│               ├── config/treasure_assets.json # NavKit schema v3 唯一检测/路由真源
+│               └── config/treasure_rois.json # v2 回退/迁移输入（调试台兼容）
 │
 ├── assets/                                   # 应用级资产（插件素材已全部内聚到各自 plugins/<id>/resources/）
 │   ├── config/maa_option.json                # MAA 框架配置
@@ -170,7 +171,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 │
 ├── tools/                                    # 开发工具脚本（按用途分组）
 │   ├── mouse_overlay.py                      # 独立 Overlay 工具（屏幕十字准星）
-│   ├── debug_studio/                         # 通用 ROI 校准调试台（core + adapter，treasure 已认领）
+│   ├── navkit/                               # NavKit 控制台（结构树/资产编辑/回放）
 │   ├── training/                             # 模型训练与数据准备
 │   │   ├── train.py                          # YOLO 训练 + ONNX 导出脚本
 │   │   ├── dataset.yaml                      # 数据集类别配置
@@ -179,7 +180,7 @@ MaaRacingAssistant 是一款基于**计算机视觉**与**虚拟手柄控制**�
 ├── tests/                                    # 单元测试（纯逻辑，CI 矩阵 3.11）
 ├── scripts/                                  # 发布打包 / 启动脚本
 │   ├── release/assemble.ps1                  # 发布打包脚本
-│   └── start_debug_studio.ps1                # DebugStudio 启动
+│   └── start_navkit.ps1                      # NavKit 启动
 │
 ├── .github/workflows/                        # CI：test.yml（单测）、release.yml（发布）
 ├── docs/
@@ -718,7 +719,7 @@ python -u -m maaracing_assistant.core.sidecar  # 独立调试 sidecar（等待 s
 1. **DEBUG 存盘模式**：GUI 勾选"DEBUG 每帧截图"，每帧全量标注保存到 `%APPDATA%/MaaRacingAssistant/debug/<module>/<会话>/` 目录
 2. **PEEP 实时预览**：GUI 勾选"PEEP 实时预览"，弹出 OpenCV 窗口实时显示精简标注画面（\~30fps）
 3. **断点调试**：GUI 断点列表双击选择起始阶段，跳过前面的导航步骤
-4. **DebugStudio**：`tools/debug_studio`（`scripts/start_debug_studio.ps1 -Module treasure`）浏览落盘会话并校准 ROI
+4. **NavKit 控制台**：`tools/navkit`（`python tools/navkit/server.py --module treasure`）浏览会话、查看 v3 结构树、校准资产；`/api/assets` 保存前校验，`/api/trace` 读取决策流水
 
 ### 9.4 YOLO模型训练（赛车域）
 

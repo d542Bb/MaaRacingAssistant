@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
@@ -42,6 +43,8 @@ from maaracing_assistant.plugins.treasure.strategy import (
     VAL_COEF,
 )
 from maaracing_assistant.plugins.treasure.detector import TreasureStageDetector
+from maaracing_assistant.core.nav_graph import NavGraph
+from maaracing_assistant.core.navkit import FrameTrace, TraceWriter
 from maaracing_assistant.plugins.treasure.eggs import EggRewardRecognizer
 from maaracing_assistant.plugins.treasure.ocr import TreasureOcr
 from maaracing_assistant.plugins.treasure.renderer import TreasureDebugRenderer
@@ -71,6 +74,30 @@ def _load_action_centers(proj: Path) -> tuple[dict[str, tuple[float, float]], di
     两个分类；缺失/损坏时返回空 dict。宽高供手柄模式点击容差用（落点在框中心
     70% 区域内即可按 A——ROI 本对标整个可交互区域，无需像素级精确到中心）。
     """
+    # S1：v3 为优先真源；v2 仅作 NAVKIT_SOURCE=v2 或 v3 缺失时回退。
+    source = os.environ.get("NAVKIT_SOURCE", "v3").lower()
+    v3_path = CONFIG_DIR / "treasure_assets.json"
+    if source != "v2" and v3_path.exists():
+        try:
+            from maaracing_assistant.core.navkit import Assets
+            assets = Assets.load(v3_path, module="treasure")
+            out: dict[str, tuple[float, float]] = {}
+            sizes: dict[str, tuple[float, float]] = {}
+            for key, anchor in assets.anchors.items():
+                if anchor.kind not in ("point", "template"):
+                    continue
+                rect = anchor.rect.as_list()
+                x1, y1, x2, y2 = rect
+                out[key] = ((x1 + x2) / 2, (y1 + y2) / 2)
+                sizes[key] = (x2 - x1, y2 - y1)
+            # 兼容 module 尚未改名的消费点；v3 的物理资产 id 仍保留可审计的新名。
+            if "session_start_match_click" in out:
+                out["session_start_match_btn"] = out["session_start_match_click"]
+                sizes["session_start_match_btn"] = sizes["session_start_match_click"]
+            return out, sizes
+        except Exception as exc:
+            logger.log(f"[鉴宝] v3 actions 读取失败，回退 v2: {exc}", "WARNING")
+
     path = CONFIG_DIR / "treasure_rois.json"
     if not path.exists():
         return {}, {}
@@ -79,8 +106,8 @@ def _load_action_centers(proj: Path) -> tuple[dict[str, tuple[float, float]], di
             data = json.load(f)
     except Exception:
         return {}, {}
-    out: dict[str, tuple[float, float]] = {}
-    sizes: dict[str, tuple[float, float]] = {}
+    out = {}
+    sizes = {}
     for cat in ("stage", "actions"):
         for key, val in data.get(cat, {}).items():
             rect = val.get("rect") if isinstance(val, dict) else None
@@ -248,22 +275,34 @@ def _load_session_panel(
 ) -> list[tuple[int, str, np.ndarray, tuple[float, float, float, float]]]:
     """加载「开始匹配」按钮模板（详情卡已切到目标场次的判定用）。
 
-    rect 从 treasure_rois.json 的 stage 段读取（key: session_start_match_btn）；
-    返回: [(priority, key, gray, rect_norm)]，缺失则返回空列表
-    （判定降级为未匹配 → 始终先点目标场次 badge，再点开始匹配位置）。
+    rect 从 treasure_assets.json（v3 优先）或 treasure_rois.json（v2 回退）读取
+    （key: session_start_match_btn）；返回: [(priority, key, gray, rect_norm)]，
+    缺失则返回空列表（判定降级为未匹配 → 始终先点目标场次 badge，再点开始匹配位置）。
     """
     rois: dict[str, tuple[float, float, float, float]] = {}
-    path = CONFIG_DIR / "treasure_rois.json"
-    if path.exists():
+    source = os.environ.get("NAVKIT_SOURCE", "v3").lower()
+    v3_path = CONFIG_DIR / "treasure_assets.json"
+    if source != "v2" and v3_path.exists():
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            for key, val in (data.get("stage") or {}).items():
-                rect = val.get("rect") if isinstance(val, dict) else None
-                if isinstance(rect, list) and len(rect) == 4:
-                    rois[key] = (float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3]))
-        except Exception:
-            pass
+            from maaracing_assistant.core.navkit import Assets
+            assets = Assets.load(v3_path, module="treasure")
+            anchor = assets.anchors.get("session_start_match_btn")
+            if anchor is not None:
+                rois["session_start_match_btn"] = tuple(anchor.rect.as_list())
+        except Exception as exc:
+            logger.log(f"[鉴宝] v3 session panel rect 读取失败，回退 v2: {exc}", "WARNING")
+    if not rois:
+        path = CONFIG_DIR / "treasure_rois.json"
+        if path.exists():
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                for key, val in (data.get("stage") or {}).items():
+                    rect = val.get("rect") if isinstance(val, dict) else None
+                    if isinstance(rect, list) and len(rect) == 4:
+                        rois[key] = (float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3]))
+            except Exception:
+                pass
     out: list[tuple[int, str, np.ndarray, tuple[float, float, float, float]]] = []
     for prio, key, fname in _SESSION_PANEL_DEFS:
         rect = rois.get(key)
@@ -709,6 +748,8 @@ class TreasureModule(ActivityModule):
         self._debug_root: Path | None = None         # debug/treasure/
         self._session_dir: Path | None = None        # debug/treasure/<ts>/
         self._raw_dir: Path | None = None            # debug/treasure/<ts>/raw/
+        self._trace_writer: TraceWriter | None = None
+        self._nav_graph: NavGraph | None = None
         self._saved_frames = 0                       # 已保存的 raw 帧数（全量，每帧 +1）
         self._debug_saved = 0                        # 已保存的 rendered（debug 图）帧数（全量，每帧 +1）
 
@@ -750,6 +791,7 @@ class TreasureModule(ActivityModule):
         #   _current_stage 仍停在"选择鉴宝师"，但 _last_raw_stage = None）。
         self._last_raw_stage: str | None = None
         self._last_raw_round: int | None = None
+        self._last_detection_result = None
 
         # --------- 统一底座接入点（P2b+，保留运行时供给，不替换主路径）---------
         # StageTracker：阶段记录/断点换算的单一事实来源。运行时仍用既有 STAGE_ORDER +
@@ -1133,6 +1175,9 @@ class TreasureModule(ActivityModule):
                 self._main_crash_frames = 0
                 self.ctx.lifecycle.sleep(self._frame_interval_s)
         finally:
+            if self._trace_writer is not None:
+                self._trace_writer.close()
+                self._trace_writer = None
             self._stop_io_worker()     # 先停 IO 落盘 worker（排空队列，保证最后几帧落盘）
             self._stop_ocr_worker()
             if self._clicker is not None:
@@ -2835,6 +2880,10 @@ class TreasureModule(ActivityModule):
         if (stage.startswith("第") and "回合" in stage
                 and self._bid_phase == "bidding"):
             return frozenset({_SMART_BID_KEY})
+        # S1：v3 DetectionPlan 是感知清单真源；NAVKIT_SOURCE=v2 时保留旧常量回退。
+        plan = getattr(self._detector, "plan", None)
+        if plan is not None:
+            return plan.active_for(stage)
         return _STAGE_PERCEPTION.get(stage)
 
     def _collect_guard_rects(self) -> list[tuple[str, tuple[float, float, float, float]]]:
@@ -2847,7 +2896,9 @@ class TreasureModule(ActivityModule):
         被误避让；每帧驱动下按当前阶段裁剪即正确）。
         """
         rects: list[tuple[str, tuple[float, float, float, float]]] = []
-        keys = set(_GLOBAL_ANCHORS)
+        plan = getattr(self._detector, "plan", None)
+        global_anchors = plan.global_anchors if plan is not None else _GLOBAL_ANCHORS
+        keys = set(global_anchors)
         if self._current_stage:
             perception = self._active_stage_rois(self._current_stage)
             if perception:
@@ -2857,7 +2908,12 @@ class TreasureModule(ActivityModule):
             if r:
                 rects.append((k, tuple(float(n) for n in r)))
         schema_ocr = self._detector.schema.get("ocr") or {}
-        for k in _STAGE_OCR_KEYS.get(self._current_stage, ()):
+        ocr_keys = (
+            self._detector.plan.ocr_for(self._current_stage)
+            if getattr(self._detector, "plan", None) is not None
+            else _STAGE_OCR_KEYS.get(self._current_stage, ())
+        )
+        for k in ocr_keys or ():
             val = schema_ocr.get(k)
             rect = val.get("rect") if isinstance(val, dict) else None
             if isinstance(rect, list) and len(rect) == 4:
@@ -2919,6 +2975,15 @@ class TreasureModule(ActivityModule):
             return  # 避让(move)结果：无点击副作用
         pending = self._pending_click
         self._pending_click = None
+        if self._trace_writer is not None:
+            self._trace_writer.write({
+                "frame": self._frame_counter,
+                "event": "click_result",
+                "stage": self._current_stage,
+                "click_result": {"ok": bool(res.get("ok")),
+                                 "key": (pending or {}).get("key"),
+                                 "device_lost": bool(res.get("device_lost", False))},
+            })
         if res.get("ok"):
             self._apply_click_success(pending or {})
         else:
@@ -3047,6 +3112,14 @@ class TreasureModule(ActivityModule):
                 "key": key, "state": state, "fp": fp, "center": center,
                 "mode_label": self.CLICK_MODE_LABELS.get(clicker.mode, clicker.mode),
             }
+            if self._trace_writer is not None:
+                self._trace_writer.write({
+                    "frame": self._frame_counter,
+                    "event": "intent_submitted",
+                    "stage": self._current_stage,
+                    "intent": {"key": key, "state": state, "center": center,
+                               "box": target.get("box")},
+                })
 
     def _maybe_retry_stage_click(self, key: str) -> None:
         """阶段切换类点击的失败重试：点击后 N 帧页面没切走 → 重新 arm 指纹，下帧重试。
@@ -3346,12 +3419,32 @@ class TreasureModule(ActivityModule):
             return
         self._last_frame_rgb = frame_rgb  # 手柄导航（同步阻塞）期间进度回调渲染 PEEP 用
 
+        # S2：常开决策流水。debug 会话开着时与 raw 帧同目录对齐（帧号可互查）；
+        # 未开启 debug 时落 debug/treasure/session_*/（独立 trace 会话）。
+        if self._trace_writer is None:
+            if self._session_dir is not None:
+                self._trace_writer = TraceWriter(self._session_dir.parent, keep_sessions=10,
+                                                 session_dir=self._session_dir)
+            else:
+                self._trace_writer = TraceWriter(debug_dir() / "treasure", keep_sessions=10)
+
         # 首帧校验：截图帧尺寸 vs 客户区物理尺寸（坐标映射 1:1 前提，偏差时 WARNING）
         if self._frame_counter == 1:
             verify_frame_client(self.ctx.hwnd, frame_rgb.shape[1], frame_rgb.shape[0])
 
         # --------- 0. 阶段检测 → 过滤 → 同步状态机 ---------
         self._run_stage_detection(frame_rgb)
+        if self._trace_writer is not None:
+            detection = self._last_detection_result
+            self._trace_writer.write(FrameTrace(
+                frame=self._frame_counter,
+                stage=self._current_stage,
+                round_no=self._round_no,
+                scores=getattr(detection, "scores", {}),
+                hit_anchor=getattr(detection, "hit_anchor", None),
+                active_used=getattr(detection, "active_used", ()),
+                plan_version="v3" if getattr(self._detector, "plan", None) is not None else "v2",
+            ))
 
         # --------- 0.05 每日循环上限：连续 3 帧确认后自动停止 ---------
         # 到限后模块在鉴宝大厅空转（不点开始匹配）无意义：截图/OCR/存盘/心跳白耗资源。
@@ -3488,7 +3581,9 @@ class TreasureModule(ActivityModule):
         if perception is not None:
             active_rois = set(perception) | set(_GLOBAL_ANCHORS)
         try:
-            raw_stage, raw_r = self._detector.detect(frame_rgb, active_rois)
+            detection = self._detector.detect(frame_rgb, active_rois)
+            raw_stage, raw_r = detection
+            self._last_detection_result = detection
         except Exception:
             return
         # 记录 detector 原始结果（未经过滤层），供选师/场次准星判断"是否真的在该阶段"
@@ -3663,7 +3758,9 @@ class TreasureModule(ActivityModule):
             # 等级提升弹窗（无 ROI，hit_key is None 且非彩蛋识别中）→ 无数据要读，直接盲点跳过
             return
         if s == "中标结算" or s == "领取分红":
-            self._ocr_push(frame_rgb, keys=_STAGE_OCR_KEYS.get(s))
+            plan = getattr(self._detector, "plan", None)
+            keys = plan.ocr_for(s) if plan is not None else _STAGE_OCR_KEYS.get(s)
+            self._ocr_push(frame_rgb, keys=keys)
             return
         if not (s.startswith("第") and "回合" in s):
             return
@@ -3671,11 +3768,12 @@ class TreasureModule(ActivityModule):
         # 才投递 OCR。S1/S2 面板未开不投递（输入框区域是别的 UI，投了浪费且可能误判 H）。
         dec = self._bidding_last_decision
         if (dec and dec.get("state", "").startswith("S3")) or self._bid_phase == "wait_result":
-            base_keys = _STAGE_OCR_KEYS.get(s)
+            plan = getattr(self._detector, "plan", None)
+            base_keys = plan.ocr_for(s) if plan is not None else _STAGE_OCR_KEYS.get(s)
             if self._bid_phase == "wait_result":
                 # wait_result 阶段：动态剔除已固化槽 → OCR 资源集中给未固化槽，
                 # 尤其是最后展示的 P4（配合 P4 双通道，未固化槽刷新率自动提升≈两倍）。
-                dynamic_keys = self._bid_dynamic_ocr_keys() if base_keys is _BID_OCR_KEYS else base_keys
+                dynamic_keys = self._bid_dynamic_ocr_keys() if base_keys else base_keys
                 self._ocr_push(frame_rgb, keys=dynamic_keys)
             else:
                 # bidding 阶段只有 H 需要识别，报价槽不投递，用原 base_keys。
@@ -4040,10 +4138,12 @@ class TreasureModule(ActivityModule):
         OCR 资源集中给未固化槽，尤其最后展示的 P4（配合 P4 双通道提升刷新率）。
         H/玩家名/回合小字等非报价槽恒在。无固化槽时直接复用全量 _BID_OCR_KEYS（避免每帧重建 frozenset）。"""
         locked = {pid for pid, s in self._bid_slots.items() if s.get("locked")}
+        plan = getattr(self._detector, "plan", None)
+        bid_keys = plan.ocr_for(self._current_stage) if plan is not None else _BID_OCR_KEYS
         if not locked:
-            return _BID_OCR_KEYS
+            return bid_keys or frozenset()
         return frozenset(
-            k for k in _BID_OCR_KEYS
+            k for k in (bid_keys or ())
             if not (k.startswith("bid_player") and k[-1].isdigit() and int(k[-1]) in locked)
         )
 

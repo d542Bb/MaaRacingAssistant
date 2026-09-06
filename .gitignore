@@ -92,3 +92,6 @@ Thumbs.db
 cursor_refactor/captures/
 cursor_refactor/models/
 cursor_refactor/__pycache__/
+
+# NavKit 回归/缺口报告（本地产物，git 历史与 tools/navkit/out 快照为准）
+tools/navkit/out/

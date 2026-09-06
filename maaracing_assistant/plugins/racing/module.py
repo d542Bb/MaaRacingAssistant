@@ -16,8 +16,9 @@ from maaracing_assistant.core.base import ActivityContext, ActivityModule
 from maaracing_assistant.core.stage_tracker import StageTracker
 from maaracing_assistant.plugins.racing import MODEL_PATH, RES_DIR
 from maaracing_assistant.plugins.racing.renderer import RacingDebugRenderer
-from maaracing_assistant.plugins.racing.navigation import ButtonDef, Navigation
+from maaracing_assistant.plugins.racing.navigation import Navigation
 from maaracing_assistant.plugins.racing.loop import RacingLoop
+from maaracing_assistant.core.nav_graph import NavGraph
 from maaracing_assistant.core.pipeline_logger import PipelineLogger
 from maaracing_assistant.core.logger import logger
 
@@ -46,7 +47,8 @@ class RacingModule(ActivityModule):
     def __init__(self, ctx: ActivityContext):
         super().__init__(ctx)
         self._current_stage: str | None = None
-        self.nav = None          # 导航引擎（start 时创建）
+        self.nav = None          # 导航引擎（start 时创建）：归位/商店弹窗等"原地按键"专用
+        self.graph = None        # 跳转图（页面跳转全部由 pipeline JSON 驱动）
         self.racing_loop = None  # 比赛控制器（首次比赛前创建）
         self._tasker = None      # MAA 任务器（模块自有）
         self._resource = None    # MAA 资源（模块自有）
@@ -86,6 +88,9 @@ class RacingModule(ActivityModule):
             return
         # 第三个参数传 ctx：navigation.py 依赖私有接口，由 ActivityContext 提供兼容桥接
         self.nav = Navigation(self.ctx.proj, self.ctx.debug, self.ctx)
+        # 跳转图：大厅→活动页（core 公共图）+ 活动页→对局准备（本插件图）
+        self.graph = NavGraph(self.ctx)
+        self.graph.add_plugin(RES_DIR / "pipeline" / "racing_nav.json", RES_DIR / "image")
         # 安装调试渲染器：生命周期由 Context 的 ExitStack 接管（controller 结束时 close 释放）
         self.ctx.enter_context(
             self.ctx.debug_renderer.renderer(RacingDebugRenderer(self.ctx.debug)))
@@ -104,9 +109,8 @@ class RacingModule(ActivityModule):
 
             logger.log("开始循环")
 
-            BTN_极速狂飙入口 = ButtonDef("极速狂飙入口", (0.880, 0.720), "activity_page_template", True, 50)
-            BTN_开始挑战 = ButtonDef("开始挑战", (0.855, 0.898), "activity_page_template", False, 12)
-            BTN_寻找对手 = ButtonDef("寻找对手", (0.804, 0.753), "find_opponent_template", False, 25)
+            # 跳转目标不再在这里写死坐标：大厅→活动页见 core/resources/pipeline/hall.json，
+            # 活动页→对局准备见 resources/pipeline/racing_nav.json。
 
             # ══════════════════════════════════════════════
             # 大厅层：归位 → 导航一 → 进入对局循环
@@ -130,7 +134,7 @@ class RacingModule(ActivityModule):
                     for retry in range(3):
                         if not self.ctx.lifecycle.running:
                             break
-                        if self.nav.navigate_to_button(BTN_极速狂飙入口):
+                        if self.graph.run("极速狂飙_从大厅进入", reached="已到达极速狂飙页"):
                             nav1_ok = True
                             break
                         logger.log(f"导航一失败，第{retry+1}次重试——销毁手柄复位")
@@ -156,7 +160,7 @@ class RacingModule(ActivityModule):
                         for retry in range(6):
                             if not self.ctx.lifecycle.running:
                                 break
-                            if self.nav.navigate_to_button(BTN_开始挑战):
+                            if self.graph.run("极速狂飙_开始挑战", reached="已到达寻找对手页"):
                                 nav2_ok = True
                                 break
                             logger.log(f"导航二失败，第{retry+1}次原地重试——销毁手柄复位")
@@ -166,7 +170,8 @@ class RacingModule(ActivityModule):
                             if not self._in_match and retry == 2:
                                 logger.log("导航二连续3次失败，重新导航一", "WARNING")
                                 self.nav.homing()
-                                if not self.nav.navigate_to_button(BTN_极速狂飙入口):
+                                if not self.graph.run("极速狂飙_从大厅进入",
+                                                      reached="已到达极速狂飙页"):
                                     logger.log("重新导航一也失败，放弃", "WARNING")
                                     break
                     if not nav2_ok:
@@ -192,13 +197,9 @@ class RacingModule(ActivityModule):
                         for retry in range(6):
                             if not self.ctx.lifecycle.running:
                                 break
-                            logger.log(f"等待寻找对手页面...（第{retry+1}次）")
-                            if not self.nav._wait_for_template("find_opponent_template", timeout=15):
-                                logger.log("寻找对手页面未出现，销毁手柄重试", "WARNING")
-                                self.ctx.gamepad.reset_device()
-                                self.ctx.lifecycle.sleep(2.0)
-                                continue
-                            if self.nav.navigate_to_button(BTN_寻找对手):
+                            # 「等待寻找对手页面出现」已写在图里（节点按 rate_limit 重试到
+                            # timeout 才判失败），不再单写一遍 _wait_for_template。
+                            if self.graph.run("极速狂飙_寻找对手", reached="极速狂飙_已进入匹配"):
                                 nav3_ok = True
                                 break
                             logger.log(f"导航三失败，第{retry+1}次原地重试")
@@ -222,10 +223,7 @@ class RacingModule(ActivityModule):
                     if skip_until > 5:
                         logger.log(f"跳过「确认上阵」(断点: {start_from})")
                     else:
-                        BTN_确认上阵 = ButtonDef("确认上阵", (0.823, 0.931), "", True, 25)
-                        with self.ctx.gamepad.acquire() as gpad:
-                            self.nav._ensure_cursor(gpad)
-                            self.nav.navigate_to_button(BTN_确认上阵)
+                        self.graph.run("极速狂飙_确认上阵")
                         self.ctx.lifecycle.sleep(0.5)
 
                     # ── 比赛（直接运行，绕过 MAA CustomAction）──
@@ -294,6 +292,8 @@ class RacingModule(ActivityModule):
                 self.racing_loop.stop()
             except Exception:
                 pass
+        if self.graph is not None:
+            self.graph.stop()  # 中断在跑的跳转图
         if self._tasker is not None:
             try:
                 self._tasker.post_stop()
@@ -302,6 +302,9 @@ class RacingModule(ActivityModule):
 
     def cleanup(self):
         """幂等释放模块资源（renderer 由 Context.close 释放，gamepad 归还已在 start 的 finally 处理）"""
+        if self.graph is not None:
+            self.graph.shutdown()
+        self.graph = None
         self.racing_loop = None
         self._tasker = None
         self._resource = None

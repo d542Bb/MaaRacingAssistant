@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""ROI 类别集合（DebugStudio Core · 与内容无关）。
+"""ROI 类别集合（NavKit Core · 与内容无关）。
 
 调试台以「类别」组织可校准的 ROI：每类一个段（如 treasure 的 stage/actions/ocr/
 appraisers/eggs）。本模块交付「哪些类别、校验、缺省填充、顶层元数据」的通用骨架；
 **不**含任何具体类别的语义（哪个 key 代表什么阶段/按钮由 adapter 声明）。
 
-三个能力（迁移自 treasure_debug_studio/server.py）：
+三个能力（迁移自 NavKit 控制台/server.py）：
 - 顶层元数据(`_schema_ver`/`reference_size`)与 `_` 前缀元数据键的统一处理。
 - 类目段校验：每段必须为 object；`rect` 须为 4 个 [0,1] 数字；`templates` 为合法
   模板名数组；可选 `threshold` 为 [0,1] 数字。
@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from maaracing_assistant.core.render_plan import RenderPlan
-from tools.debug_studio.core.session import TPL_RE
+from tools.navkit.core.session import TPL_RE
 
 
 class CategoriesError(ValueError):

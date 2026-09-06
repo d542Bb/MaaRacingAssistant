@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from tools.debug_studio.server import (
+from tools.navkit.server import (
     Handler,
     StudioState,
     build_state,

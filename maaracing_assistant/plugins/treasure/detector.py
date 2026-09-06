@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -34,7 +35,7 @@ from maaracing_assistant.plugins.treasure import CONFIG_DIR, IMAGE_DIR
 MATCH_THRESHOLD = 0.75  # TM_CCOEFF_NORMED
 
 # 多尺度匹配缩放档（0.70×~1.30×，步长 0.05）。
-# 必须与调试台 tools/debug_studio/core/reader.py 的 MATCH_SCALES、
+# 必须与调试台 tools/navkit/core/reader.py 的 MATCH_SCALES、
 # treasure_module 的 _APPRAISER_MATCH_SCALES 保持完全一致——调试台校准的分数/阈值
 # 要能原样复现于运行时，画面/ROI/模板/算法四者必须同口径（牵一发而动全身原则）。
 MATCH_SCALES: tuple[float, ...] = (
@@ -43,7 +44,7 @@ MATCH_SCALES: tuple[float, ...] = (
 
 # ============================================================
 # 搜索 ROI：从插件资源目录 plugins/treasure/resources/config/treasure_rois.json 读取
-# （调试台 tools/debug_studio 负责可视化校准并保存该文件）。
+# （调试台 tools/navkit 负责可视化校准并保存该文件）。
 # rect 为归一化坐标 (x1n, y1n, x2n, y2n)，匹配时直接乘当前输入帧 W/H。
 # 注意：不提供硬编码 fallback——JSON 缺失/失败时如实报告并跳过，
 #       避免用残缺默认值掩盖真实配置导致阶段漏检。
@@ -91,6 +92,28 @@ def _load_rois(proj: Path) -> dict:
 
 
 _roi_thresholds: dict[str, float | None] = {}  # {roi_key: threshold}，由 _load_rois 填充
+
+
+@dataclass(frozen=True)
+class DetectResult:
+    """阶段检测结果及可还原判断树所需的逐锚点明细（D7）。
+
+    `__iter__` 保留旧版 `stage, round_no = detector.detect(...)` 的解包兼容；
+    新调用方直接读取 scores / hit_anchor / active_used / hit_template / hit_box。
+    """
+
+    stage: str | None
+    round_no: int | None
+    scores: dict[str, float]
+    hit_anchor: str | None
+    active_used: tuple[str, ...]
+    hit_template: str | None = None
+    hit_box: tuple[int, int, int, int] | None = None
+    threshold: float | None = None
+
+    def __iter__(self):
+        yield self.stage
+        yield self.round_no
 
 
 @dataclass(frozen=True)
@@ -180,13 +203,47 @@ class TreasureStageDetector:
 
     def __init__(self, proj: Path, ocr=None):
         self.tpl_dir = IMAGE_DIR
-        self._tpl_cache: dict[str, np.ndarray | None] = {}
-        self.ROI = _load_rois(proj)       # ← 从调试台 JSON 读取 ROI 区域（仅 stage 运行时）
-        self.ROI_TPL = _load_roi_templates(proj)  # ← 从调试台 JSON 读取每个 stage ROI 的模板列表
-        self.schema = _load_schema(proj)  # 完整 v2（或旧）schema，供回合小字等扩展读取
+        self._tpl_cache: dict[str, tuple[int, int, np.ndarray | None]] = {}
+        # S1：默认读 v3 DetectionPlan；NAVKIT_SOURCE=v2 仅作为逐帧等价回归期间的单点回退。
+        # 这里用局部导入，保持 detector 的 cv2/numpy 运行时依赖不泄漏到 navkit 包。
+        self.plan = None
+        source = os.environ.get("NAVKIT_SOURCE", "v3").lower()
+        if source != "v2":
+            try:
+                from maaracing_assistant.core.navkit import Assets, compile_detection
+                asset_path = CONFIG_DIR / "treasure_assets.json"
+                if asset_path.exists():
+                    asset_doc = Assets.load(asset_path, module="treasure", image_dirs=(IMAGE_DIR,))
+                    self.plan = compile_detection(asset_doc)
+            except Exception as exc:
+                logger.log(f"[鉴宝检测器] v3 DetectionPlan 加载失败，回退 v2: {exc}", "WARNING")
+        self.ROI = _load_rois(proj)       # ← v2 回退/兼容：stage ROI
+        self.ROI_TPL = _load_roi_templates(proj)  # ← v2 回退/兼容：模板列表
+        self.schema = _load_schema(proj)  # v2 回退：回合小字等扩展读取
+        self.match_scales = tuple(self.plan.scales) if self.plan is not None else MATCH_SCALES
+        self.match_threshold = (
+            float(self.plan.default_threshold) if self.plan is not None else MATCH_THRESHOLD
+        )
+        # 保持旧模块独立匹配代码的字段形状；S1 后新检测路径只读 plan，
+        # 这些字段供尚未迁移的 appraiser/session helper 逐步切换。
+        self.match_scales = tuple(self.match_scales)
+        if self.plan is not None:
+            self.ROI = {
+                name: tuple(spec.rect) for name, spec in self.plan.spec.items()
+                if spec.kind == "template"
+            }
+            self.ROI_TPL = {
+                name: list(spec.templates) for name, spec in self.plan.spec.items()
+                if spec.kind == "template"
+            }
+            self.roi_thresholds = {
+                name: spec.threshold for name, spec in self.plan.spec.items()
+                if spec.threshold is not None
+            }
+        else:
+            self.roi_thresholds = _roi_thresholds
         # ROI 级自定义阈值（{roi_key: float|None}）：引用模块级 _roi_thresholds（_load_rois
         # 刚填充），供外部（如 treasure_module._match_bid_smart_btn）与 detect() 同源取阈值。
-        self.roi_thresholds = _roi_thresholds
         self._weak_alert_ts: dict[str, float] = {}
         # 回合小字 OCR：识别不到回合号（横幅未命中）时激活一次，用 OCR 读「第N回合」
         # 文字提取回合数。引擎懒加载、失败自动降级，detector 自身不持有也不初始化引擎。
@@ -203,14 +260,43 @@ class TreasureStageDetector:
         # 最近一次 detect() 命中的 ROI key（"daily_high_banner" / "egg_reward_title" / 其它 /
         # None=无命中）。合并后的「结算弹窗」阶段靠它区分具体弹窗（今日最高/彩蛋 vs 等级提升盲点）。
         self._last_hit_roi_key: str | None = None
+        self._last_detect_scores: dict[str, float] = {}
 
     # ---------------- 对外主接口 ----------------
     def detect(
         self,
         frame_rgb: np.ndarray,
         active_rois: set[str] | None = None,
+    ) -> DetectResult:
+        """阶段检测（动态感知裁剪），统一返回 `DetectResult`（D7）。
+
+        旧的二元组实现保留在 `_detect_legacy`，并通过 `DetectResult.__iter__` 兼容
+        `stage, round_no = detector.detect(...)`。v3 资产加载成功时，ROI/模板/阈值
+        来自 `DetectionPlan`；缺失或显式 `NAVKIT_SOURCE=v2` 时走旧实现。
+        """
+        legacy_stage, legacy_round = self._detect_legacy(frame_rgb, active_rois)
+        if self.plan is not None:
+            active_used = (
+                tuple(self.plan.spec) if active_rois is None else tuple(sorted(active_rois))
+            )
+        else:
+            active_used = tuple(sorted(active_rois)) if active_rois is not None else tuple(_ROI_STAGE)
+        # `_detect_legacy` 在实际扫描同一帧时同步收集最高分，避免为了 trace 再做一遍
+        # 19 ROI × 13 scales 的模板匹配（原实现会让 3582 帧回归耗时成倍增加）。
+        return DetectResult(
+            stage=legacy_stage,
+            round_no=legacy_round,
+            scores=dict(self._last_detect_scores),
+            hit_anchor=self._last_hit_roi_key,
+            active_used=active_used,
+        )
+
+    def _detect_legacy(
+        self,
+        frame_rgb: np.ndarray,
+        active_rois: set[str] | None = None,
     ) -> tuple[str | None, int | None]:
-        """阶段检测（动态感知裁剪）。
+        """v2 阶段检测实现（S1 等价回归对照；不再作为公共回传类型）。
 
         active_rois：本帧只匹配这些 stage ROI 键；None = 全量匹配（调试台/断点/测试用）。
         未命中的 ROI 不参与扫描 → 非当前阶段的背景元素不会干扰判定（配合阶段感知清单），
@@ -218,17 +304,36 @@ class TreasureStageDetector:
         """
         H, W = frame_rgb.shape[:2]
         gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+        self._last_detect_scores = {}
 
-        # 按优先级从高到低扫描每个 stage ROI；同一 ROI 内所有模板一起匹配取最高分。
+        # 按计划优先级从高到低扫描；NAVKIT_SOURCE=v2 才使用旧常量顺序。
         # active_rois 提供时只扫描交集，优先级排序与命中短路逻辑不受影响。
-        for roi_key in sorted(_ROI_STAGE, key=lambda k: -_ROI_STAGE[k]["priority"]):
+        if self.plan is not None:
+            scan_keys = sorted(
+                self.plan.detect_anchors,
+                key=lambda name: -self.plan.spec[name].stage_priority,
+            )
+        else:
+            scan_keys = sorted(_ROI_STAGE, key=lambda k: -_ROI_STAGE[k]["priority"])
+        for roi_key in scan_keys:
             if active_rois is not None and roi_key not in active_rois:
                 continue
             rect = self.ROI.get(roi_key)
             if not rect:
                 continue
-            st = _ROI_STAGE[roi_key]
-            templates = self.ROI_TPL.get(roi_key) or []
+            plan_spec = self.plan.spec.get(roi_key) if self.plan is not None else None
+            if plan_spec is not None:
+                st = {
+                    "stage": plan_spec.stage or "",
+                    "priority": plan_spec.stage_priority,
+                    "margin": plan_spec.arbitration.get("margin", 0.0),
+                    "round_from_template": plan_spec.arbitration.get("round_from_template", False),
+                    "thresholds": plan_spec.arbitration.get("template_thresholds", {}),
+                }
+                templates = list(plan_spec.templates)
+            else:
+                st = _ROI_STAGE[roi_key]
+                templates = self.ROI_TPL.get(roi_key) or []
             if not templates:
                 continue
 
@@ -248,14 +353,24 @@ class TreasureStageDetector:
             if best is None:
                 continue
             score, tpl_name = best
+            self._last_detect_scores[roi_key] = float(score)
 
             # 先解析该 ROI+命中模板的实际阈值（优先级同上），供弱匹配告警 + 命中判定共享
-            per_tpl_th = st.get("thresholds", {}).get(Path(tpl_name).stem)
+            plan_spec = self.plan.spec.get(roi_key) if self.plan is not None else None
+            plan_tpl_th = (
+                (plan_spec.arbitration.get("template_thresholds", {}) or {}).get(Path(tpl_name).name)
+                if plan_spec is not None else None
+            )
+            per_tpl_th = plan_tpl_th
+            if per_tpl_th is None:
+                per_tpl_th = st.get("thresholds", {}).get(Path(tpl_name).stem)
             if per_tpl_th is not None:
                 threshold = float(per_tpl_th)
             else:
-                roi_th = _roi_thresholds.get(roi_key) if _roi_thresholds else None
-                threshold = roi_th if isinstance(roi_th, float) else MATCH_THRESHOLD
+                roi_th = plan_spec.threshold if plan_spec is not None else (
+                    _roi_thresholds.get(roi_key) if _roi_thresholds else None
+                )
+                threshold = roi_th if isinstance(roi_th, float) else self.match_threshold
 
             # 弱匹配：[threshold - 0.25, threshold) 区间，便于发现「差一点命中」但低于 threshold 的情况
             weak_low = max(0.50, threshold - 0.25)
@@ -265,7 +380,8 @@ class TreasureStageDetector:
                     f"score={score:.3f}（阈 {threshold:.3f}），可能是 ROI 偏移或模板过期",
                     "DEBUG",
                 )
-            margin = st.get("margin", 0.0)
+            arbitration = plan_spec.arbitration if plan_spec is not None else {}
+            margin = float(arbitration.get("margin", st.get("margin", 0.0)))
             if margin > 0.0:
                 if score < threshold or (score - second_score) < margin:
                     continue
@@ -275,7 +391,12 @@ class TreasureStageDetector:
             # 命中
             self._last_hit_roi_key = roi_key
             if st["stage"] == "__round_phase__":
-                if st.get("round_from_template"):
+                plan_spec = self.plan.spec.get(roi_key) if self.plan is not None else None
+                round_from_template = bool(
+                    (plan_spec.arbitration.get("round_from_template", False)
+                     if plan_spec is not None else st.get("round_from_template", False))
+                )
+                if round_from_template:
                     # round_big_banner（回合横幅，1~5 识别率 100%）= 回合号权威来源，
                     # 模板命中的回合号即时生效并更新 _last_round。
                     r = self._round_from_template(tpl_name)
@@ -335,12 +456,20 @@ class TreasureStageDetector:
         if best_name is None:
             return None
         # 阈值解析与 detect() 一致：优先 per-模板（win 0.60），再 ROI 通用，最后全局
-        per_tpl_th = _ROI_STAGE["result_banner"].get("thresholds", {}).get(Path(best_name).stem)
-        if per_tpl_th is not None:
-            threshold = float(per_tpl_th)
-        else:
-            roi_th = _roi_thresholds.get("result_banner") if _roi_thresholds else None
-            threshold = roi_th if isinstance(roi_th, float) else MATCH_THRESHOLD
+            plan_spec = self.plan.spec.get("result_banner") if self.plan is not None else None
+            per_tpl_th = (
+                (plan_spec.arbitration.get("template_thresholds", {}) or {}).get(Path(best_name).name)
+                if plan_spec is not None else None
+            )
+            if per_tpl_th is None:
+                per_tpl_th = _ROI_STAGE["result_banner"].get("thresholds", {}).get(Path(best_name).stem)
+            if per_tpl_th is not None:
+                threshold = float(per_tpl_th)
+            else:
+                roi_th = plan_spec.threshold if plan_spec is not None else (
+                    _roi_thresholds.get("result_banner") if _roi_thresholds else None
+                )
+                threshold = roi_th if isinstance(roi_th, float) else self.match_threshold
         if best_score < threshold:
             return None
         if "win" in best_name:
@@ -394,18 +523,30 @@ class TreasureStageDetector:
         return False
 
     def _load_gray(self, name_no_ext: str) -> np.ndarray | None:
-        if name_no_ext in self._tpl_cache:
-            return self._tpl_cache[name_no_ext]
+        """加载灰度模板，按文件 mtime_ns + size 失效缓存（R4）。
+
+        控制台换图后同一路径可能仍被旧缓存命中；只按文件名永久缓存会让用户看到
+        "改了没用"。不存在/读取失败也缓存当前指纹，文件后来出现时指纹变化会重读。
+        """
         path = self.tpl_dir / f"{name_no_ext}.png"
-        if not path.exists():
-            self._tpl_cache[name_no_ext] = None
+        try:
+            stat = path.stat()
+            fingerprint = (int(stat.st_mtime_ns), int(stat.st_size))
+        except OSError:
+            fingerprint = (-1, -1)
+        cached = self._tpl_cache.get(name_no_ext)
+        if cached is not None and cached[:2] == fingerprint:
+            return cached[2]
+        if fingerprint == (-1, -1):
+            self._tpl_cache[name_no_ext] = (*fingerprint, None)
             return None
         img = cv2.imread(str(path))
         if img is None:
+            self._tpl_cache[name_no_ext] = (*fingerprint, None)
             return None
-        g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        self._tpl_cache[name_no_ext] = g
-        return g
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        self._tpl_cache[name_no_ext] = (*fingerprint, gray)
+        return gray
 
     @staticmethod
     def _crop(gray_big, x1n, y1n, x2n, y2n, W, H):
@@ -415,8 +556,7 @@ class TreasureStageDetector:
             return None
         return gray_big[y1:y2, x1:x2]
 
-    @classmethod
-    def _match_local(cls, gray_big, gray_tpl, x1n, y1n, x2n, y2n, W, H) -> float:
+    def _match_local(self, gray_big, gray_tpl, x1n, y1n, x2n, y2n, W, H) -> float:
         """ROI 内多尺度模板匹配，返回所有尺度下的最高命中分（0~1）。
 
         与调试台 server.match_local 同一算法：模板在 MATCH_SCALES（0.70×~1.30×）
@@ -424,14 +564,14 @@ class TreasureStageDetector:
         可能偏离 1.0×，单尺度匹配会漏检（分数被拉低、横幅互斥区分度消失）；
         多尺度把实际渲染尺寸对应的最优档找出来，保证运行时分数与调试台校准口径一致。
         """
-        crop = cls._crop(gray_big, x1n, y1n, x2n, y2n, W, H)
+        crop = self._crop(gray_big, x1n, y1n, x2n, y2n, W, H)
         if crop is None:
             return 0.0
         th0, tw0 = gray_tpl.shape[:2]
         ch, cw = crop.shape[:2]
         best = 0.0
         attempted = False
-        for s in MATCH_SCALES:
+        for s in self.match_scales:
             nw = max(4, int(round(tw0 * s)))
             nh = max(4, int(round(th0 * s)))
             if nh > ch or nw > cw:
@@ -456,8 +596,8 @@ class TreasureStageDetector:
         if not attempted:
             # 模板即使缩到最小档 0.70× 仍超出 ROI → 该 ROI 永远无法命中
             now = time.time()
-            if now - getattr(cls, "_last_size_warn", 0.0) > 10.0:
-                cls._last_size_warn = now
+            if now - getattr(self, "_last_size_warn", 0.0) > 10.0:
+                self._last_size_warn = now
                 logger.log(
                     f"[鉴宝检测器] ROI 尺寸不足 (crop {cw}×{ch} < tpl {tw0}×{th0}×0.70)，"
                     f"该 ROI 永远无法命中，请用调试台调大",

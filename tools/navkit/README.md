@@ -1,7 +1,7 @@
-# DebugStudio 通用调试台
+# NavKit 控制台
 
 模块无关的截图校准工作台：浏览模块运行时落盘的 debug 截图会话，框选/校准 ROI、裁剪模板、
-调整阈值、测试匹配分与跨帧稳定性，保存回模块的 `*_rois.json`（唯一真源）。
+调整阈值、测试匹配分与跨帧稳定性，保存回模块的 `treasure_assets.json`（schema v3 唯一真源；旧 `treasure_rois.json` 仅作回退）。
 
 架构 = **通用 server（`server.py`）+ 模块 adapter（`adapters/*.py`）**：
 server 只做会话浏览 / 分类读写 / 模板匹配的通用路由；领域能力（如鉴宝的 OCR、彩蛋识别）
@@ -11,9 +11,9 @@ server 只做会话浏览 / 分类读写 / 模板匹配的通用路由；领域�
 
 | 方式 | 命令 |
 |---|---|
-| 双击（默认 treasure） | `tools/debug_studio/start.cmd` |
-| PowerShell 脚本 | `powershell -ExecutionPolicy Bypass -File scripts/start_debug_studio.ps1 -Module treasure [-Port 8765]` |
-| 手动 | `.venv\Scripts\python.exe tools\debug_studio\server.py --module treasure --port 8765` |
+| 双击（默认 treasure） | `tools/navkit/start.cmd` |
+| PowerShell 脚本 | `powershell -ExecutionPolicy Bypass -File tools/navkit/start.cmd -Module treasure [-Port 8765]` |
+| 手动 | `.venv\Scripts\python.exe tools\navkit\server.py --module treasure --port 8765` |
 
 - 启动脚本流程：优先用项目 `.venv` 的 python（cv2 依赖齐全）→ 若端口已被监听则直接开浏览器复用现有实例 → 否则以独立进程启动 server（日志在 `%TEMP%\debug_studio_<端口>.{out,err}.log`）→ TCP 探活就绪后自动打开浏览器。
 - server 是**常驻进程**，命令行不退出是预期行为；停止 = 结束对应 python 进程。
@@ -22,7 +22,7 @@ server 只做会话浏览 / 分类读写 / 模板匹配的通用路由；领域�
 ## 目录结构
 
 ```
-tools/debug_studio/
+tools/navkit/
 ├── server.py            # 通用后端：通用路由 + adapter 领域端点转发
 ├── start.cmd            # 双击启动入口（module=treasure）
 ├── core/                # 模块无关能力
@@ -98,7 +98,7 @@ treasure 领域 POST（adapter 注册）：
 
 1. 新建 `plugins/racing/resources/racing_rois.json`（同 v2 schema，racing 自己的 key）。
 2. racing 模块代码内定义自己的阶段语义（`_ROI_STAGE` / `_STAGE_PERCEPTION` 等价物）。
-3. 新建 `tools/debug_studio/adapters/racing.py`，声明：
+3. 新建 `tools/navkit/adapters/racing.py`，声明：
    `CATEGORIES`、`make_category_defs()`、`rois_path()`、`session_dir()`
    （= `user_data_dir()/debug/racing`）、`template_dir()`，可选 `register_endpoints(state)`
    注册领域端点（复用 `adapters/treasure.py` 的写法即可）。
@@ -113,4 +113,4 @@ treasure 领域 POST（adapter 注册）：
   与模块 `user_data_dir()/debug/treasure` 严格一致。
 - **模板状态检查**：`template_status` 的 `unassigned` = 模板存在但没被任何 ROI 引用；
   `dangling` = ROI 引用了但不存在的模板文件。
-- **测试**：`pytest tests/test_debug_studio_core.py tests/test_debug_studio_server.py`
+- **测试**：`pytest tests/test_navkit_studio_core.py tests/test_navkit_studio_server.py`

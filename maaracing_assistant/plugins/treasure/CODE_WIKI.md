@@ -18,7 +18,7 @@
 3. [treasure\_detector 阶段检测器](#3-treasure_detector-阶段检测器)
 4. [treasure\_ocr 金额识别](#4-treasure_ocr-金额识别)
 5. [treasure\_renderer HUD 渲染](#5-treasure_renderer-hud-渲染)
-6. [treasure\_debug\_studio ROI 校准调试台](#6-treasure_debug_studio-roi-校准调试台)
+6. [NavKit ROI 校准与结构树控制台](#6-navkit-roi-校准与结构树控制台)
 7. [鉴宝类速查](#7-鉴宝类速查)
 8. [鉴宝模板清单](#8-鉴宝模板清单)
 9. [鉴宝坑点](#9-鉴宝坑点)
@@ -43,9 +43,10 @@
 
 - **落盘子域**：结构化落盘已拆出到同目录 [store.py](file:///d:/maaracing_assistant/maaracing_assistant/plugins/treasure/store.py)（`TreasureStore`：SQLite 场次明细 + 当日汇总 + 会话总结），模块主循环只做编排与委托
 
-- **资源随插件**：鉴宝模板位于同目录 `resources/image/`，ROI 配置位于 `resources/config/treasure_rois.json`；插件以 `__init__.py` 的 `IMAGE_DIR`/`CONFIG_DIR` 常量统一引用，不依赖主程序 `assets/`
+- **资源随插件**：鉴宝模板位于同目录 `resources/image/`；S1 后识别真源为 `resources/config/treasure_assets.json`（v3），旧 `treasure_rois.json` 仅作 NAVKIT_SOURCE=v2 回退；插件以 `__init__.py` 的 `IMAGE_DIR`/`CONFIG_DIR` 常量统一引用，不依赖主程序 `assets/`。
+- **NavKit 底座**：`core/navkit` 负责 v3 资产模型、E/W 校验、DetectionPlan、路由编译、trace；`tools/navkit` 是结构树/编辑/回放控制台。固定坐标点击件不强制配模板，必须由 v3 `guarded_by` 担保（D2）。
 
-**阶段链路（`STAGE_ORDER`，与** **`treasure_detector._ROI_STAGE`** **同步）**：
+**阶段链路（`treasure_assets.json` 的 `stages.order`，仍与 `STAGE_ORDER` 保持 GUI 断点兼容）**：
 
 ```
 游戏大厅 → 活动页面 → 鉴宝大厅(选择场次) → 匹配中 → 选择鉴宝师
@@ -154,7 +155,9 @@
 
 - 回合识别：roundN\_banner 模板 → 文件名解析回合号；横幅未命中时 OCR 兜底读「第N回合」小字
 
-**核心接口**：`detect(frame_rgb) -> (stage, round_no)`
+**核心接口**：`detect(frame_rgb) -> DetectResult`；结果支持旧式 `stage, round_no = detect(...)` 解包，同时提供 `scores`、`hit_anchor`、`active_used` 供 trace 还原。
+
+v3 默认从 `treasure_assets.json` 编译 `DetectionPlan`；`NAVKIT_SOURCE=v2` 仅用于等价回归/故障回退。模板缓存按文件 `mtime_ns + size` 失效，控制台替换模板后不会永久命中旧图。
 
 **自定义阈值**：`result_banner=0.900`、`is_matching_btn=0.900`（`treasure_rois.json` stage 段 `threshold` 字段）
 
@@ -194,9 +197,9 @@
 
 ***
 
-## 6. DebugStudio ROI 校准调试台
+## 6. NavKit ROI 校准与结构树控制台
 
-[tools/debug\_studio](file:///d:/maaracing_assistant/tools/debug_studio)（`python tools/debug_studio/server.py --module treasure`）
+[tools/navkit](file:///d:/maaracing_assistant/tools/navkit)（`python tools/navkit/server.py --module treasure`）
 
 **职责**：可视化校准 `treasure_rois.json` 的 ROI（通用 server + treasure adapter，独立启动）：
 
@@ -210,7 +213,7 @@
 
 - 截图来源：`debug/treasure/<ts>/raw/`（支持 png/jpg/webp）
 
-**配置**：`maaracing_assistant/plugins/treasure/resources/config/treasure_rois.json`，`reference_size=[1280,720]` 归一化坐标，三段结构（stage/actions/ocr）
+**配置**：运行时 `maaracing_assistant/plugins/treasure/resources/config/treasure_assets.json`（schema v3：pages/anchors/stages/transitions/routes）；旧 `treasure_rois.json` 为回退源/迁移输入。`tools/navkit` 提供 `/api/assets`、`/api/graph`、`/api/trace`、`/api/compile`。
 
 ***
 
@@ -237,7 +240,7 @@
 
 | 方法                           | 说明                                                          |
 | ---------------------------- | ----------------------------------------------------------- |
-| `detect(frame_rgb)`          | 返回 `(stage, round_no)`：按 `_ROI_STAGE` priority 扫描 + 多模板聚合匹配 |
+| `detect(frame_rgb)`          | 返回 `DetectResult`（兼容二元组解包）：按 v3 DetectionPlan 扫描 + scores/hit_anchor 明细 |
 | `_round_from_template(name)` | roundN\_banner 文件名 → 回合号                                    |
 | `_round_no_from_text(text)`  | OCR 文本提取回合号（1\~5 之外视为噪声）                                    |
 | `_round_label_rect()`        | 回合小字 OCR 区 rect（优先 ocr.round\_label\_area）                  |

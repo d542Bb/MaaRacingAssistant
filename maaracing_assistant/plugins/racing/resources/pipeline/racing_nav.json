@@ -1,0 +1,87 @@
+{
+    // ══════════════════════════════════════════════════════════════════════
+    // 极速狂飙模块内部导航：活动页 → 对局准备
+    // 大厅 → 活动页那一段在 core/resources/pipeline/hall.json（所有模块共用）。
+    // 本文件只写"已经站在自己的活动页上"之后的跳转，起点由各模块代码 run() 指定。
+    //
+    // 商店弹窗（可能不出现、关闭方式是原地按 A 不需要定位）留在
+    // Navigation.handle_store_popup()，不塞进图里——图管"从哪到哪"，不管"原地按键"。
+    // ══════════════════════════════════════════════════════════════════════
+
+    // 活动页 → 对局准备页（旧「导航二」）
+    "极速狂飙_开始挑战": {
+        "recognition": "Custom",
+        "custom_recognition": "MRA_Template",
+        "custom_recognition_param": {
+            "templates": ["racing_start_challenge_btn"],
+            "threshold": 0.72,
+            "roi": [0.70, 0.82, 1.00, 0.98],
+            "fallback_pct": [0.855, 0.898]
+        },
+        "action": "Custom",
+        "custom_action": "MRA_Click",
+        "custom_action_param": { "timeout_s": 25, "wait_after_ms": 1500 },
+        "rate_limit": 600,
+        "timeout": 45000,
+        "next": ["已到达寻找对手页"]
+    },
+    "已到达寻找对手页": {
+        "recognition": "Custom",
+        "custom_recognition": "MRA_Template",
+        "custom_recognition_param": {
+            "templates": ["find_opponent_template"],
+            "threshold": 0.55
+        },
+        "action": "DoNothing",
+        "rate_limit": 500,
+        "timeout": 20000
+    },
+
+    // 对局准备页点「寻找对手」→ 按钮消失即进入匹配（旧「导航三」，
+    // 页面等待由本节点的 rate_limit 重试循环承担，不再单写 _wait_for_template）
+    "极速狂飙_寻找对手": {
+        "recognition": "Custom",
+        "custom_recognition": "MRA_Template",
+        "custom_recognition_param": {
+            "templates": ["racing_find_opponent_btn"],
+            "threshold": 0.72,
+            "roi": [0.65, 0.66, 0.98, 0.85],
+            "fallback_pct": [0.804, 0.753]
+        },
+        "action": "Custom",
+        "custom_action": "MRA_Click",
+        "custom_action_param": { "timeout_s": 25, "wait_after_ms": 1500 },
+        "rate_limit": 600,
+        "timeout": 45000,
+        "next": ["极速狂飙_已进入匹配"]
+    },
+    "极速狂飙_已进入匹配": {
+        "recognition": "Custom",
+        "custom_recognition": "MRA_Template",
+        "custom_recognition_param": {
+            "templates": ["find_opponent_template"],
+            "threshold": 0.55,
+            "expect_absent": true
+        },
+        "action": "DoNothing",
+        "rate_limit": 500,
+        "timeout": 25000
+    },
+
+    // 匹配完成 → 确认上阵（旧版无页面校验，靠后续流程自证）
+    "极速狂飙_确认上阵": {
+        "recognition": "Custom",
+        "custom_recognition": "MRA_Template",
+        "custom_recognition_param": {
+            "templates": ["racing_confirm_lineup_btn"],
+            "threshold": 0.72,
+            "roi": [0.70, 0.86, 1.00, 1.00],
+            "fallback_pct": [0.823, 0.931]
+        },
+        "action": "Custom",
+        "custom_action": "MRA_Click",
+        "custom_action_param": { "timeout_s": 25, "wait_after_ms": 800 },
+        "rate_limit": 600,
+        "timeout": 45000
+    }
+}

@@ -17,7 +17,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from tools.debug_studio.core import session as sessmod
+from tools.navkit.core import session as sessmod
 
 # 多尺度匹配缩放档（0.70×~1.30×，步长 0.05）。调试台校准的分值须在运行时同口径复现，
 # 故档位与模块运行时的 MATCH_SCALES 保持一致（牵一发动全身原则由 adapter 负责核对）。
