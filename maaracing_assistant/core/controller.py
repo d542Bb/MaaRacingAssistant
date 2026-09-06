@@ -158,12 +158,25 @@ class MaaRacingAssistantController:
         # hwnd 取 self._hwnd（二次运行复用上次句柄）或 find_game_hwnd 兜底（首次运行）。
         if self._mute_game_enabled:
             self._apply_game_volume(0.0, "运行开始：静音游戏", verify=True)
-        self._start_wgc_capture()  # WGC 中心采集器（启动失败回退 MAA 截图，不阻断）
+        # WGC 中心采集器前置条件：确保 _hwnd 已由 connect() 建立（connect 幂等，
+        # 二次运行直接短路返回；首次运行在此完成窗口连接生命周期）。
+        # 注意：不能把 connect 塞进 _start_wgc_capture——那是 WGC 生命周期函数，
+        # 职责只负责"假定 HWND 已存在后启动采集"；窗口连接归 connect() 所有。
+        # conn_ok=False 时跳过 WGC 与模块启动，但仍走 finally 统一清理
+        # （active_module/ctx/_running/音量恢复），避免裸 return 残留状态。
+        conn_ok = True
+        if not self._hwnd:
+            if not self.connect():
+                logger.log("窗口连接失败，模块终止", "ERROR")
+                conn_ok = False
+        if conn_ok:
+            self._start_wgc_capture()  # WGC 中心采集器（启动失败回退 MAA 截图，不阻断）
         try:
-            module.start(start_from)
-            # 仅当 start 正常返回（未抛异常）才标记"自然完成"；
-            # 手动停止（stop_event 置位）或报错退出不满足，避免误触发自动关闭。
-            self._last_run_natural = True
+            if conn_ok:
+                module.start(start_from)
+                # 仅当 start 正常返回（未抛异常）才标记"自然完成"；
+                # 手动停止（stop_event 置位）或报错退出不满足，避免误触发自动关闭。
+                self._last_run_natural = True
         except Exception as e:
             logger.log(f"模块执行异常: {e}", "ERROR")
         finally:
@@ -347,6 +360,12 @@ class MaaRacingAssistantController:
         增强通道，MAA 兜底保证功能不缺失。
         """
         if not self._hwnd:
+            # 与 docstring 契约一致：不静默。正常路径下 start_module 已建立
+            # _hwnd 前置条件（P2），此分支仅作异常防御。
+            logger.log(
+                "WGC 中心采集器启动跳过：游戏窗口尚未连接，回退 MAA FramePool 截图",
+                "WARNING",
+            )
             return
         if self._wgc_capture is not None and self._wgc_capture.is_running:
             return
