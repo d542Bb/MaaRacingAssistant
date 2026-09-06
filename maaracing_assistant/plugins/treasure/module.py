@@ -24,8 +24,10 @@ import re
 import threading
 import time
 from datetime import datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 from queue import Empty, Full, Queue
+from typing import Any
 
 import cv2
 import numpy as np
@@ -44,7 +46,15 @@ from maaracing_assistant.plugins.treasure.strategy import (
 )
 from maaracing_assistant.plugins.treasure.detector import TreasureStageDetector
 from maaracing_assistant.core.nav_graph import NavGraph
-from maaracing_assistant.core.navkit import FrameTrace, TraceWriter
+from maaracing_assistant.core.navkit import (
+    DecisionFacts,
+    DecisionSnapshot,
+    FrameTrace,
+    StateSnapshot,
+    TraceWriter,
+    compile_plan,
+)
+from maaracing_assistant.plugins.treasure.policy_legacy import TreasureLegacyPolicy
 from maaracing_assistant.plugins.treasure.eggs import EggRewardRecognizer
 from maaracing_assistant.plugins.treasure.ocr import TreasureOcr
 from maaracing_assistant.plugins.treasure.renderer import TreasureDebugRenderer
@@ -64,6 +74,33 @@ class ClickRetryExhaustedError(RuntimeError):
     抛出后由主循环单帧兜底识别并【穿透】（不进入"连续帧异常"计数兜底），
     沿 start() 上抛 → start_module 记 ERROR → finally 恢复音量并收尾，流程停止。
     """
+
+
+@lru_cache(maxsize=1)
+def _policy_tuning() -> dict[str, Any]:
+    """P1 收编：v3 资产 `policies.tuning` 全量（perception/policy/execution）。
+
+    加载失败 / v2 模式 / 资产无 policies → 返回 {}（调用方回落代码常量）。
+    """
+    if os.environ.get("NAVKIT_SOURCE", "v3").lower() == "v2":
+        return {}
+    v3_path = CONFIG_DIR / "treasure_assets.json"
+    if not v3_path.exists():
+        return {}
+    try:
+        from maaracing_assistant.core.navkit import Assets
+        assets = Assets.load(v3_path, module="treasure")
+        if assets.policies is None:
+            return {}
+        return dict(assets.policies.tuning)
+    except Exception:
+        return {}
+
+
+@lru_cache(maxsize=1)
+def _perception_tuning() -> dict[str, Any]:
+    """P1 收编：v3 资产 `policies.tuning.perception`（匹配阈值/ROI 单一真源）。"""
+    return dict(_policy_tuning().get("perception") or {})
 
 
 def _load_action_centers(proj: Path) -> tuple[dict[str, tuple[float, float]], dict[str, tuple[float, float]]]:
@@ -170,6 +207,19 @@ TARGET_SESSION_OPTIONS: dict[str, tuple[str, str]] = {
 }
 DEFAULT_TARGET_SESSION: str = "master"
 
+# 运行时阶段名 → policies 稳定 ID（P1）。bid 回合（第N回合出价）统一为 "bid"，
+# 由 _stage_id 特判处理；本表覆盖其余阶段，v2 回退路径（无 stage_map）兜底用。
+_STAGE_TO_STABLE: dict[str, str] = {
+    "游戏大厅": "hall",
+    "活动页面": "activity",
+    "鉴宝大厅(选择场次)": "session",
+    "匹配中": "matching",
+    "选择鉴宝师": "appraiser",
+    "中标结算": "auction_result",
+    "领取分红": "settle",
+    "结算弹窗": "popup",
+}
+
 
 def _load_appraiser_templates(
     proj: Path,
@@ -184,10 +234,12 @@ def _load_appraiser_templates(
 
     返回: [(priority, key, gray_ndarray, rect, threshold), ...]，至少 0 项，不崩溃。
     """
-    defs: list[tuple[int, str, str, tuple[float, float, float, float], float]] = [
-        (prio, key, fname, _APPRAISER_SEARCH_ROI, _APPRAISER_MATCH_THRESHOLD)
-        for prio, key, fname in _APPRAISER_TEMPLATE_DEFS
-    ]
+    defs: list[tuple[int, str, str, tuple[float, float, float, float], float]] = []
+    per = _perception_tuning()
+    search_roi = tuple(per["appraiser_search_roi"]) if per.get("appraiser_search_roi") else _APPRAISER_SEARCH_ROI
+    match_th = per.get("appraiser_match_threshold", _APPRAISER_MATCH_THRESHOLD)
+    for prio, key, fname in _APPRAISER_TEMPLATE_DEFS:
+        defs.append((prio, key, fname, search_roi, match_th))
     try:
         with open(CONFIG_DIR / "treasure_rois.json", "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -206,9 +258,9 @@ def _load_appraiser_templates(
                 rect = val.get("rect")
                 if not (isinstance(rect, list) and len(rect) == 4
                         and all(isinstance(n, (int, float)) and not isinstance(n, bool) for n in rect)):
-                    rect = _APPRAISER_SEARCH_ROI
+                    rect = search_roi
                 th = val.get("threshold")
-                threshold = float(th) if isinstance(th, (int, float)) and not isinstance(th, bool) and 0.0 <= th <= 1.0 else _APPRAISER_MATCH_THRESHOLD
+                threshold = float(th) if isinstance(th, (int, float)) and not isinstance(th, bool) and 0.0 <= th <= 1.0 else match_th
                 from_json.append((prio, key, fname, (float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3])), threshold))
             if from_json:
                 defs = from_json
@@ -682,6 +734,7 @@ class TreasureModule(ActivityModule):
         self._clicker = None  # 点击器（懒创建，绑定 ctx.hwnd；模式每次执行前同步自 ctx.click_mode）
         self._gp_bind_tried = False  # 手柄能力绑定只尝试一次（real 前台鼠标从不尝试，不呼出虚拟手柄）
         self._last_frame_rgb = None  # 最近一主循环帧（异步导航下主循环 PEEP 用，浅引用）
+        self._action_centers: dict[str, tuple[float, float]] = {}  # 动作按钮归一化中心（运行态加载，离线为空）
         self._action_rect_sizes: dict[str, tuple[float, float]] = {}  # 动作按钮归一化宽高（手柄点击容差，运行态加载）
         self._current_stage: str | None = None
         # 落盘子域（DB 连接管理 + 场次/汇总写入 + 会话总结）
@@ -822,6 +875,53 @@ class TreasureModule(ActivityModule):
         # 结算后弹窗（今日最高/彩蛋）点击关闭后的冷却帧计数：点关闭后弹窗消失动画期
         # 模板匹配不上，冷却帧内不产出新点击意图，等动画稳定再识别（2026-08-16）。
         self._popup_click_cooldown: int = 0
+        # 决策策略（P1：policies 决策规则数据化）：
+        #   _policy_plan = v3 assets policies → PolicyPlan（启动编译不可变；P1e 后必须非 None）
+        #   _legacy_policy = 旧 _decide_action 的纯决策等价物（P1b/P1d 双轨重放用）
+        #   _dual_track   = 双轨比对开关（有 plan 时自动开启；trace 落决策等价比对结果）
+        self._policy_plan = None
+        self._legacy_policy: TreasureLegacyPolicy | None = None
+        self._dual_track = False
+        self._policy_snapshot: dict | None = None  # 最近一帧 DecisionSnapshot（trace 决策契约）
+        self._policy_equal: bool | None = None     # 最近一帧双轨决策是否等价（None=未开双轨）
+
+        # P1 收编：感知匹配阈值/ROI 真源 = policies.tuning.perception（缺省回落代码常量）。
+        _per = _perception_tuning()
+        self._appraiser_search_roi = (
+            tuple(_per["appraiser_search_roi"]) if _per.get("appraiser_search_roi") else _APPRAISER_SEARCH_ROI
+        )
+        self._appraiser_match_threshold = float(
+            _per.get("appraiser_match_threshold", _APPRAISER_MATCH_THRESHOLD)
+        )
+        self._check_match_threshold = float(
+            _per.get("check_match_threshold", _CHECK_MATCH_THRESHOLD)
+        )
+        self._session_match_threshold = float(
+            _per.get("session_match_threshold", _SESSION_MATCH_THRESHOLD)
+        )
+        self._smart_bid_match_threshold = float(
+            _per.get("smart_bid_match_threshold", _SMART_BID_MATCH_THRESHOLD)
+        )
+        _exec = _policy_tuning().get("execution") or {}
+        self._click_cooldown_s = float(
+            _exec.get("click_cooldown_s", self.CLICK_COOLDOWN_S)
+        )
+        _pol = _policy_tuning().get("policy") or {}
+        self._session_start_click_cooldown_frames = int(
+            _pol.get("session_start_click_cooldown_frames", SESSION_START_CLICK_COOLDOWN_FRAMES)
+        )
+        self._click_retry_frames = int(_pol.get("click_retry_frames", self.CLICK_RETRY_FRAMES))
+        self._click_retry_max = int(_pol.get("click_retry_max", self.CLICK_RETRY_MAX))
+        self._popup_click_cooldown_frames = int(
+            _pol.get("popup_click_cooldown_frames", self.POPUP_CLICK_COOLDOWN_FRAMES)
+        )
+        self._popup_continue_retry_frames = int(
+            _pol.get("popup_continue_retry_frames", self.POPUP_CONTINUE_RETRY_FRAMES)
+        )
+        self._retry_frames_by_key = {
+            self.POPUP_HIGH_CONTINUE_KEY: self._popup_continue_retry_frames,
+            self.POPUP_REWARD_CONTINUE_KEY: self._popup_continue_retry_frames,
+        }
         # 弹窗链回退连续稳定帧计数（_accept_stage 用，独立于冷却）：
         # 累计识别到「弹窗链阶段 → 大厅/选场次」的帧数，达 POPUP_LOOPBACK_STABLE_FRAMES
         # 才放行回退；弹窗链外（非回退场景）重置为 0。
@@ -1066,6 +1166,10 @@ class TreasureModule(ActivityModule):
         self._action_centers, self._action_rect_sizes = _load_action_centers(self.ctx.proj)
         if not self._action_centers:
             logger.log("[鉴宝] 未加载到动作按钮 rect，准星模式将不可用", "WARNING")
+
+        # 2.551 决策策略（P1：policies 数据化）。v3 资产缺 policies = 启动失败（P1e）；
+        # v2 回退路径（NAVKIT_SOURCE=v2 或 v3 缺失）下策略栈降级为 LegacyPolicy。
+        self._init_policy_stack()
 
         # 2.56 加载鉴宝师头像模板（顺位匹配用；定义源=JSON appraisers 段，调试台可调）
         self._appr_tpls = _load_appraiser_templates(self.ctx.proj)
@@ -1523,7 +1627,7 @@ class TreasureModule(ActivityModule):
 
         扫描区应为覆盖三张卡片右上角对勾高度带的横向长条（调试台可调），
         对勾出现在左/中/右任一卡片右上角都能命中。多尺度匹配取最高分，
-        分数 ≥ _CHECK_MATCH_THRESHOLD 才返回 (score, cxn, cyn)；
+        分数 ≥ self._check_match_threshold 才返回 (score, cxn, cyn)；
         模板/rect 缺失或未命中返回 None（选中判定自动跳过）。
         """
         if self._check_tpl is None or self._check_rect is None:
@@ -1568,7 +1672,7 @@ class TreasureModule(ActivityModule):
         if best is None:
             return None
         score = best[0]
-        if score < _CHECK_MATCH_THRESHOLD:
+        if score < self._check_match_threshold:
             return None
         _, _, mx_roi, my_roi, sth, stw = best
         cx_px = x1 + mx_roi + stw // 2
@@ -1651,7 +1755,7 @@ class TreasureModule(ActivityModule):
                 # check 为 None → 对勾匹配本身没超过阈值，方便定位是阈值问题还是模板/扫描区问题。
                 logger.log(
                     f"[鉴宝选师] 目标命中{key}(S={score:.2f})但对勾√未命中 "
-                    f"(<_CHECK_MATCH_THRESHOLD {_CHECK_MATCH_THRESHOLD:.2f}) → 先点目标卡选上",
+                    f"(<{self._check_match_threshold:.2f}) → 先点目标卡选上",
                     "DEBUG",
                 )
             hint_msg = f"命中 {key}（S={score:.2f}），顺位决策"
@@ -1767,7 +1871,7 @@ class TreasureModule(ActivityModule):
             if best is None:
                 continue
             score = best[0]
-            if score < _SESSION_MATCH_THRESHOLD:
+            if score < self._session_match_threshold:
                 continue
             _, _, mx_roi, my_roi, sth, stw = best
             cx_px = x1 + mx_roi + stw // 2
@@ -1946,8 +2050,8 @@ class TreasureModule(ActivityModule):
             return None
         score = best[0]
         # 阈值：优先 JSON stage.smart_bid_btn.threshold（调试台校准，与 detect() 同源），
-        # 缺省回退 _SMART_BID_MATCH_THRESHOLD。不可复用 _SESSION_MATCH_THRESHOLD(0.90)。
-        threshold: float = _SMART_BID_MATCH_THRESHOLD
+        # 缺省回退 self._smart_bid_match_threshold（tuning.perception 收编）。
+        threshold: float = self._smart_bid_match_threshold
         if self._detector is not None and self._detector.roi_thresholds:
             roi_th = self._detector.roi_thresholds.get(_SMART_BID_KEY)
             if isinstance(roi_th, float):
@@ -2476,187 +2580,151 @@ class TreasureModule(ActivityModule):
     #  准星模式：程序「下一步想点击的位置」（peep 覆层用，不做真实点击）
     # ==================================================================
 
-    def _decide_action(self) -> dict | None:
-        """基于当前阶段/回合/OCR 状态计算「下一步操作」。返回 {"key","hint","score"?} | None。
-        阶段驱动的规则（全链路准星意图，不做真实点击）：
-          • 游戏大厅           → 点「巅峰鉴宝」入口卡片（hall_peak_appraise_card）
-          • 活动页面           → 点「前往鉴宝」按钮（goto_appraise_btn）
-          • 鉴宝大厅(选择场次)  → 复用 _session_last_decision 动态匹配（大师场 → 开始匹配）
-          • 选择鉴宝师         → 复用 _appr_last_decision 中的匹配预览结果（含 center/hint）
-          • 第N回合出价        → 复用 _bidding_last_decision（S0转场/S1等待/S2点出价/S3智能出价→确认出价）
-          • 领取分红 → 点「领取分红」（settle_collect_red_btn）
-          • 结算弹窗（今日最高/等级提升/彩蛋合并阶段，按检测器 _last_hit_roi_key 区分）：
-              - daily_high_banner → 今日最高：读积分后再点底部中心（popup_high_continue）
-              - egg_reward_title → 彩蛋：蛋 OCR 读完或超时后点底部中心（popup_reward_continue）
-              - 无命中 → 等级提升/弹窗切换：盲点底部中心（popup_high_continue）
-        其余阶段（匹配中/中标结算等）暂无明确按钮目标 → None。"""
+    def _init_policy_stack(self) -> None:
+        """P1：编译 policies → PolicyPlan，并构建 LegacyPolicy 作为双轨/回退。
+
+        - v3 资产存在但缺 `policies` 段 → 启动失败（P1e 硬约束）。
+        - v2 回退路径（NAVKIT_SOURCE=v2 / v3 缺失）→ 仅 LegacyPolicy（行为与旧版一致）。
+        """
+        v3_path = CONFIG_DIR / "treasure_assets.json"
+        source = os.environ.get("NAVKIT_SOURCE", "v3").lower()
+        plan = None
+        if source != "v2" and v3_path.exists():
+            try:
+                from maaracing_assistant.core.navkit import Assets
+                assets = Assets.load(v3_path, module="treasure")
+                if assets.policies is None:
+                    raise RuntimeError(
+                        "treasure_assets.json 缺少 policies 段"
+                        "（P1e：决策策略缺失 = 启动失败，请先迁移策略到资产文件）"
+                    )
+                plan = compile_plan(assets.policies, assets.anchors)
+            except Exception as exc:
+                logger.log(f"[鉴宝] policies 编译失败：{exc}", "ERROR")
+                raise
+        self._policy_plan = plan
+        _pol = _policy_tuning().get("policy") or {}
+        self._legacy_policy = TreasureLegacyPolicy(
+            popup_continue_center=self._action_centers.get("confirm_red_btn") or (0.5, 0.5),
+            settle_collect_center=self._action_centers.get("settle_collect_red_btn"),
+            popup_high_continue_key=self.POPUP_HIGH_CONTINUE_KEY,
+            popup_reward_continue_key=self.POPUP_REWARD_CONTINUE_KEY,
+            settle_skip_retry_frames=_pol.get("settle_skip_retry_frames", self.SETTLE_SKIP_RETRY_FRAMES),
+            settle_skip_retry_max=_pol.get("settle_skip_retry_max", self.SETTLE_SKIP_RETRY_MAX),
+            daily_high_timeout_frames=_pol.get("daily_high_timeout_frames", self.DAILY_HIGH_TIMEOUT_FRAMES),
+            egg_ocr_timeout_frames=_pol.get("egg_ocr_timeout_frames", self.EGG_OCR_TIMEOUT_FRAMES),
+        )
+        self._dual_track = plan is not None
+        mode = "v3 policies + 双轨" if self._dual_track else "LegacyPolicy（v2 回退）"
+        logger.log(
+            f"[鉴宝] 决策策略就绪: {mode}"
+            f"（rules={len(plan.rules) if plan else '--'}）",
+            "INFO",
+        )
+
+    def _stage_id(self) -> str | None:
+        """运行时阶段名 → policies 稳定 ID（stage_map 反向；bid 回合归一）。"""
         stage = self._current_stage
         if stage is None:
             return None
-        # 结算后弹窗（今日最高/彩蛋）点击关闭后的冷却：冷却帧内不产出新点击意图。
-        # 弹窗消失动画期模板匹配不上 → 检测器可能误判已回大厅/选场次 → 若立即再决策
-        # 会把下一弹窗直接点穿/开新场。冷却内返回纯等待（无 center，不画准星）。
-        # ---- 阶段感知提前解锁 ----：
-        # 若当前阶段已经推进到「结算弹窗」（弹窗已稳定出现、检测器确认），说明冷却的
-        # 目的（防止动画期误判回大厅）已经达成 → 立即清零冷却，不再白白等待剩余帧
-        # （否则会出现「弹窗都出来了还不点击」的观感，还会压缩蛋 OCR 的识别窗口）。
-        if stage == "结算弹窗":
-            self._popup_click_cooldown = 0
-        if self._popup_click_cooldown > 0:
-            self._popup_click_cooldown -= 1
-            return {"key": "popup_click_cooldown",
-                    "hint": f"弹窗点击后冷却（剩 {self._popup_click_cooldown} 帧）..."}
-        # 游戏大厅 → 巅峰鉴宝入口卡片（hall_peak_appraise_card）
-        if stage == "游戏大厅":
-            return {"key": "hall_peak_appraise_card", "hint": "进入巅峰鉴宝活动页"}
-        # 活动页面 → 前往鉴宝按钮（goto_appraise_btn）
-        if stage == "活动页面":
-            return {"key": "goto_appraise_btn", "hint": "前往鉴宝"}
-        # 鉴宝大厅(选择场次) → 复用 _session_last_decision 动态匹配（大师场/开始匹配）
-        if stage == "鉴宝大厅(选择场次)":
-            dec = self._session_last_decision
-            if dec:
-                return {"key": dec["key"], "hint": dec.get("hint") or dec["key"]}
-            # 尚未匹配到场次按钮时给一个"等待识别"提示（无 center，准星不显示）
-            return {"key": "session_waiting", "hint": "鉴宝大厅(选择场次)，等待识别场次按钮..."}
-        # 选择鉴宝师阶段：直接同步内部决策（位置是匹配时算的，不走 action_centers 静态表）
-        if stage == "选择鉴宝师":
-            dec = self._appr_last_decision
-            if dec:
-                return {"key": dec["key"], "hint": dec.get("hint") or dec["key"]}
-            # 尚未做匹配时给一个"等待识别"提示（无 center，准星不显示）
-            return {"key": "appraiser_waiting", "hint": "选择鉴宝师阶段，等待识别..."}
         if stage.startswith("第") and "回合" in stage:
-            dec = self._bidding_last_decision
-            if dec and dec.get("key"):
-                return {"key": dec["key"], "hint": dec.get("hint") or dec["key"]}
-            # 等待 / 转场期：key 为 None（无点击目标），透传"等待"提示（无 center，准星不显示）
-            return {"key": "bid_waiting", "hint": (dec or {}).get("hint") or "等待出价按钮亮起..."}
-        if stage == "领取分红":
-            # 进入该阶段后：结算右栏有 loading 动画（本场收入等数据被遮），
-            # 必须"点一次领取按钮"跳过动画，数据才全部显示出来；之后再点一次才真的领取退出。
-            # 两个窗口准星才指领取按钮：
-            #   (a) _settle_collect_clicked_once=False：首次，点跳过动画；
-            #   (b) settle_my_income 已经有值（≥0）：说明动画跳过、数据齐了，可以真的领取。
-            # 中间的等待期（已点跳过但 OCR 还没读到 my_income）不发按钮准星，防连点直接把结算页关了。
-            if self._settle_my_income is not None:
-                # 数据齐备，准星指领取按钮；每 5 帧打一次 INFO 便于观察指针出没出。
-                if self._frame_counter % 5 == 0:
-                    confirm = self._action_centers.get("settle_collect_red_btn")
-                    logger.log(
-                        f"[鉴宝分红] 点击意图: 数据齐备 → 点领取 "
-                        f"(本场收入 {self._settle_my_income:,}) "
-                        f"目标={confirm or '(未配置settle_collect_red_btn)'}",
-                        "INFO",
-                    )
-                return {"key": "settle_collect_red_btn", "hint": f"领取分红（本场收入 {self._settle_my_income:,}）"}
-            if not self._settle_collect_clicked_once:
-                # 只发意图，不在这里置位！置位移到 _execute_click 点击成功后——
-                # 实测事故：首次点击被前台校验静默取消（游戏失焦）时，若意图生成即置位，
-                # 下帧进入 dividend_waiting 纯等待 → 动画永不跳过 → my_income 永远读不到 → 卡死。
-                # 改为"点成功才置位"：失败时意图持续存在，下帧自动重试。
-                confirm = self._action_centers.get("settle_collect_red_btn")
-                logger.log(
-                    "[鉴宝分红] 点击意图: 首次进入 → 点领取跳过动画 "
-                    f"(settle_my_income 尚为空) 目标={confirm or '(未配置settle_collect_red_btn)'}",
-                    "INFO",
-                )
-                return {"key": "settle_collect_red_btn", "hint": "点领取跳过数据动画（之后等 OCR 读完整再准星再指）"}
-            # 跳过动画点击无响应兜底：已点跳过动画（clicked_once=True）但收入迟迟未读出。
-            # 点击物理成功（ok=true）≠ 游戏收到——实测场景：点领取后按钮/动画无反应，
-            # 收入永远读不到，原逻辑在此静默卡死。这里超时后清指纹重新 arm 再点一次：
-            # 重试指纹带 clicked_once=True 位，与首点（False）不同，不会撞指纹锁；
-            # 达 SETTLE_SKIP_RETRY_MAX 仍无响应 → 判定点击链路失效，终止模块（对齐
-            # 阶段切换类重试的失败后果，不再静默）。
-            if self._frame_counter - self._settle_skip_since >= self.SETTLE_SKIP_RETRY_FRAMES:
-                if self._settle_skip_retry_count >= self.SETTLE_SKIP_RETRY_MAX:
-                    logger.log(
-                        f"[鉴宝分红] 跳过动画点击重试 {self.SETTLE_SKIP_RETRY_MAX} 次后"
-                        f"仍读不到本场收入（点击疑似始终无响应），终止模块", "ERROR",
-                    )
-                    raise ClickRetryExhaustedError(
-                        f"领取分红跳过动画点击重试 {self.SETTLE_SKIP_RETRY_MAX} 次仍无响应"
-                        f"（本场收入始终未读出），请检查游戏界面/点击方式后重新开始"
-                    )
+            return "bid"
+        if self._policy_plan is not None:
+            rev = {v: k for k, v in self._policy_plan.stage_map.items()}
+            stable = rev.get(stage)
+            if stable is not None:
+                return stable
+        return _STAGE_TO_STABLE.get(stage)
+
+    def _capture_decision_facts(self) -> DecisionFacts:
+        """P0-6：本帧上游事实全部生产完后统一冻结（PolicyEngine 全程只读）。
+
+        前置副作用（等价旧代码）：结算弹窗阶段感知提前解锁冷却——
+        弹窗已稳定出现说明冷却目的达成，清零后不再白白等待剩余帧。
+        """
+        if self._current_stage == "结算弹窗":
+            self._popup_click_cooldown = 0
+        state = StateSnapshot.projection({
+            "frame_counter": self._frame_counter,
+            "settle_income": self._settle_my_income,
+            "clicked_once": self._settle_collect_clicked_once,
+            "retry_count": self._settle_skip_retry_count,
+            "settle_skip_since": self._settle_skip_since,
+            "cooldown": self._popup_click_cooldown,
+            "daily_high_score": self._daily_high_score,
+            "egg_reading": self._egg_reading,
+            "egg_read_done": self._egg_read_done,
+            "reward_enter_frame": self._reward_enter_frame,
+        })
+        outputs = {
+            "stage": self._stage_id(),
+            "popup_kind": (
+                self._detector._last_hit_roi_key if self._detector is not None else None
+            ),
+            "session_decision": self._session_last_decision,
+            "appraiser_decision": self._appr_last_decision,
+            "bidding_decision": self._bidding_last_decision,
+        }
+        return DecisionFacts.freeze(
+            state_snapshot=state,
+            outputs=outputs,
+            frame_counter=self._frame_counter,
+        )
+
+    def _apply_decision_effects(self, decision) -> None:
+        """P0-6：决策后的引擎状态副作用（更新逻辑留码，JSON 只选择 effect）。
+
+        fatal 为终止指令：与旧 `_decide_action` 直接 raise 的路径对齐。
+        """
+        for fx in decision.side_effects:
+            if fx == "popup_cooldown_decr":
+                self._popup_click_cooldown -= 1
+            elif fx == "settle_skip_retry":
                 self._settle_skip_retry_count += 1
                 self._settle_skip_since = self._frame_counter
-                self._last_click_fingerprint = None  # 重新 arm → 本帧同一意图可再次点击
-                confirm = self._action_centers.get("settle_collect_red_btn")
-                logger.log(
-                    f"[鉴宝分红] 跳过动画点击疑似无响应"
-                    f"（点击后 {self.SETTLE_SKIP_RETRY_FRAMES} 帧收入未读出），"
-                    f"第 {self._settle_skip_retry_count}/{self.SETTLE_SKIP_RETRY_MAX} 次重试",
-                    "WARNING",
-                )
-                return {
-                    "key": "settle_collect_red_btn",
-                    "center": confirm,
-                    "hint": f"跳过动画点击疑似无响应，第 {self._settle_skip_retry_count} 次重试...",
-                }
-            return {"key": "dividend_waiting", "hint": "已跳动画，等待 OCR 读本场收入/利润...（数据齐后准星再指领取）"}
-        # 结算弹窗（合并阶段：今日最高/等级提升/彩蛋，弹窗遮满全屏）。
-        # 具体是哪个弹窗由检测器 _last_hit_roi_key 区分：
-        #   - daily_high_banner 命中 → 今日最高积分上涨：先同步读积分值，再点跳过
-        #   - egg_reward_title 命中 → 奖励结算(彩蛋)：先等蛋OCR读完，再点跳过
-        #   - 无命中 → 等级提升（无 ROI）或弹窗切换动画：盲点跳过（每 3 帧一次）
-        if stage == "结算弹窗":
-            hit_key = self._detector._last_hit_roi_key if self._detector else None
-            # --- 今日最高积分上涨 ---
-            if hit_key == "daily_high_banner":
-                # 积分已读到 → 点跳过；未读到 → 等（超时兜底）
-                if self._daily_high_score is not None:
-                    return {
-                        "key": self.POPUP_HIGH_CONTINUE_KEY,
-                        "center": self._popup_continue_center(),
-                        "hint": "今日最高积分上涨 → 点屏幕继续",
-                    }
-                if self._frame_counter - self._reward_enter_frame >= self.DAILY_HIGH_TIMEOUT_FRAMES:
-                    if self._frame_counter % 5 == 0:
-                        logger.log("[鉴宝弹窗①] 今日最高积分读取超时，跳过", "WARNING")
-                    return {
-                        "key": self.POPUP_HIGH_CONTINUE_KEY,
-                        "center": self._popup_continue_center(),
-                        "hint": "今日最高积分读取超时 → 跳过",
-                    }
-                return {"key": "popup_waiting", "hint": "今日最高积分上涨：等待识别积分..."}
-            # --- 奖励结算(彩蛋) ---
-            # 竞态修复：彩蛋识别进行中（_egg_reading）或本帧 title 命中（首帧刚进入）时，
-            # 点击严格等 _egg_read_done 确认，或真正超时才放行；即使 title 暂时失配也不会
-            # 落入下方「盲点跳过」抢在识别完成前把弹窗关掉。
-            if self._egg_reading or hit_key == "egg_reward_title":
-                if self._egg_read_done or (
-                    self._frame_counter - self._reward_enter_frame >= self.EGG_OCR_TIMEOUT_FRAMES
-                ):
-                    return {
-                        "key": self.POPUP_REWARD_CONTINUE_KEY,
-                        "center": self._popup_continue_center(),
-                        "hint": "彩蛋结算 → 点屏幕继续",
-                    }
-                return {"key": "popup_waiting", "hint": "奖励结算：等待识别彩蛋数量..."}
-            # --- 等级提升（无 ROI）或弹窗切换动画 ---
-            # 弹窗遮满全屏，盲点安全（不会误点大厅元素）；每 3 帧点一次防连点。
-            if self._frame_counter % 3 == 0:
-                return {
-                    "key": self.POPUP_HIGH_CONTINUE_KEY,
-                    "center": self._popup_continue_center(),
-                    "hint": "等级提升弹窗(盲点) → 点屏幕跳过",
-                }
-            return {"key": "popup_waiting", "hint": "等待弹窗切换..."}
-        # 其余阶段（匹配中 / 中标结算等）：无明确点击目标 → 纯等待文字，不画准星
-        # （之前直接 return None 导致渲染器完全空白，用户以为"崩了"）
-        return {"key": "stage_waiting",
-                "hint": f"{stage or '等待阶段切换'} 中...（等待界面稳定）"}
+                self._last_click_fingerprint = None
+        if decision.fatal:
+            raise ClickRetryExhaustedError(decision.fatal)
 
-    def _popup_continue_center(self) -> tuple[float, float]:
-        """弹窗「点击跳过」的点击位置。
+    def _decide_action(self) -> dict | None:
+        """P1：决策策略驱动（policies 数据化）。返回 {"key","hint","center"?} | None。
 
-        三个结算后弹窗（今日最高积分上涨 / 鉴宝等级提升 / 奖励结算彩蛋）都是
-        「瞎点屏幕任意位置即跳过」，无需点击指定按钮（用户确认 2026-08-16）。
-        因此坐标不必精确：优先复用 confirm_red_btn 底部中心（实测有效），
-        未配置时回退屏幕中心 (0.5, 0.5)（弹窗居中，中心必在弹窗遮挡区内）。
+        链：`_capture_decision_facts`（上游事实全部产出后冻结）→ Policy 决策
+        （PolicyPlan；双轨时 LegacyPolicy 同 facts 再算一遍比对）→ 引擎副作用
+        （`_apply_decision_effects`）→ 意图 dict（与旧结构一致，`_resolve_action_target`
+        消费逻辑不变）。行为等价由双轨 trace 机械保证。
         """
-        c = self._action_centers.get("confirm_red_btn")
-        return c if c is not None else (0.5, 0.5)
+        if self._current_stage is None:
+            return None
+        facts = self._capture_decision_facts()
+        policy = self._policy_plan if self._policy_plan is not None else self._legacy_policy
+        if policy is None:
+            return None
+        decision = policy.decide(facts)
+        if self._dual_track and self._legacy_policy is not None:
+            legacy = self._legacy_policy.decide(facts)
+            self._policy_equal = (
+                legacy.key == decision.key
+                and legacy.payload == decision.payload
+                and legacy.fatal == decision.fatal
+                and legacy.side_effects == decision.side_effects
+            )
+            if not self._policy_equal:
+                logger.log(
+                    f"[鉴宝][P1双轨] 决策不一致 frame={self._frame_counter} "
+                    f"stage={facts.get('stage')} "
+                    f"legacy={legacy.key}/{legacy.payload} "
+                    f"vs plan={decision.key}/{decision.payload}",
+                    "ERROR",
+                )
+        else:
+            self._policy_equal = None
+        self._policy_snapshot = DecisionSnapshot.from_decision(facts, decision).as_dict()
+        self._apply_decision_effects(decision)
+        out = {"key": decision.key, "hint": decision.hint}
+        if decision.payload.get("center") is not None:
+            out["center"] = decision.payload["center"]
+        return out
 
     def _resolve_action_target(self) -> dict | None:
         """_decide_action 结果 → 补充归一化中心点，供渲染器画准星。
@@ -3006,7 +3074,7 @@ class TreasureModule(ActivityModule):
         if (key in (self.POPUP_HIGH_CONTINUE_KEY, self.POPUP_REWARD_CONTINUE_KEY)
                 or (key == "settle_collect_red_btn" and self._current_stage == "领取分红"
                     and self._settle_my_income is not None)):
-            self._popup_click_cooldown = self.POPUP_CLICK_COOLDOWN_FRAMES
+            self._popup_click_cooldown = self._popup_click_cooldown_frames
         # 阶段切换类点击：进入"等待切换"状态（阶段切走即成功；超时未切走 → _maybe_retry 重新 arm）
         if key in self.CLICK_RETRY_KEYS:
             if self._click_retry_key != key or self._click_retry_stage != self._current_stage:
@@ -3100,7 +3168,7 @@ class TreasureModule(ActivityModule):
             return
         # 不同意图间最小物理点击间隔（限速）
         now = time.time()
-        if now - self._last_click_time < self.CLICK_COOLDOWN_S:
+        if now - self._last_click_time < self._click_cooldown_s:
             return
         # 提交（非阻塞）。失败 → 指纹不更新，下帧同意图自动重试。
         if clicker.submit_click(
@@ -3161,17 +3229,17 @@ class TreasureModule(ActivityModule):
                 self._click_retry_count = 0
                 return
         # 仍停在点击时的阶段：超时则重新 arm。
-        # 重试帧数 per-key（弹窗连点 3 帧 / 阶段切换 10 帧），见 CLICK_RETRY_FRAMES_BY_KEY。
-        retry_frames = self.CLICK_RETRY_FRAMES_BY_KEY.get(key, self.CLICK_RETRY_FRAMES)
+        # 重试帧数 per-key（弹窗连点 3 帧 / 阶段切换 10 帧），见 tuning.policy。
+        retry_frames = self._retry_frames_by_key.get(key, self._click_retry_frames)
         if self._frame_counter - self._click_retry_since < retry_frames:
             return
-        if self._click_retry_count >= self.CLICK_RETRY_MAX:
+        if self._click_retry_count >= self._click_retry_max:
             logger.log(
-                f"[鉴宝点击] key={key} 重试 {self.CLICK_RETRY_MAX} 次后仍无法切换页面"
+                f"[鉴宝点击] key={key} 重试 {self._click_retry_max} 次后仍无法切换页面"
                 f"（停留在「{self._click_retry_stage}」），判定点击失效，终止模块", "ERROR",
             )
             raise ClickRetryExhaustedError(
-                f"阶段切换类点击 key={key} 重试 {self.CLICK_RETRY_MAX} 次仍无法切换页面"
+                f"阶段切换类点击 key={key} 重试 {self._click_retry_max} 次仍无法切换页面"
                 f"（停留在「{self._click_retry_stage}」），请检查游戏界面/点击方式后重新开始"
             )
         self._click_retry_count += 1
@@ -3179,7 +3247,7 @@ class TreasureModule(ActivityModule):
         self._click_retry_since = self._frame_counter
         logger.log(
             f"[鉴宝点击] key={key} 点击后 {retry_frames} 帧仍在「{self._click_retry_stage}」，"
-            f"第 {self._click_retry_count}/{self.CLICK_RETRY_MAX} 次重试", "WARNING",
+            f"第 {self._click_retry_count}/{self._click_retry_max} 次重试", "WARNING",
         )
 
     def _treasure_kwargs(self, *, extra_note: str = "") -> dict:
@@ -3562,6 +3630,15 @@ class TreasureModule(ActivityModule):
         self._consume_click_result()      # 先消费上一任务结果，应用指纹/时刻等副作用
         self._execute_click(intent)       # click 决策 + 提交（非阻塞，导航后台闭环）
         self._maybe_shoo_cursor(intent)   # 无 click 任务时（任务槽空闲）才尝试避让
+        # P1：决策契约落盘（facts 投影 + policy 输出 + 双轨等价比对）。
+        if self._policy_snapshot is not None and self._trace_writer is not None:
+            self._trace_writer.write({
+                "frame": self._frame_counter,
+                "event": "decision",
+                "decision_snapshot": self._policy_snapshot,
+                "dual_track_equal": self._policy_equal,
+            })
+            self._policy_snapshot = None
 
     # ==================================================================
     #  内部：阶段检测（模板匹配 → 过滤层 → 同步 set_stage）

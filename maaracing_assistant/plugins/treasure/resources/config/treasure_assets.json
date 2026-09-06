@@ -1310,5 +1310,164 @@
         }
       ]
     }
+  },
+  "policies": {
+    "_schema_ver": 1,
+    "stage_map": {
+      "hall": "游戏大厅",
+      "activity": "活动页面",
+      "session": "鉴宝大厅(选择场次)",
+      "matching": "匹配中",
+      "appraiser": "选择鉴宝师",
+      "bid": "第1回合出价",
+      "auction_result": "中标结算",
+      "settle": "领取分红",
+      "popup": "结算弹窗"
+    },
+    "rules": [
+      {
+        "id": "popup_cooldown",
+        "when": { "stage": "popup", "cooldown": { "gt": 0 } },
+        "decision": { "key": "popup_click_cooldown", "hint": "弹窗点击后冷却，等待阶段稳定..." }
+      },
+      {
+        "id": "hall_enter",
+        "when": { "stage": "hall" },
+        "decision": { "key": "hall_peak_appraise_card", "hint": "进入巅峰鉴宝活动页" }
+      },
+      {
+        "id": "activity_goto",
+        "when": { "stage": "activity" },
+        "decision": { "key": "goto_appraise_btn", "hint": "前往鉴宝" }
+      },
+      {
+        "id": "session_ready",
+        "when": { "stage": "session" },
+        "decision": { "source": "session_decision", "fallback_key": "session_waiting", "hint": "鉴宝大厅(选择场次)等待识别..." }
+      },
+      {
+        "id": "appraiser_ready",
+        "when": { "stage": "appraiser" },
+        "decision": { "source": "appraiser_decision", "fallback_key": "appraiser_waiting", "hint": "选择鉴宝师阶段等待识别..." }
+      },
+      {
+        "id": "bid_ready",
+        "when": { "stage": "bid" },
+        "decision": { "source": "bidding_decision", "fallback_key": "bid_waiting", "hint": "等待出价按钮亮起..." }
+      },
+      {
+        "id": "settle_ready_click",
+        "when": { "stage": "settle", "settle_income": { "gte": 0 } },
+        "decision": { "key": "settle_collect_red_btn", "hint": "领取分红（本场收入已读出）" }
+      },
+      {
+        "id": "settle_first_enter",
+        "when": { "stage": "settle", "clicked_once": false, "settle_income": null },
+        "decision": { "key": "settle_collect_red_btn", "hint": "点领取跳过数据动画（之后等 OCR 读完整再准星再指）" }
+      },
+      {
+        "id": "settle_skip_fatal",
+        "when": { "stage": "settle", "clicked_once": true, "settle_income": null, "retry_elapsed": { "gte": "@settle_skip_retry_frames" }, "retry_count": { "gte": "@settle_skip_retry_max" } },
+        "decision": { "key": "settle_collect_red_btn", "fatal": "领取分红跳过动画点击重试 3 次仍无响应（本场收入始终未读出），请检查游戏界面/点击方式后重新开始" }
+      },
+      {
+        "id": "settle_skip_retry",
+        "when": { "stage": "settle", "clicked_once": true, "settle_income": null, "retry_elapsed": { "gte": "@settle_skip_retry_frames" }, "retry_count": { "lt": "@settle_skip_retry_max" } },
+        "decision": { "key": "settle_collect_red_btn", "center": "settle_collect_red_btn", "effect": "settle_skip_retry", "hint": "跳过动画点击疑似无响应，重试中..." }
+      },
+      {
+        "id": "settle_skip_waiting",
+        "when": { "stage": "settle", "clicked_once": true, "settle_income": null },
+        "decision": { "key": "dividend_waiting", "hint": "已跳动画，等待 OCR 读本场收入/利润...（数据齐后准星再指领取）" }
+      },
+      {
+        "id": "popup_daily_high_ready",
+        "when": { "stage": "popup", "popup_kind": "daily_high_banner", "daily_high_score": { "neq": null } },
+        "decision": { "key": "popup_high_continue", "center": "confirm_red_btn", "hint": "今日最高积分上涨 → 点屏幕继续" }
+      },
+      {
+        "id": "popup_daily_high_timeout",
+        "when": { "stage": "popup", "popup_kind": "daily_high_banner", "reward_elapsed": { "gte": "@daily_high_timeout_frames" } },
+        "decision": { "key": "popup_high_continue", "center": "confirm_red_btn", "hint": "今日最高积分读取超时 → 跳过" }
+      },
+      {
+        "id": "popup_daily_high_waiting",
+        "when": { "stage": "popup", "popup_kind": "daily_high_banner" },
+        "decision": { "key": "popup_waiting", "hint": "今日最高积分上涨：等待识别积分..." }
+      },
+      {
+        "id": "popup_egg_ready",
+        "when": { "stage": "popup", "popup_kind": "egg_reward_title", "egg_read_done": true },
+        "decision": { "key": "popup_reward_continue", "center": "confirm_red_btn", "hint": "彩蛋结算 → 点屏幕继续" }
+      },
+      {
+        "id": "popup_egg_timeout",
+        "when": { "stage": "popup", "popup_kind": "egg_reward_title", "reward_elapsed": { "gte": "@egg_ocr_timeout_frames" } },
+        "decision": { "key": "popup_reward_continue", "center": "confirm_red_btn", "hint": "彩蛋结算读取超时 → 点屏幕继续" }
+      },
+      {
+        "id": "popup_egg_waiting",
+        "when": { "stage": "popup", "popup_kind": "egg_reward_title" },
+        "decision": { "key": "popup_waiting", "hint": "奖励结算：等待识别彩蛋数量..." }
+      },
+      {
+        "id": "popup_eggreading_ready",
+        "when": { "stage": "popup", "egg_reading": true, "egg_read_done": true },
+        "decision": { "key": "popup_reward_continue", "center": "confirm_red_btn", "hint": "彩蛋结算 → 点屏幕继续" }
+      },
+      {
+        "id": "popup_eggreading_timeout",
+        "when": { "stage": "popup", "egg_reading": true, "reward_elapsed": { "gte": "@egg_ocr_timeout_frames" } },
+        "decision": { "key": "popup_reward_continue", "center": "confirm_red_btn", "hint": "彩蛋结算读取超时 → 点屏幕继续" }
+      },
+      {
+        "id": "popup_eggreading_waiting",
+        "when": { "stage": "popup", "egg_reading": true },
+        "decision": { "key": "popup_waiting", "hint": "奖励结算：等待识别彩蛋数量..." }
+      },
+      {
+        "id": "popup_blind",
+        "when": { "stage": "popup", "skip_cycle": { "eq": 0 } },
+        "decision": { "key": "popup_high_continue", "center": "confirm_red_btn", "hint": "等级提升弹窗(盲点) → 点屏幕跳过" }
+      },
+      {
+        "id": "popup_waiting",
+        "when": { "stage": "popup" },
+        "decision": { "key": "popup_waiting", "hint": "等待弹窗切换..." }
+      },
+      {
+        "id": "matching_wait",
+        "when": { "stage": "matching" },
+        "decision": { "key": "stage_waiting", "hint": "匹配中...（等待界面稳定）" }
+      },
+      {
+        "id": "auction_result_wait",
+        "when": { "stage": "auction_result" },
+        "decision": { "key": "stage_waiting", "hint": "中标结算中...（等待界面稳定）" }
+      }
+    ],
+    "tuning": {
+      "perception": {
+        "appraiser_search_roi": [0.03, 0.18, 0.97, 0.92],
+        "appraiser_match_threshold": 0.72,
+        "check_match_threshold": 0.62,
+        "session_match_threshold": 0.9,
+        "smart_bid_match_threshold": 0.72
+      },
+      "policy": {
+        "session_start_click_cooldown_frames": 3,
+        "click_retry_frames": 10,
+        "click_retry_max": 3,
+        "settle_skip_retry_frames": 10,
+        "settle_skip_retry_max": 3,
+        "popup_continue_retry_frames": 3,
+        "popup_click_cooldown_frames": 5,
+        "daily_high_timeout_frames": 8,
+        "egg_ocr_timeout_frames": 8
+      },
+      "execution": {
+        "click_cooldown_s": 0.2
+      }
+    }
   }
 }

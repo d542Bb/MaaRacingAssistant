@@ -1,0 +1,421 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+NavKit P1 决策策略层单测（纯标准库，CI 只装 pytest 即可运行）。
+
+覆盖 docs/plan/NAVKIT_P1_PLAN.md 的契约：
+- P0-6 DecisionFacts 冻结快照 / 派生事实（retry_elapsed / reward_elapsed / skip_cycle）
+- P0-7 StateSnapshot 封闭白名单投影（未知字段 fail-closed）
+- §4 schema：parse_policies 结构错误（P01-P05）
+- §5 P1d 双轨等价：TreasureLegacyPolicy vs PolicyPlan 同一 facts → 同 Decision
+- §4.2 validate_policy_document：P06/P07/P09 告警与 strict 升级
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from maaracing_assistant.core.navkit import (
+    DEFAULT_FALLBACK_KEY,
+    DecisionFacts,
+    DecisionSnapshot,
+    PolicyError,
+    PolicyPlan,
+    StateSnapshot,
+    compile_plan,
+    parse_policies,
+    validate_policy_document,
+)
+from maaracing_assistant.plugins.treasure.policy_legacy import TreasureLegacyPolicy
+
+_ASSETS_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "maaracing_assistant/plugins/treasure/resources/config/treasure_assets.json"
+)
+
+
+def _load_assets():
+    from maaracing_assistant.core.navkit import Assets
+
+    return Assets.load(_ASSETS_PATH, module="treasure")
+
+
+def _make_facts(
+    *,
+    stage: str | None,
+    frame: int,
+    popup_kind: str | None = None,
+    session_decision: dict | None = None,
+    appraiser_decision: dict | None = None,
+    bidding_decision: dict | None = None,
+    settle_income: int | None = None,
+    clicked_once: bool = False,
+    retry_count: int = 0,
+    settle_skip_since: int = 0,
+    cooldown: int = 0,
+    daily_high_score: int | None = None,
+    egg_reading: bool = False,
+    egg_read_done: bool = False,
+    reward_enter_frame: int = 0,
+) -> DecisionFacts:
+    state = StateSnapshot.projection({
+        "frame_counter": frame,
+        "settle_income": settle_income,
+        "clicked_once": clicked_once,
+        "retry_count": retry_count,
+        "settle_skip_since": settle_skip_since,
+        "cooldown": cooldown,
+        "daily_high_score": daily_high_score,
+        "egg_reading": egg_reading,
+        "egg_read_done": egg_read_done,
+        "reward_enter_frame": reward_enter_frame,
+    })
+    outputs = {
+        "stage": stage,
+        "popup_kind": popup_kind,
+        "session_decision": session_decision,
+        "appraiser_decision": appraiser_decision,
+        "bidding_decision": bidding_decision,
+    }
+    return DecisionFacts.freeze(state_snapshot=state, outputs=outputs, frame_counter=frame)
+
+
+# ------------------------------------------------------------------
+# P0-7：StateSnapshot 白名单投影
+# ------------------------------------------------------------------
+
+
+def test_state_snapshot_projection_rejects_unknown_fields():
+    with pytest.raises(PolicyError) as exc:
+        StateSnapshot.projection({"frame_counter": 1, "unknown_field": 3})
+    assert exc.value.code == "P04"
+
+
+def test_state_snapshot_projection_accepts_all_fields():
+    snap = StateSnapshot.projection({
+        "frame_counter": 1, "settle_income": None, "clicked_once": False,
+        "retry_count": 0, "settle_skip_since": 0, "cooldown": 0,
+        "daily_high_score": None, "egg_reading": False, "egg_read_done": False,
+        "reward_enter_frame": 0,
+    })
+    assert snap.values["frame_counter"] == 1
+
+
+# ------------------------------------------------------------------
+# P0-6：DecisionFacts 冻结 + 派生事实
+# ------------------------------------------------------------------
+
+
+def test_decision_facts_derived_fields():
+    facts = _make_facts(stage="settle", frame=20, clicked_once=True, settle_skip_since=5)
+    assert facts.get("retry_elapsed") == 15
+    assert facts.get("skip_cycle") == 20 % 3
+    assert facts.get("frame_counter") == 20
+
+
+def test_decision_facts_rejects_unknown_outputs():
+    with pytest.raises(PolicyError) as exc:
+        DecisionFacts.freeze(
+            state_snapshot=StateSnapshot.projection({}),
+            outputs={"stage": "hall", "not_a_fact": 1},
+            frame_counter=1,
+        )
+    assert exc.value.code == "P04"
+
+
+def test_decision_snapshot_structure():
+    facts = _make_facts(stage="hall", frame=1)
+    plan = _compile()
+    snap = DecisionSnapshot.from_decision(facts, plan.decide(facts))
+    d = snap.as_dict()
+    assert d["facts_projection"]["stage"] == "hall"
+    assert d["decision"]["key"] == "hall_peak_appraise_card"
+    assert "state" not in d["decision"]
+
+
+# ------------------------------------------------------------------
+# §4 schema：parse_policies 结构错误
+# ------------------------------------------------------------------
+
+
+def test_parse_policies_bad_schema_ver():
+    with pytest.raises(PolicyError) as exc:
+        parse_policies({"_schema_ver": 99, "stage_map": {"a": "b"}, "rules": [], "tuning": {}})
+    assert exc.value.code == "P01"
+
+
+def test_parse_policies_unknown_condition_field():
+    with pytest.raises(PolicyError) as exc:
+        parse_policies({
+            "_schema_ver": 1,
+            "stage_map": {"hall": "游戏大厅"},
+            "rules": [{"id": "r1", "when": {"bogus": 1}, "decision": {"key": "x"}}],
+            "tuning": {},
+        })
+    assert exc.value.code == "P04"
+
+
+def test_parse_policies_bad_source():
+    with pytest.raises(PolicyError) as exc:
+        parse_policies({
+            "_schema_ver": 1,
+            "stage_map": {"hall": "游戏大厅"},
+            "rules": [{"id": "r1", "when": {"stage": "hall"},
+                       "decision": {"source": "not_a_source"}}],
+            "tuning": {},
+        })
+    assert exc.value.code == "P03"
+
+
+def test_parse_policies_bad_op():
+    with pytest.raises(PolicyError) as exc:
+        parse_policies({
+            "_schema_ver": 1,
+            "stage_map": {"hall": "游戏大厅"},
+            "rules": [{"id": "r1", "when": {"cooldown": {"between": 1}},
+                       "decision": {"key": "x"}}],
+            "tuning": {},
+        })
+    assert exc.value.code == "P05"
+
+
+def test_parse_policies_stage_not_in_map():
+    with pytest.raises(PolicyError) as exc:
+        parse_policies({
+            "_schema_ver": 1,
+            "stage_map": {"hall": "游戏大厅"},
+            "rules": [{"id": "r1", "when": {"stage": "ghost"}, "decision": {"key": "x"}}],
+            "tuning": {},
+        })
+    assert exc.value.code == "P04"
+
+
+# ------------------------------------------------------------------
+# §5 P1d：双轨等价（同一 facts → LegacyPolicy 与 PolicyEngine 同输出）
+# ------------------------------------------------------------------
+
+
+def _compile() -> PolicyPlan:
+    assets = _load_assets()
+    assert assets.policies is not None
+    return compile_plan(assets.policies, assets.anchors)
+
+
+def _legacy() -> TreasureLegacyPolicy:
+    assets = _load_assets()
+    def center_of(aid: str) -> tuple[float, float] | None:
+        anchor = assets.anchors.get(aid)
+        if anchor is None:
+            return None
+        x1, y1, x2, y2 = anchor.rect.as_list()
+        return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+    return TreasureLegacyPolicy(
+        popup_continue_center=center_of("confirm_red_btn") or (0.5, 0.5),
+        settle_collect_center=center_of("settle_collect_red_btn"),
+        settle_skip_retry_frames=10,
+        settle_skip_retry_max=3,
+        daily_high_timeout_frames=8,
+        egg_ocr_timeout_frames=8,
+    )
+
+
+def _assert_tracks_equal(facts: DecisionFacts, plan: PolicyPlan, legacy: TreasureLegacyPolicy) -> None:
+    d_plan = plan.decide(facts)
+    d_legacy = legacy.decide(facts)
+    assert d_plan.key == d_legacy.key, f"key 不一致 stage={facts.get('stage')}: plan={d_plan.key} legacy={d_legacy.key}"
+    assert d_plan.payload == d_legacy.payload, (
+        f"payload 不一致 stage={facts.get('stage')} key={d_plan.key}: plan={d_plan.payload} legacy={d_legacy.payload}"
+    )
+    assert d_plan.fatal == d_legacy.fatal, "fatal 不一致"
+    assert d_plan.side_effects == d_legacy.side_effects, "side_effects 不一致"
+
+
+def test_dual_track_equivalence_stage_matrix():
+    plan = _compile()
+    legacy = _legacy()
+    stages = [
+        "hall", "activity", "session", "matching", "appraiser", "auction_result",
+        "settle", "popup",
+    ]
+    for frame in (1, 2, 3, 4, 9, 10, 11):
+        for stage in stages:
+            for clicked in (False, True):
+                _assert_tracks_equal(
+                    _make_facts(stage=stage, frame=frame, clicked_once=clicked),
+                    plan, legacy,
+                )
+    # bid 回合
+    for frame in (1, 5):
+        _assert_tracks_equal(_make_facts(stage="bid", frame=frame), plan, legacy)
+        _assert_tracks_equal(
+            _make_facts(stage="bid", frame=frame,
+                        bidding_decision={"key": "bid_main_red_btn", "hint": "点出价"}),
+            plan, legacy,
+        )
+    # 未知阶段 → 兜底
+    _assert_tracks_equal(_make_facts(stage=None, frame=1), plan, legacy)
+
+
+def test_dual_track_equivalence_settle_variants():
+    plan = _compile()
+    legacy = _legacy()
+    cases = [
+        dict(stage="settle", frame=1, clicked_once=False, settle_income=None),
+        dict(stage="settle", frame=2, clicked_once=False, settle_income=5000),
+        dict(stage="settle", frame=3, clicked_once=True, settle_income=None),
+        dict(stage="settle", frame=20, clicked_once=True, settle_income=None,
+              settle_skip_since=5, retry_count=1),
+        dict(stage="settle", frame=30, clicked_once=True, settle_income=None,
+              settle_skip_since=5, retry_count=3),
+    ]
+    for kw in cases:
+        _assert_tracks_equal(_make_facts(**kw), plan, legacy)
+
+
+def test_dual_track_equivalence_popup_variants():
+    plan = _compile()
+    legacy = _legacy()
+    base = dict(stage="popup", frame=6)
+    cases = [
+        dict(base, popup_kind="daily_high_banner"),
+        dict(base, popup_kind="daily_high_banner", daily_high_score=12345),
+        dict(base, popup_kind="daily_high_banner", reward_enter_frame=1),
+        dict(base, popup_kind="egg_reward_title"),
+        dict(base, popup_kind="egg_reward_title", egg_read_done=True),
+        dict(base, popup_kind="egg_reward_title", reward_enter_frame=1),
+        dict(base, egg_reading=True),
+        dict(base, egg_reading=True, egg_read_done=True),
+        dict(base, egg_reading=True, reward_enter_frame=1),
+        dict(base, cooldown=3),
+        dict(base, popup_kind=None, frame=7),
+        dict(base, popup_kind=None, frame=9),
+    ]
+    for kw in cases:
+        _assert_tracks_equal(_make_facts(**kw), plan, legacy)
+
+
+def test_dual_track_equivalence_session_appraiser_bid():
+    plan = _compile()
+    legacy = _legacy()
+    _assert_tracks_equal(
+        _make_facts(stage="session", frame=1,
+                    session_decision={"key": "session_start_match_btn", "hint": "开始匹配"}),
+        plan, legacy,
+    )
+    _assert_tracks_equal(
+        _make_facts(stage="appraiser", frame=1,
+                    appraiser_decision={"key": "appraiser_p1_caroline", "hint": "选她"}),
+        plan, legacy,
+    )
+
+
+def test_plan_fallback_key():
+    plan = _compile()
+    d = plan.decide(_make_facts(stage="session", frame=1, session_decision=None))
+    assert d.key == "session_waiting"
+    d = plan.decide(_make_facts(stage="bid", frame=1, bidding_decision=None))
+    assert d.key == "bid_waiting"
+    d = plan.decide(_make_facts(stage="unknown_stage", frame=1))
+    assert d.key == DEFAULT_FALLBACK_KEY
+
+
+def test_tuning_reference_baked_at_compile_time():
+    """`@tuning_key` 条件在编译期烘焙：改 tuning 即改规则阈值（P1 调参上纸）。"""
+    assets = _load_assets()
+    assert assets.policies is not None
+    plan = compile_plan(assets.policies, assets.anchors)
+    # 烘焙后条件里不应残留 @ 引用
+    for rule in plan.rules:
+        for cond in rule.conditions:
+            assert not (isinstance(cond.value, str) and cond.value.startswith("@")), (
+                f"规则 {rule.id} 的条件值未烘焙：{cond.value!r}"
+            )
+    # 语义验证：settle 超时重试帧数 = tuning.policy.settle_skip_retry_frames
+    def decide(frame: int, retry_count: int = 1) -> str:
+        facts = _make_facts(
+            stage="settle", frame=frame, clicked_once=True,
+            settle_skip_since=1, retry_count=retry_count,
+        )
+        return plan.decide(facts).key
+
+    frames = int(assets.policies.tuning["policy"]["settle_skip_retry_frames"])
+    assert decide(frame=frames) == "dividend_waiting"   # elapsed = frames - 1，未超时
+    assert decide(frame=frames + 1) == "settle_collect_red_btn"  # elapsed = frames，超时重试
+    # 改 tuning → 重编译 → 阈值跟着变（证明非字面量硬编码）
+    assets.policies.tuning["policy"]["settle_skip_retry_frames"] = 5
+    plan5 = compile_plan(assets.policies, assets.anchors)
+    # frame=5 → elapsed=4 < 5 仍等待；frame=6 → elapsed=5 触发重试
+    assert plan5.decide(_make_facts(stage="settle", frame=5, clicked_once=True,
+                                    settle_skip_since=1)).key == "dividend_waiting"
+    assert plan5.decide(_make_facts(stage="settle", frame=6, clicked_once=True,
+                                    settle_skip_since=1)).key == "settle_collect_red_btn"
+
+
+def test_tuning_unknown_reference_rejected():
+    policies = parse_policies({
+        "_schema_ver": 1,
+        "stage_map": {"hall": "游戏大厅"},
+        "rules": [{"id": "r1", "when": {"cooldown": {"gte": "@not_defined"}},
+                   "decision": {"key": "x"}}],
+        "tuning": {"policy": {}},
+    })
+    issues = validate_policy_document(policies, {})
+    assert any(code == "P05" for code, _, _, _ in issues)
+
+
+# ------------------------------------------------------------------
+# §4.2：validate_policy_document（P06/P07/P09）
+# ------------------------------------------------------------------
+
+
+def test_validate_policy_document_reports_warnings():
+    assets = _load_assets()
+    assert assets.policies is not None
+    issues = validate_policy_document(assets.policies, assets.anchors)
+    codes = {c for c, _, _, _ in issues}
+    assert codes <= {"P01", "P02", "P03", "P04", "P05", "P06", "P07", "P08", "P09"}
+    assert all(level != "error" or code in {"P02", "P08", "P05"} for code, level, _, _ in issues)
+
+
+def test_validate_policy_document_strict_upgrades_warnings():
+    assets = _load_assets()
+    assert assets.policies is not None
+    issues = validate_policy_document(assets.policies, assets.anchors, strict=True)
+    assert all(level == "error" for _, level, _, _ in issues)
+
+
+def test_tuning_unknown_key_rejected():
+    policies = parse_policies({
+        "_schema_ver": 1,
+        "stage_map": {"hall": "游戏大厅"},
+        "rules": [{"id": "r1", "when": {"stage": "hall"}, "decision": {"key": "hall_peak_appraise_card"}}],
+        "tuning": {"perception": {"bogus_key": 1}},
+    })
+    issues = validate_policy_document(policies, {"hall_peak_appraise_card": _DummyAnchor()})
+    assert any(code == "P01" for code, _, _, _ in issues)
+
+
+class _DummyAnchor:
+    """仅满足 validate 对锚点引用闭合的桩（rect 不参与语义检查）。"""
+
+    def __init__(self) -> None:
+        self.rect = None
+
+
+def test_assets_policies_present():
+    assets = _load_assets()
+    assert assets.policies is not None
+    assert len(assets.policies.rules) >= 20
+    assert "hall" in assets.policies.stage_map
+    assert set(assets.policies.tuning) == {"perception", "policy", "execution"}
+
+
+def test_assets_json_document_validates_clean():
+    from maaracing_assistant.core.navkit import safe_load
+
+    assets, report = safe_load(_ASSETS_PATH, module="treasure")
+    assert assets is not None
+    assert report.ok, report.text()

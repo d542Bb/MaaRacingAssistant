@@ -44,6 +44,7 @@ from .assets import (
     Assets,
     NavKitError,
 )
+from .policy import DEFAULT_FALLBACK_KEY, validate_policy_document
 
 __all__ = [
     "LEVEL_ERROR",
@@ -163,6 +164,7 @@ def validate_assets(
     issues.extend(_check_compiled(assets))                    # E20
     issues.extend(_check_templates(assets))                   # W01 W02 W04
     issues.extend(_check_warnings(assets, global_assets))     # W03 W05 W06 W07
+    issues.extend(_check_policies(assets))                    # P01-P09
 
     return Report(issues=tuple(sorted(set(issues))))
 
@@ -744,6 +746,22 @@ def _check_warnings(assets: Assets, global_assets: Assets | None) -> list[Issue]
 # ------------------------------------------------------------------
 # 内部工具
 # ------------------------------------------------------------------
+
+
+def _check_policies(assets: Assets) -> list[Issue]:
+    """P01-P09：policies 决策策略校验（结构错误 P1 期即抛，这里补语义层）。
+
+    字典序问题注意：`validate_policy_document` 返回 (code, level, path, message)，
+    P06-P09 默认告警级，`strict` 未开启不阻断启动。
+    """
+    if assets.policies is None:
+        return []
+    issues: list[Issue] = []
+    for code, level, path, message in validate_policy_document(
+        assets.policies, assets.anchors
+    ):
+        issues.append(Issue(code, level, path, message))
+    return issues
 
 
 def _validate_kwargs(kwargs: Mapping[str, Any]) -> dict[str, Any]:

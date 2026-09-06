@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ..roi_config import NormalizedROI
+from .policy import Policies, PolicyError, parse_policies
 
 __all__ = [
     "SCHEMA_V3",
@@ -252,6 +253,11 @@ class Assets:
     routes: Mapping[str, Route]
     render: Mapping[str, Any] = field(default_factory=dict)
     trace: Mapping[str, Any] = field(default_factory=dict)
+    policies: Policies | None = None
+    """决策策略（P1）：文档 `policies` 段的一等公民，不另起 json.load。
+
+    缺省为 None（旧资产未声明 policies）；P1e 终局由调用方强制非空。
+    """
 
     # ---- 元信息（不参与语义，仅供追溯与校验）----
     declared_module: str | None = None
@@ -300,6 +306,7 @@ class Assets:
 
         transitions = _parse_transitions(doc.get("transitions"))
         routes = _parse_routes(doc.get("routes"))
+        policies = _parse_policies(doc.get("policies"))
 
         declared = doc.get("_module")
         return cls(
@@ -316,6 +323,7 @@ class Assets:
             routes=dict(routes),
             render=dict(doc.get("render") or {}),
             trace=dict(doc.get("trace") or {}),
+            policies=policies,
             source_path=source_path,
             image_dirs=tuple(image_dirs),
         )
@@ -592,10 +600,6 @@ def _parse_transitions(raw: Any) -> tuple[Transition, ...]:
 
 
 def _parse_routes(raw: Any) -> dict[str, Route]:
-    if raw is None:
-        return {}
-    if not isinstance(raw, Mapping):
-        raise NavKitError("E11", "routes", f"routes 须为 object，收到 {raw!r}")
     out: dict[str, Route] = {}
     for key, val in raw.items():
         if not isinstance(val, Mapping):
@@ -628,6 +632,20 @@ def _parse_routes(raw: Any) -> dict[str, Route]:
             start_stage=(str(val["start_stage"]) if val.get("start_stage") is not None else None),
         )
     return out
+
+
+def _parse_policies(raw: Any) -> Policies | None:
+    """`policies` 段 → `Policies` 对象；缺失时返回 None。
+
+    结构性错误（P01-P05）转换为 `NavKitError`，与 E 系列同构，
+    便于 `validate.safe_load` 输出一张清单。
+    """
+    if raw is None:
+        return None
+    try:
+        return parse_policies(raw)
+    except PolicyError as exc:
+        raise NavKitError(exc.code, exc.path, exc.message) from exc
 
 
 def _parse_rect(raw: Any, path: str) -> NormalizedROI:
