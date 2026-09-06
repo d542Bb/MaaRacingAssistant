@@ -172,10 +172,14 @@ class TestTreasureAdapter:
         assert "eggs" in defs.categories
         assert defs.name == "treasure"
 
-    def test_rois_path_points_to_treasure_json(self):
+    def test_rois_path_matches_runtime_config_dir(self):
+        # studio 的 ROI 落点必须与运行时读取路径（插件 CONFIG_DIR）完全同一路径，
+        # 否则校准保存后运行时读不到（断链）
+        from maaracing_assistant.plugins.treasure import CONFIG_DIR
         p = t_adapter.rois_path()
         assert p.name == "treasure_rois.json"
         assert "plugins" in p.parts and "treasure" in p.parts
+        assert p == CONFIG_DIR / "treasure_rois.json"
 
     def test_session_browser_wired_to_treasure_debug(self):
         b = t_adapter.make_session_browser()

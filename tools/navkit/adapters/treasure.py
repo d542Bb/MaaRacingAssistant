@@ -49,7 +49,9 @@ def make_category_defs() -> CategoryDefs:
 
 
 def rois_path() -> Path:
-    return PROJ / "maaracing_assistant" / "plugins" / "treasure" / "resources" / "treasure_rois.json"
+    # 必须与运行时读取路径（插件 CONFIG_DIR / treasure_rois.json）完全一致，
+    # 否则调试台校准保存后运行时读不到
+    return PROJ / "maaracing_assistant" / "plugins" / "treasure" / "resources" / "config" / "treasure_rois.json"
 
 
 def session_dir() -> Path:

@@ -66,6 +66,7 @@ class StudioState:
 
     def __init__(self, adapter):
         self.adapter = adapter
+        self.module_name: str = adapter.__name__.split(".")[-1]
         self.defs: CategoryDefs = adapter.make_category_defs()
         self.session_browser = adapter.make_session_browser()
         self.tpl_dir: Path = adapter.template_dir()
@@ -74,6 +75,14 @@ class StudioState:
         self.template_store = TemplateStore(self.tpl_dir)
         # 领域端点注册表：{path: handler(self, handler, body, qs)}；由 adapter 填充。
         self.extra_handlers: dict[str, dict] = {}
+
+
+def assets_path_for(module: str) -> Path:
+    """资产真源路径：plugins/<module>/resources/config/<module>_assets.json。
+
+    目录与文件名都按模块名派生，避免接入新模块时写出错位文件名。
+    """
+    return _PROJ_ROOT / "maaracing_assistant" / "plugins" / module / "resources" / "config" / f"{module}_assets.json"
 
 
 def build_state(module: str) -> StudioState:
@@ -88,13 +97,21 @@ def build_state(module: str) -> StudioState:
 
 
 def ensure_rois(state: StudioState) -> dict:
-    """确保 ROI 文件存在且含缺省分类；不存在则建缺省并保存。"""
+    """确保 ROI 文件存在且含缺省分类；不存在则建缺省并保存。
+
+    已存在且无需补填时不重写落盘：落点是运行时真源（git 跟踪），
+    启动不应产生写副作用。
+    """
     defs = state.defs
     if state.rois_file.is_file():
         data = defs.load(state.rois_file)
-    else:
-        data = {**{"_schema_ver": 2, "reference_size": [1280, 720]},
-                **{c: {} for c in defs.categories}}
+        before = json.dumps(data, ensure_ascii=False)
+        defs.fill_defaults(data)
+        if json.dumps(data, ensure_ascii=False) != before:
+            defs.save_atomic(data, state.rois_file)
+        return data
+    data = {**{"_schema_ver": 2, "reference_size": [1280, 720]},
+            **{c: {} for c in defs.categories}}
     defs.fill_defaults(data)
     defs.save_atomic(data, state.rois_file)
     return data
@@ -304,7 +321,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- NavKit v3 API ----
     def _assets_path(self) -> Path:
-        return _PROJ_ROOT / "maaracing_assistant" / "plugins" / self.state.adapter.__name__.split(".")[-1] / "resources" / "config" / "treasure_assets.json"
+        return assets_path_for(self.state.module_name)
 
     def _load_assets_doc(self) -> dict:
         path = self._assets_path()
@@ -313,7 +330,7 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_assets_get(self, qs) -> None:
         try:
             doc = self._load_assets_doc()
-            assets = Assets.from_document(doc, module="treasure")
+            assets = Assets.from_document(doc, module=self.state.module_name)
             report = validate_assets(assets)
             self._send_json({"document": doc, "report": {"ok": report.ok, "errors": [str(i) for i in report.errors], "warnings": [str(i) for i in report.warnings]}})
         except Exception as exc:
@@ -341,7 +358,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": False, "error": "document 必须为 object"}, 400)
             return
         try:
-            assets = Assets.from_document(document, module="treasure")
+            assets = Assets.from_document(document, module=self.state.module_name)
             report = validate_assets(assets)
             if not report.ok:
                 self._send_json({"ok": False, "report": report.text()}, 400)
@@ -357,7 +374,7 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_compile_post(self, body: dict) -> None:
         try:
             doc = self._load_assets_doc()
-            assets = Assets.from_document(doc, module="treasure")
+            assets = Assets.from_document(doc, module=self.state.module_name)
             output = compile_routes_json(assets)
             self._send_json({"ok": True, "bytes": len(output.encode("utf-8")), "output": output})
         except Exception as exc:

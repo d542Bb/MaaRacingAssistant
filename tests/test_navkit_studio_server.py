@@ -51,6 +51,23 @@ class TestStudioBuild:
         assert (state.static_dir / "app.js").is_file()
         assert (state.static_dir / "style.css").is_file()
 
+    def test_state_module_name_derived(self, state):
+        # 资产/路径派生的统一模块名（adapter 模块名末段），供 assets 路径与
+        # from_document(module=...) 共用，避免散落硬编码
+        assert state.module_name == "treasure"
+
+    def test_assets_path_for_module(self):
+        # 资产真源路径按模块名派生：目录与文件名都跟随模块，
+        # 防止未来 racing 接入时写出 treasure_assets.json 的错位文件
+        from tools.navkit.server import assets_path_for
+        p = assets_path_for("treasure")
+        assert p.name == "treasure_assets.json"
+        assert p.parent.name == "config"
+        q = assets_path_for("racing")
+        assert q.name == "racing_assets.json"
+        assert q.parent.name == "config"
+        assert "racing" in q.parts
+
 
 class TestEnsureLoadRois:
     def test_ensure_then_load_roundtrip(self, state, tmp_path):
@@ -70,6 +87,23 @@ class TestEnsureLoadRois:
         # 缺省 actions/appraisers 被补填
         assert "bid_confirm_red_btn" in data["actions"]
         assert "appraiser_p1_caroline" in data["appraisers"]
+
+    def test_ensure_rois_skips_rewrite_when_complete(self, state, tmp_path):
+        # ROI 文件已是完整配置时，ensure_rois 不得重写落盘（启动不应有写副作用）：
+        # 落点是运行时真源（git 跟踪），每次启动都重写会制造无意义的脏文件
+        import time
+        from tools.navkit.adapters import treasure as ta
+        f = tmp_path / "rois.json"
+        data = {"_schema_ver": 2, "reference_size": [1280, 720],
+                **{c: {} for c in ta.CATEGORIES}}
+        for cat, items in ta.DEFAULT_ITEMS.items():
+            data[cat].update(json.loads(json.dumps(items)))
+        f.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        state.rois_file = f
+        mtime_before = f.stat().st_mtime_ns
+        time.sleep(0.01)
+        ensure_rois(state)
+        assert f.stat().st_mtime_ns == mtime_before
 
 
 class TestHandlerTemplateStatus:
