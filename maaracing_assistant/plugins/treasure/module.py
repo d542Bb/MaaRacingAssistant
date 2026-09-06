@@ -878,6 +878,12 @@ class TreasureModule(ActivityModule):
         #   _policy_plan = v3 assets policies → PolicyPlan（启动编译不可变，缺失/非法 = 启动失败）
         self._policy_plan = None
         self._policy_snapshot: dict | None = None  # 最近一帧 DecisionSnapshot（trace 决策契约）
+        # 帧内意图缓存：_resolve_action_target 每帧只允许真正决策一次（主循环 +
+        # _treasure_kwargs 的 peep 准星字段都会调用；同帧二次调用返回缓存）。
+        # 无缓存时同帧双决策会把重试意图覆盖成等待（副作用已执行、intent 丢弃），
+        # 实测领取分红跳过动画重试链被整体吞掉 → 卡动画不重试（2026-09-06）。
+        self._intent_cache_frame: int = -1
+        self._intent_cache: dict | None = None
 
         # P1 收编：感知匹配阈值/ROI 真源 = policies.tuning.perception（缺省回落代码常量）。
         _per = _perception_tuning()
@@ -2685,6 +2691,22 @@ class TreasureModule(ActivityModule):
         return out
 
     def _resolve_action_target(self) -> dict | None:
+        """帧内缓存包装：同帧多次调用返回同一意图（一帧一决策，P0-6 语义）。
+
+        主循环（真实点击）与 _treasure_kwargs（peep 准星显示）都会调用本函数。
+        决策流水带引擎副作用（冷却递减/重试计数/skip_since），且重试类决策
+        「一帧内只在第一次出现」——同帧第二次决策时 skip_since 已被重置、
+        条件不再满足，会产出等待意图并覆盖快照，导致重试 intent 被丢弃：
+        实测领取分红跳过动画无响应重试链整体失效，卡动画直至 fatal（2026-09-06）。
+        """
+        if self._intent_cache_frame == self._frame_counter:
+            return self._intent_cache
+        result = self._resolve_action_target_uncached()
+        self._intent_cache_frame = self._frame_counter
+        self._intent_cache = result
+        return result
+
+    def _resolve_action_target_uncached(self) -> dict | None:
         """_decide_action 结果 → 补充归一化中心点，供渲染器画准星。
 
         三类来源：
