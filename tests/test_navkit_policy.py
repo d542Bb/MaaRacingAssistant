@@ -22,6 +22,7 @@ from maaracing_assistant.core.navkit import (
     DEFAULT_FALLBACK_KEY,
     DecisionFacts,
     DecisionSnapshot,
+    NavKitError,
     PolicyError,
     PolicyPlan,
     StateSnapshot,
@@ -297,6 +298,39 @@ def test_dual_track_equivalence_popup_variants():
         _assert_tracks_equal(_make_facts(**kw), plan, legacy)
 
 
+def test_dual_track_equivalence_cooldown_boundary():
+    """cooldown>0 全局短路边界：冷却期内任意阶段都返回等待意图，不产出点击（§4.3）。"""
+    plan = _compile()
+    legacy = _legacy()
+    # 冷却期跨阶段（点击成功后检测器延迟切阶段/误判回退的窗口）
+    for stage in ("hall", "activity", "settle", "bid", "session", "appraiser"):
+        _assert_tracks_equal(
+            _make_facts(stage=stage, frame=10, clicked_once=True, cooldown=3),
+            plan, legacy,
+        )
+        _assert_tracks_equal(
+            _make_facts(stage=stage, frame=11, clicked_once=True, cooldown=1),
+            plan, legacy,
+        )
+    # 冷却递减序列：5→4→3→2→1→0（恢复决策）
+    for cd in (5, 4, 3, 2, 1):
+        facts = _make_facts(stage="activity", frame=20, cooldown=cd)
+        d_plan = plan.decide(facts)
+        d_legacy = legacy.decide(facts)
+        assert d_plan.key == d_legacy.key == "popup_click_cooldown"
+        assert d_plan.side_effects == d_legacy.side_effects == ("popup_cooldown_decr",)
+    # cooldown 归零后恢复正常决策
+    facts = _make_facts(stage="activity", frame=25, cooldown=0)
+    assert plan.decide(facts).key == "goto_appraise_btn"
+    assert legacy.decide(facts).key == "goto_appraise_btn"
+    # settle 真领取后冷却窗口（income 已读出 + cooldown>0）：等待而非重复点击
+    _assert_tracks_equal(
+        _make_facts(stage="settle", frame=30, clicked_once=True,
+                    settle_income=5000, cooldown=4),
+        plan, legacy,
+    )
+
+
 def test_dual_track_equivalence_session_appraiser_bid():
     plan = _compile()
     legacy = _legacy()
@@ -364,6 +398,69 @@ def test_tuning_unknown_reference_rejected():
     })
     issues = validate_policy_document(policies, {})
     assert any(code == "P05" for code, _, _, _ in issues)
+
+
+# ------------------------------------------------------------------
+# §5 P1e：收敛 fail-closed（删 LegacyPolicy + 删 fallback + 缺失即失败）
+# ------------------------------------------------------------------
+
+
+def test_policies_missing_is_startup_failure(monkeypatch, tmp_path):
+    """P1e：资产缺 policies 段 → 模块启动失败（不允许静默回退代码常量）。"""
+    import json as _json
+
+    src = _ASSETS_PATH
+    doc = _json.loads(src.read_text(encoding="utf-8"))
+    doc.pop("policies", None)
+    broken = tmp_path / "treasure_assets.json"
+    broken.write_text(_json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+
+    from maaracing_assistant.plugins.treasure import module as tm
+
+    monkeypatch.setattr(tm, "CONFIG_DIR", tmp_path)
+    monkeypatch.setenv("NAVKIT_SOURCE", "v3")
+    tm._policy_tuning.cache_clear()
+    m = tm.TreasureModule(None)
+    with pytest.raises(Exception) as exc:
+        m._init_policy_stack()
+    assert "policies" in str(exc.value)
+    tm._policy_tuning.cache_clear()
+
+
+def test_policies_invalid_is_startup_failure(monkeypatch, tmp_path):
+    """P1e：policies 结构非法（schema_ver 错）→ 启动失败。"""
+    import json as _json
+
+    src = _ASSETS_PATH
+    doc = _json.loads(src.read_text(encoding="utf-8"))
+    doc["policies"] = {"_schema_ver": 99, "stage_map": {}, "rules": [], "tuning": {}}
+    broken = tmp_path / "treasure_assets.json"
+    broken.write_text(_json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+
+    from maaracing_assistant.plugins.treasure import module as tm
+
+    monkeypatch.setattr(tm, "CONFIG_DIR", tmp_path)
+    monkeypatch.setenv("NAVKIT_SOURCE", "v3")
+    tm._policy_tuning.cache_clear()
+    m = tm.TreasureModule(None)
+    with pytest.raises(Exception):
+        m._init_policy_stack()
+    tm._policy_tuning.cache_clear()
+
+
+def test_policies_missing_assets_load_fails():
+    """P1e（schema 层）：`Assets` 的 `policies` 缺失=启动失败由调用方强制，
+    但结构错误（`_schema_ver` 错）在 `Assets.load` 构造期即抛。"""
+    import json as _json
+
+    src = _ASSETS_PATH
+    doc = _json.loads(src.read_text(encoding="utf-8"))
+    doc["policies"] = {"_schema_ver": 99, "stage_map": {}, "rules": [], "tuning": {}}
+    from maaracing_assistant.core.navkit import Assets
+
+    with pytest.raises(NavKitError) as exc:
+        Assets.from_document(doc, module="treasure")
+    assert exc.value.code == "P01"
 
 
 # ------------------------------------------------------------------

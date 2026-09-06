@@ -2641,6 +2641,8 @@ class TreasureModule(ActivityModule):
 
         前置副作用（等价旧代码）：结算弹窗阶段感知提前解锁冷却——
         弹窗已稳定出现说明冷却目的达成，清零后不再白白等待剩余帧。
+        注意：因此「cooldown>0 × 阶段=结算弹窗」帧会直接按弹窗分支决策
+        （冷却规则只拦截弹窗外的跨阶段冷却窗口，如领取分红后/弹窗链之间）。
         """
         if self._current_stage == "结算弹窗":
             self._popup_click_cooldown = 0

@@ -1327,7 +1327,7 @@
     "rules": [
       {
         "id": "popup_cooldown",
-        "when": { "stage": "popup", "cooldown": { "gt": 0 } },
+        "when": { "cooldown": { "gt": 0 } },
         "decision": { "key": "popup_click_cooldown", "hint": "弹窗点击后冷却，等待阶段稳定..." }
       },
       {
