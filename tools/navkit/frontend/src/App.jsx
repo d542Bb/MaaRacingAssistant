@@ -1,13 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { Layout, Nav, Tag } from '@douyinfe/semi-ui';
+import { Layout, Nav, Tag, Modal } from '@douyinfe/semi-ui';
 import {
-  IconHistogram, IconDesktop, IconImage, IconVideo, IconServer,
+  IconHistogram, IconDesktop, IconImage, IconVideo, IconServer, IconEdit,
 } from '@douyinfe/semi-icons';
 import GraphView from './GraphView';
 import CalibView from './CalibView';
 import TemplatesView from './TemplatesView';
 import ReplayView from './ReplayView';
 import AssetsView from './AssetsView';
+import PolicyView from './PolicyView';
 import Inspector from './Inspector';
 import { api } from './api';
 
@@ -19,6 +20,7 @@ const NAV_ITEMS = [
   { itemKey: 'tpl', text: '模板库', icon: <IconImage /> },
   { itemKey: 'replay', text: '会话回放', icon: <IconVideo /> },
   { itemKey: 'assets', text: '资产 v3', icon: <IconServer /> },
+  { itemKey: 'policy', text: '策略', icon: <IconEdit /> },
 ];
 
 const VIEW_KEYS = NAV_ITEMS.map(i => i.itemKey);
@@ -33,6 +35,7 @@ export default function App() {
   const [selectedNode, setSelectedNode] = useState(null);
   const [traceRows, setTraceRows] = useState([]);
   const [graphDoc, setGraphDoc] = useState(null);
+  const [policyDirty, setPolicyDirty] = useState(false);
 
   useEffect(() => {
     api.trace().then(setTraceRows).catch(() => setTraceRows([]));
@@ -45,8 +48,21 @@ export default function App() {
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
 
-  // 切视图 = 写 hash，由 hashchange 统一驱动状态（浏览器前进/后退可用）
-  const setView = (key) => { window.location.hash = '/' + key; };
+  // 切视图 = 写 hash，由 hashchange 统一驱动状态（浏览器前进/后退可用）；
+  // 策略页有未保存更改时 Modal 二次确认，确认（丢弃）后才写 hash
+  const setView = (key) => {
+    if (view !== 'policy' || !policyDirty) {
+      window.location.hash = '/' + key;
+      return;
+    }
+    Modal.confirm({
+      title: '策略编辑尚未保存',
+      content: '切换视图将丢弃未保存的更改（draft 不会被写盘）。确定离开？',
+      okText: '丢弃并离开',
+      cancelText: '留下继续编辑',
+      onOk: () => { window.location.hash = '/' + key; },
+    });
+  };
 
   return (
     <Layout className="app">
@@ -81,6 +97,7 @@ export default function App() {
               {view === 'tpl' && <TemplatesView />}
               {view === 'replay' && <ReplayView traceRows={traceRows} />}
               {view === 'assets' && <AssetsView graphDoc={graphDoc} />}
+              {view === 'policy' && <PolicyView onDirtyChange={setPolicyDirty} />}
             </div>
             {view === 'graph' && (
               <Inspector node={selectedNode} traceRows={traceRows} />

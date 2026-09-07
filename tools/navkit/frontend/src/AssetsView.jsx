@@ -20,6 +20,8 @@ export default function AssetsView({ graphDoc }) {
   const stages = Object.entries((d.stages || {}).definitions || {});
   const transitions = d.transitions || [];
   const routes = Object.entries(d.routes || {});
+  const ruleCount = (d.policies?.rules || []).length;
+  const goPolicy = () => { window.location.hash = '/policy'; };
 
   return (
     <div className="panel-view">
@@ -41,6 +43,14 @@ export default function AssetsView({ graphDoc }) {
           { key: '阶段', value: String(stages.length) },
           { key: '转移', value: String(transitions.length) },
           { key: '路由', value: String(routes.length) },
+          {
+            key: '策略规则',
+            value: (
+              <a className="mono" style={{ cursor: 'pointer' }} onClick={goPolicy}>
+                {ruleCount} 条 → 策略编辑
+              </a>
+            ),
+          },
         ]}
       />
 

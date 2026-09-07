@@ -15,3 +15,17 @@ export const api = {
   assets: () => j('/api/assets'),
   trace: () => j('/api/trace'),
 };
+
+// 保存整份 document：非 2xx 也要读 body（400 时 report/error 携带 P 码，
+// 通用 j() 会在 !r.ok 时 throw 并丢弃响应体，故单独实现）
+export async function saveAssets(document) {
+  const r = await fetch('/api/assets', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ document }),
+  });
+  let body = null;
+  try { body = await r.json(); } catch { /* 非 JSON 响应按网络错误处理 */ }
+  if (body === null) throw new Error(`POST /api/assets → HTTP ${r.status}（响应体不可解析）`);
+  return body; // {ok:true, report} | {ok:false, report} | {ok:false, error}
+}
