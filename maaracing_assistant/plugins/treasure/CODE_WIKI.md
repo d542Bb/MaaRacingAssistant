@@ -6,8 +6,6 @@
 > 配套文档：
 >
 > - 主文档：[docs/CODE\_WIKI.md](../../docs/CODE_WIKI.md)（架构 / 导航引擎 / 配置 / 调试 / GUI）
->
-> - 赛车域：[../racing/CODE\_WIKI.md](../racing/CODE_WIKI.md)
 
 ***
 
@@ -43,10 +41,11 @@
 
 - **落盘子域**：结构化落盘已拆出到同目录 [store.py](file:///d:/maaracing_assistant/maaracing_assistant/plugins/treasure/store.py)（`TreasureStore`：SQLite 场次明细 + 当日汇总 + 会话总结），模块主循环只做编排与委托
 
-- **资源随插件**：鉴宝模板位于同目录 `resources/image/`；S1 后识别真源为 `resources/config/treasure_assets.json`（v3），旧 `treasure_rois.json` 仅作 NAVKIT_SOURCE=v2 回退；插件以 `__init__.py` 的 `IMAGE_DIR`/`CONFIG_DIR` 常量统一引用，不依赖主程序 `assets/`。
+- **资源随插件**：鉴宝模板位于同目录 `resources/image/`；S1 后识别真源为 `resources/config/treasure_assets.json`（v3），旧 `treasure_rois.json` 仅作 NAVKIT\_SOURCE=v2 回退；插件以 `__init__.py` 的 `IMAGE_DIR`/`CONFIG_DIR` 常量统一引用，不依赖主程序 `assets/`。
+
 - **NavKit 底座**：`core/navkit` 负责 v3 资产模型、E/W 校验、DetectionPlan、路由编译、trace；`tools/navkit` 是结构树/编辑/回放控制台。固定坐标点击件不强制配模板，必须由 v3 `guarded_by` 担保（D2）。
 
-**阶段链路（`treasure_assets.json` 的 `stages.order`，仍与 `STAGE_ORDER` 保持 GUI 断点兼容）**：
+**阶段链路（`treasure_assets.json`** **的** **`stages.order`，仍与** **`STAGE_ORDER`** **保持 GUI 断点兼容）**：
 
 ```
 游戏大厅 → 活动页面 → 鉴宝大厅(选择场次) → 匹配中 → 选择鉴宝师
@@ -238,12 +237,12 @@ v3 默认从 `treasure_assets.json` 编译 `DetectionPlan`；`NAVKIT_SOURCE=v2` 
 
 ### treasure\_detector.TreasureStageDetector
 
-| 方法                           | 说明                                                          |
-| ---------------------------- | ----------------------------------------------------------- |
-| `detect(frame_rgb)`          | 返回 `DetectResult`（兼容二元组解包）：按 v3 DetectionPlan 扫描 + scores/hit_anchor 明细 |
-| `_round_from_template(name)` | roundN\_banner 文件名 → 回合号                                    |
-| `_round_no_from_text(text)`  | OCR 文本提取回合号（1\~5 之外视为噪声）                                    |
-| `_round_label_rect()`        | 回合小字 OCR 区 rect（优先 ocr.round\_label\_area）                  |
+| 方法                           | 说明                                                                       |
+| ---------------------------- | ------------------------------------------------------------------------ |
+| `detect(frame_rgb)`          | 返回 `DetectResult`（兼容二元组解包）：按 v3 DetectionPlan 扫描 + scores/hit\_anchor 明细 |
+| `_round_from_template(name)` | roundN\_banner 文件名 → 回合号                                                 |
+| `_round_no_from_text(text)`  | OCR 文本提取回合号（1\~5 之外视为噪声）                                                 |
+| `_round_label_rect()`        | 回合小字 OCR 区 rect（优先 ocr.round\_label\_area）                               |
 
 ### treasure\_ocr.TreasureOcr
 

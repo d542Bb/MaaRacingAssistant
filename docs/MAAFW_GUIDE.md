@@ -21,7 +21,7 @@ MaaFramework = 基于图像识别的自动化黑盒框架，核心是 **Pipeline
 `CustomAction`（自定义动作）注入，由你自己的代码实时跑，见 §6。
 
 > 本项目结论（详见记忆库 `MaaRacingAssistant迁移MaaFW适配评估`）：
-> 赛车实时控制、光标导航、YOLO/OCR 推理都是自研实时链路，**保留为 CustomAction / 自研**；
+> 实时闭环控制、光标/摇杆导航、YOLO/OCR 推理都是自研实时链路，**保留为 CustomAction / 自研**；
 > 新增**离散流水线**（日常清理等）用本文档的范式，直接吃 MaaFW 的 Pipeline。
 
 ---
@@ -293,7 +293,7 @@ class MyAction(CustomAction):
 
 注册：`res.register_custom_action("MyAction", MyAction())`；Pipeline 里
 `"action": "Custom", "custom_action": "MyAction"`。
-与项目现有示例一致（`RacingLoop` 就是 `CustomAction`，见 `plugins/racing/loop.py`）。
+项目现有示例见 `core/nav_graph.py` 的 `ClickAction`（继承 `CustomAction`，经 `register_custom_action` 注册）。
 
 ---
 
@@ -314,7 +314,7 @@ class MyAction(CustomAction):
 | 事项 | 结论 |
 |---|---|
 | 截图（Win32 FramePool / WGC） | 保留现有（含 `PostScreencapCapture` RGB 封装） |
-| 实时赛车控制 / 光标导航 / YOLO / OCR | 自研，保留为 CustomAction / 自研引擎，**勿迁** |
+| 实时控制 / 光标导航 / YOLO / OCR | 自研，保留为 CustomAction / 自研引擎，**勿迁** |
 | 新增离散流水线（日常、活动代刷） | **用本文档 §5 范式**，JSON + Custom |
 | 自研识别若要进 Pipeline | 包层 `CustomRecognition` 壳（§6），不动算法 |
 | 通用 GUI / 可视化调试 | 需要时写 `interface.json`，接通用 UI 生态 |

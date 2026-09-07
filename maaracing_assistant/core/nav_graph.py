@@ -156,9 +156,9 @@ class NavGraph:
 
     用法（模块内）：
         self.graph = NavGraph(self.ctx)
-        self.graph.add_plugin(RES_DIR / "pipeline" / "racing_nav.json", RES_DIR / "image")
-        self.graph.run("极速狂飙_从大厅进入", reached="已到达极速狂飙页")  # 公共段
-        self.graph.run("极速狂飙_开始挑战", reached="已到达寻找对手页")    # 模块段
+        self.graph.add_plugin(RES_DIR / "pipeline", RES_DIR / "image")
+        self.graph.run("<模块名>_从大厅进入", reached="已到达<模块>页")  # 公共段
+        self.graph.run("<模块名>_开始挑战", reached="已到达<下一目标页>")    # 模块段
     """
 
     CLICK_POLL_S = 0.05   # 点击结果轮询间隔

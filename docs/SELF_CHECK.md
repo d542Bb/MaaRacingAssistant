@@ -72,8 +72,8 @@ pip show maafw vgamepad onnxruntime-directml rapidocr numpy opencv-python
 |------|--------------|
 | `maafw` | 截图/窗口连接不可用 |
 | `rapidocr` | 鉴宝金额识别失效 |
-| `onnxruntime-directml` | 极速狂飙 YOLO 推理不可用 |
-| `vgamepad` | 极速狂飙虚拟手柄不可用 |
+| `onnxruntime-directml` | YOLO 推理能力不可用（供含检测的插件使用） |
+| `vgamepad` | 虚拟手柄能力不可用（供需要手柄的插件使用） |
 
 > `ultralytics`/`torch` 仅训练用（`pip install -e .[train]`），不属于运行时依赖，无需在此验证。
 
@@ -83,15 +83,9 @@ pip show maafw vgamepad onnxruntime-directml rapidocr numpy opencv-python
 
 | 文件 | 路径 | 缺失后果 |
 |------|------|---------|
-| YOLO 模型（随 racing 插件自包含） | `maaracing_assistant/plugins/racing/resources/onnx/model.onnx` | 极速狂飙不可启动（sidecar 会提示「插件资源缺失: plugins/racing/resources/onnx/model.onnx」） |
+| 模型权重 | 无（当前版本不随包分发模型） | — |
 
-```bash
-dir maaracing_assistant\plugins\racing\resources\onnx\model.onnx
-```
-
-预期：文件存在且非 0 字节。
-
-> 鉴宝模块不需要 model.onnx，缺失只影响极速狂飙。训练导出见 [赛车域文档 §9](../maaracing_assistant/plugins/racing/CODE_WIKI.md) 或 `tools/training/train.py`。
+> 若后续启用含 YOLO 检测的插件，模型训练导出见 `tools/training/train.py`。
 
 ---
 
@@ -175,7 +169,6 @@ echo {"id":1,"method":"get_initial_state","params":{}}
 | `pip install` 网络失败 | 代理 / 镜像问题 | 换国内镜像 `pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt` |
 | pytest 报 `No module named pytest` | 未装 test 依赖 | `pip install "pytest>=7.0"` |
 | GUI 版本号一直不出现 / 后端 unavailable | 仓库根 `.venv` 缺失或不在仓库根 | 见 B2 警告 | 
-| 极速狂飙点「开始」提示模型未找到 | `plugins/racing/resources/onnx/model.onnx` 缺失 | 见 C |
 | 鉴宝一直「等待」、阶段不动 | 前台校验失败或窗口未就绪 | 切游戏到前台；确认分辨率 1280×720 |
 
 ---

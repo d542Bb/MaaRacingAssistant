@@ -4,13 +4,12 @@
 
 用 core（session/categories/reader/renderer）重建原 NavKit 控制台/server.py，
 并抽象为「通用 server + 模块 adapter」：前端 API 契约与旧版**完全兼容**，因此旧前端
-三件套可整套迁移零改动；OCR/彩蛋等领域专属能力由「模块 adapter」注册，供 racing 等
-未来模块复用同一 server。
+三件套可整套迁移零改动；OCR/彩蛋等领域专属能力由「模块 adapter」注册，供未来新模块
+复用同一 server。
 
 启动：
     cd tools/navkit
     python server.py --module treasure        # 默认
-    python server.py --module racing          # 预留，适配后即可用
 浏览器打开 http://localhost:8765
 
 架构约定（对齐方案 §十）：
@@ -51,7 +50,7 @@ from maaracing_assistant.core.paths import debug_dir
 
 
 def _load_adapter(module: str):
-    """按模块名加载对应的 adapter 模块（treasure 现已支持，racing 预留）。"""
+    """按模块名加载对应的 adapter 模块（目前仅 treasure 已适配，其余模块待接入）。"""
     if module == "treasure":
         from tools.navkit.adapters import treasure
         return treasure
@@ -548,7 +547,7 @@ def main() -> None:
     import argparse
     parser = argparse.ArgumentParser(description="NavKit")
     parser.add_argument("--module", default="treasure",
-                        help="模块 adapter 名（treasure 默认；racing 预留）")
+                        help="模块 adapter 名（目前仅 treasure 已适配，其余模块待接入）")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
     state = build_state(args.module)

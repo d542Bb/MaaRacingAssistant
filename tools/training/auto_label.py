@@ -29,7 +29,7 @@ def main():
     # ── 配置 ──
     img_dir = Path(__file__).resolve().parent.parent.parent / "training"
     model_path = (Path(__file__).resolve().parent.parent.parent
-                  / "maaracing_assistant" / "plugins" / "racing" / "resources" / "onnx" / "model.onnx")
+                  / "archive" / "racing" / "resources" / "onnx" / "model.onnx")
 
     if not model_path.exists():
         print(f"模型不存在: {model_path}")

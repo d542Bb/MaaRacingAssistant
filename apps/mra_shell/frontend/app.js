@@ -143,7 +143,7 @@
       titleColor: 'var(--mra-danger,#ef4444)',
       bodyHtml:
         '<p style="margin:0 0 8px;font-size:13px;line-height:1.6;color:var(--mra-foreground,#e5e7eb);">' +
-        '极速狂飙需要虚拟手柄（vgamepad）控制，底层依赖 <b>ViGEmBus</b> 内核驱动。它无法随解压包分发，需在本机安装一次。</p>',
+        '需要虚拟手柄（vgamepad）控制的模块，底层依赖 <b>ViGEmBus</b> 内核驱动。它无法随解压包分发，需在本机安装一次。</p>',
       buttons: [
         { text: '手动打开下载页', asLink: true, href: VIGEM_DL_URL },
         {
@@ -742,7 +742,7 @@
   }
 
   function updateModuleDesc(moduleId) {
-    const descs = { racing: 'YOLO 自动驾驶 + 虚拟手柄控制，赛车模式', treasure: '寻宝模式' };
+    const descs = { treasure: '寻宝模式' };
     $('module-desc').textContent = descs[moduleId] || '';
   }
 
@@ -1668,11 +1668,10 @@
       </div>`;
   }
 
-  // 模块 → 页面模板注册表。当前 treasure / racing 共用默认模板；
+  // 模块 → 页面模板注册表。当前模块均共用默认模板；
   // 以后给某模块定制时，把对应 data/settings 换成专属模板函数即可。
   const MODULE_PAGE_DEFS = {
     treasure: { data: defaultDataCards, settings: defaultSettingsCards },
-    racing: { data: defaultDataCards, settings: defaultSettingsCards },
   };
 
   // 按模块渲染「数据/设置」页并绑定当前模块的控件事件

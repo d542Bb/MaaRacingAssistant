@@ -2,7 +2,7 @@
 """pytest 全局配置。
 
 为 `strategy`（原 bid_strategy）提供可导入路径：策略模块只依赖标准库，直接以「模块目录」导入，
-**不经过** maaracing_assistant 包的 __init__（会触发 registry → racing/treasure 插件，
+**不经过** maaracing_assistant 包的 __init__（会触发 registry → plugins/* 插件扫描，
 拉入 maa/vgamepad/opencv 等重依赖，拖慢单测并污染 CI）。
 """
 

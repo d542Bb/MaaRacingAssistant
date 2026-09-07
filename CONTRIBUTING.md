@@ -1,6 +1,6 @@
 # 贡献指南（Contributing Guide）
 
-欢迎来到 **MaaRacingAssistant** 社区！本项目是一个**模块化游戏自动化平台**，目前主打 **巅峰鉴宝** 模块，**极速狂飙** 处于开发中。
+欢迎来到 **MaaRacingAssistant** 社区！本项目是一个**模块化游戏自动化平台**，当前提供 **巅峰鉴宝**，采用可扩展插件框架，新活动以独立插件目录形式贡献。
 
 在贡献之前，请先阅读 [README.md](README.md) 与 [docs/CODE_WIKI.md](docs/CODE_WIKI.md)（架构 / API / 算法 / 踩坑全记录）。
 
@@ -65,9 +65,8 @@ pip install -r requirements.txt
 | `maaracing_assistant/modules/capabilities.py` | 能力 Protocol + 最薄 adapter |
 | `maaracing_assistant/modules/base.py` | `ActivityContext` / `ActivityModule` 基类 |
 | `maaracing_assistant/modules/registry.py` | 模块注册表 |
-| `maaracing_assistant/modules/racing_module.py` | 极速狂飙（开发中） |
+| `maaracing_assistant/plugins/<id>/` | 活动插件（自包含目录，各含 `manifest.py` + `resources`） |
 | `maaracing_assistant/modules/treasure_module.py` | 巅峰鉴宝（主打） |
-| `maaracing_assistant/racing_loop.py` | 自动驾驶循环（YOLO + 手柄） |
 | `maaracing_assistant/navigation.py` | 光标导航引擎 |
 | `apps/mra_shell/` | WinUI 3 图形界面（Python sidecar 承载业务） |
 
@@ -94,7 +93,7 @@ git checkout -b feat/your-feature origin/master
 **开发约定：**
 
 - 新增模块必须走 `modules/` 注册表 + 能力接口，不直接引高权限宿主对象。
-- 涉及活动流程逻辑，先阅读 CODE_WIKI 对应节（鉴宝见 §11.6，赛车见 §11.4，导航见 §11.3）。
+- 涉及活动流程逻辑，先阅读 CODE_WIKI 对应节（鉴宝见 §11.6，导航见 §11.3）。
 - 遵守 [AGENTS.md](AGENTS.md) 的语言与规范要求（中文输出、4 空格缩进等）。
 
 ### 3. 提交与推送

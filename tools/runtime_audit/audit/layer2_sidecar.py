@@ -5,7 +5,7 @@
 
 覆盖：
   - baseline：只 import 交互期（import 前 module 集合，由主进程用纯解释器快照对比）
-  - 目标 import 序列：sidecar+Racing+Treasure+YOLO/DML+RapidOCR+MaaFramework
+  - 目标 import 序列：sidecar+Treasure+YOLO/DML+RapidOCR+MaaFramework
   - 输出 { "modules": [绝对路径, ...], "module_keys": [...], "dynamic_hint": [...] }
 """
 from __future__ import annotations
@@ -29,9 +29,6 @@ def main() -> int:
         import maaracing_assistant  # noqa
         import maaracing_assistant.core.sidecar  # noqa
         import maaracing_assistant.core.controller  # noqa
-        import maaracing_assistant.plugins.racing.manifest  # noqa
-        import maaracing_assistant.plugins.racing.module  # noqa
-        import maaracing_assistant.plugins.racing.loop  # noqa
         import maaracing_assistant.plugins.treasure.manifest  # noqa
         import maaracing_assistant.plugins.treasure.module  # noqa
         import maaracing_assistant.plugins.treasure.ocr  # noqa

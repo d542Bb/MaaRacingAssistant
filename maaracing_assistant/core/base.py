@@ -101,11 +101,11 @@ class ActivityContext:
         if self.capture is not None:
             result.add("capture")
         # gamepad 仅在 vgamepad（ViGEmBus 驱动）可用时暴露；缺失时 REQUIRES 校验会把
-        # 依赖它的模块（如 racing）在启动前拦下，而不是运行中途崩。
+        # 依赖它的模块在启动前拦下，而不是运行中途崩。
         if self.app.gamepad_available():
             result.add("gamepad")
-        # onnx 能力已随模型插件化移除：YOLO 模型归 racing 插件自带
-        # （plugins/racing/resources/onnx/），缺失校验走模块类 REQUIRED_ASSETS 声明，
+        # onnx 能力已随模型插件化移除：YOLO 等模型由各插件自带（plugins/<id>/resources/），
+        # 缺失校验走模块类 REQUIRED_ASSETS 声明，
         # 由 registry/sidecar 按插件目录检查，不再是宿主全局能力。
         # debug_renderer 恒可用（debug 实例常驻）
         result.add("debug_renderer")

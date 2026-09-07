@@ -13,39 +13,8 @@
     //   6. 每个模块链最后必须挂一个「已到达X页」确认节点，跑图方按它判成败。
     //   7. 节点里的模板名按"跑图方登记的模板目录"解析：各模块只给自己走的链供图，
     //      别人家的节点不进自己的图就不需要那张图。
+    //
+    // 当前无模块使用手写入口链：鉴宝走 plugins/treasure 的 NavKit assets.json 生成路
+    // 由；后续模块接入时在下方按约定补充各自的「模块名_从大厅进入 → 已到达X页」链。
     // ══════════════════════════════════════════════════════════════════════
-
-    // ── 极速狂飙：大厅卡片 → 活动页 ────────────────────────────────────
-    // 注意：鉴宝的入口跳转不在这里。它仍由 plugins/treasure 自己的阶段意图路径
-    // （module.py 的「游戏大厅 → 点巅峰鉴宝卡片」）驱动，且将在 NavKit S3 阶段
-    // 由 assets.json 生成。原先手抄在此处的鉴宝链已于 2026-09-05 删除：
-    // 它的 roi 与 treasure_rois.json 不一致（0.55,0.55 vs 0.760,0.803），
-    // 且从未被任何代码引用，是双真源的反例教材。
-    "极速狂飙_从大厅进入": {
-        "recognition": "Custom",
-        "custom_recognition": "MRA_Template",
-        "custom_recognition_param": {
-            "templates": ["racing_activity_card"],
-            "threshold": 0.72,
-            "roi": [0.55, 0.55, 1.00, 0.90],
-            "fallback_pct": [0.880, 0.720]
-        },
-        "action": "Custom",
-        "custom_action": "MRA_Click",
-        "custom_action_param": { "timeout_s": 25, "wait_after_ms": 1200 },
-        "rate_limit": 600,
-        "timeout": 45000,
-        "next": ["已到达极速狂飙页"]
-    },
-    "已到达极速狂飙页": {
-        "recognition": "Custom",
-        "custom_recognition": "MRA_Template",
-        "custom_recognition_param": {
-            "templates": ["activity_page_template"],
-            "threshold": 0.55
-        },
-        "action": "DoNothing",
-        "rate_limit": 500,
-        "timeout": 20000
-    }
 }

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 MaaRacingAssistant
-巅峰极速 · 极速狂飙 自动刷分
+巅峰极速 · 活动自动化平台
 MAA Framework + YOLOv8 ONNX + vgamepad
 """
 

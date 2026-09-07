@@ -5,8 +5,8 @@
 
 ## 项目自身许可（分层）
 - **本项目源码**（`maaracing_assistant/`、`apps/mra_shell/` 等）采用 **Apache-2.0**（见根目录 `LICENSE`）。
-- **模型权重 `maaracing_assistant/plugins/racing/resources/onnx/model.onnx` 单独采用 AGPL-3.0**（见下方「模型权重」一节）；
-  AGPL 仅作用于该权重文件，本项目其余代码非其衍生作品，保留 Apache-2.0。
+- **模型权重**：当前版本不随发布包分发任何模型权重；若某活动插件自带 YOLO 等模型权重，则该权重单独沿用 **AGPL-3.0**
+  （见下方「模型权重」一节）。AGPL 仅作用于权重文件本身，本项目其余代码非其衍生作品，保留 Apache-2.0。
 
 ---
 
@@ -39,15 +39,15 @@
 
 ## 二、模型权重（AGPL-3.0）
 
-`maaracing_assistant/plugins/racing/resources/onnx/model.onnx` 由 **Ultralytics 官方预训练权重** `yolo11n.pt` + Ultralytics 训练代码
-在自有标注数据上微调导出（见 `tools/training/train.py`）。
+当前版本发布包**不随包分发模型权重**。若后续活动插件自带 YOLO 等模型权重并随包分发，则适用以下条款：
 
+- 此类权重由 **Ultralytics 官方预训练权重** `yolo11n.pt` + Ultralytics 训练代码在自有标注数据上微调导出（见 `tools/training/train.py`）。
 - 按 Ultralytics 的许可立场，该微调模型视为 **AGPL-3.0 衍生作品**，随本发布包再分发需遵循 AGPL-3.0。
 - 本项目运行时**未再分发任何 Ultralytics 软件代码**（YOLO 推理仅通过 ONNX Runtime 加载 ONNX 图）。
-- AGPL 义务挂在 `model.onnx` 这份权重文件上，本项目其余代码保留 Apache-2.0。
+- AGPL 义务仅挂在权重文件本身，本项目其余代码保留 Apache-2.0。
 - 上游: <https://github.com/ultralytics/ultralytics>　许可: <https://www.gnu.org/licenses/agpl-3.0.html>
 
-> 如需把该模型用于**不开放源码 / 商业闭源**的场合，需另行取得 Ultralytics Enterprise License，
+> 如需把此类模型用于**不开放源码 / 商业闭源**的场合，需另行取得 Ultralytics Enterprise License，
 > 见 <https://www.ultralytics.com/license>。
 
 ---

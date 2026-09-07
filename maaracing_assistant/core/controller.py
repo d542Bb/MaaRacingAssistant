@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 主控制器模块：模块生命周期管理（AppController 角色）、窗口连接、截图与手柄共享能力提供。
-活动流程（导航/比赛）已迁移至 modules/racing_module.py 的 RacingModule。
+具体活动流程由各活动插件（plugins/<id>/module.py，经 core/registry 自动发现）自行实现。
 """
 
 from __future__ import annotations

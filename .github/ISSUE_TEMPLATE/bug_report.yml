@@ -25,7 +25,6 @@ body:
       description: 出问题的是哪个模块？
       options:
         - 巅峰鉴宝
-        - 极速狂飙（开发中）
         - 平台 / GUI 通用
         - 其他
     validations:

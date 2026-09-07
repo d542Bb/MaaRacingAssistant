@@ -17,7 +17,7 @@ PY_PACKAGES_REL = "runtime/python/packages"
 # 各层入口：sidecar 顶层包 + 插件
 SIDECAR_TOP = "maaracing_assistant"
 SIDECAR_MAIN = "maaracing_assistant.__main__"
-PLUGINS = ("racing", "treasure")
+PLUGINS = ("treasure",)
 
 # native 扩展后缀
 NATIVE_SUFFIXES = {".exe", ".dll", ".pyd", ".so"}
@@ -29,9 +29,6 @@ RUNTIME_TRACE_IMPORTS = [
     "maaracing_assistant",
     "maaracing_assistant.core.sidecar",
     "maaracing_assistant.core.controller",
-    "maaracing_assistant.plugins.racing.manifest",
-    "maaracing_assistant.plugins.racing.module",
-    "maaracing_assistant.plugins.racing.loop",
     "maaracing_assistant.plugins.treasure.manifest",
     "maaracing_assistant.plugins.treasure.module",
     "maaracing_assistant.plugins.treasure.ocr",
